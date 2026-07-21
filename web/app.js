@@ -8,7 +8,6 @@
 'use strict';
 
 const RHO_WATER = 1000;     // kg/m3
-const RHO_LURE  = 450;      // kg/m3 (bois/plastique dur, densite moyenne)
 const G         = 9.81;
 
 /* ----------------------------------------------------------------------- *
@@ -60,25 +59,56 @@ function fbmNoise3(x, y, z) {
  * ----------------------------------------------------------------------- */
 const ui = {
   Vf: 0.7, Vw: 0.1, lipDeg: 28, lineLen: 4.0, lineK: 40,
-  bodyLenMM: 100, cgPos: 45, density: 260, isoTh: 1.2, planeX: 0.10,
+  bodyLenMM: 100, cgPos: 45, density: 260, isoTh: 0.9, planeX: 0.10,
+  matDensity: 500,     // kg/m3, densite du materiau (bois/plastique/metal) — masse du leurre
+  decim: 50000,        // cible max de triangles pour le STL importe
 };
 const toggles = { streamlines: true, iso: false, pressure: false, hodo: true, stress: false, wake: true };
 
-const params = {}; // recalcule chaque frame depuis `ui`
+/* ----------------------------------------------------------------------- *
+ * Etat de geometrie : soit le corps PROCEDURAL par defaut, soit un mesh STL
+ * importe. Les grandeurs geometriques normalisees (rapports d'aspect, volume
+ * adimensionne, points caracteristiques, echantillons de surface) sont
+ * stockees ici et consommees par la physique et les champs.
+ *   Convention repere local (apres alignement PCA du STL) :
+ *     +X = nez (avant, ecoulement entrant),  -X = queue
+ *      Y = axe secondaire "vertical" (dorsal/ventral)
+ *      Z = axe secondaire "lateral" (flancs)
+ *   Frame "normalise" : longueur principale = 1 (demi-etendue X = 0.5),
+ *   centroide a l'origine. Le mesh visible est mis a l'echelle par L.
+ * ----------------------------------------------------------------------- */
+const PROC_METRICS = {
+  // corps procedural : rapports adimensionnes (frame normalise, longueur=1)
+  Rratio: 0.17,                       // R / L  (rayon caracteristique)
+  aspectY: 0.17, aspectZ: 0.17,       // demi-etendues Y,Z rapportees a L
+  SfrontRatio: Math.PI * 0.17 * 0.17, // Sfront / L^2
+  volNorm: 0.55 * (4 / 3) * Math.PI * 0.5 * 0.17 * 0.17, // volume / L^3
+};
+const geom = {
+  mode: 'procedural',   // 'procedural' | 'stl'
+  metrics: PROC_METRICS,
+  stl: null,            // donnees du mesh importe (rempli par loadSTLGeometry)
+  flip: false,          // inversion manuelle nez/queue
+};
+
+const params = {}; // recalcule chaque frame depuis `ui` et `geom`
 function updateParams() {
+  const m = geom.metrics;
   params.Vf = ui.Vf;
   params.Vw = ui.Vw;
   params.lipDeg = ui.lipDeg;
   params.lipAngleRad = deg2rad(ui.lipDeg);
   params.lineLen = ui.lineLen;
   params.kLine = ui.lineK;
-  params.L = ui.bodyLenMM / 1000;
-  params.R = 0.17 * params.L; // rayon max reel du corps (le profil ci-dessous est renormalise sur son pic)
-  params.Sfront = Math.PI * params.R * params.R;
-  params.Slip = 0.42 * params.Sfront;
-  const volume = 0.55 * (4 / 3) * Math.PI * (params.L / 2) * params.R * params.R;
-  params.mass = RHO_LURE * volume;
-  params.mTrans = params.mass * 1.15;               // + masse ajoutee axiale (~15%)
+  params.L = ui.bodyLenMM / 1000;                    // longueur principale (m) — pilote l'echelle
+  params.R = m.Rratio * params.L;                    // rayon caracteristique reel
+  params.aspectY = m.aspectY; params.aspectZ = m.aspectZ;
+  params.Sfront = m.SfrontRatio * params.L * params.L;      // section frontale (m^2)
+  params.Slip = 0.42 * params.Sfront;                       // surface effective de bavette
+  const volume = m.volNorm * params.L * params.L * params.L; // volume reel (m^3)
+  params.volume = volume;
+  params.mass = ui.matDensity * volume;              // masse = densite materiau x volume
+  params.mTrans = params.mass * 1.15 + 1e-4;         // + masse ajoutee axiale (~15%), plancher
   params.cLine = 2 * Math.sqrt(params.kLine * params.mTrans) * 0.4; // sous-amorti
   params.Cd = 0.9;
   params.St = 0.22;                                  // nombre de Strouhal (sillage corps de leurre)
@@ -261,6 +291,12 @@ scene.add(grid);
  * ----------------------------------------------------------------------- */
 const lureGroup = new THREE.Group();
 scene.add(lureGroup);
+// Sous-groupe pour les elements RECONSTRUITS a chaque changement de geometrie
+// (corps, bavette, anneaux, hameçons, marqueurs). Les champs persistants
+// (plan de pression, isosurface) restent enfants directs de lureGroup et ne
+// sont donc jamais supprimes par un rebuild.
+const bodyGroup = new THREE.Group();
+lureGroup.add(bodyGroup);
 
 const bodyProfile = [ // (s in [0,1] le long du corps, r/Rmax)
   [0.00, 0.000], [0.05, 0.030], [0.12, 0.058], [0.22, 0.084], [0.35, 0.100],
@@ -269,13 +305,92 @@ const bodyProfile = [ // (s in [0,1] le long du corps, r/Rmax)
 ];
 
 let bodyMesh, lipMesh, ringFront, ringRear, hookGroup;
-const charPoints = {}; // points caracteristiques en coordonnees LOCALES (repere leurre)
+const charPoints = {}; // points caracteristiques en coordonnees LOCALES (repere leurre, echelle metres)
 const stressHotspots = [];
+const _geomOffset = new THREE.Vector3(); // decalage nez/queue de la geometrie visible dans le repere local
+
+// Convertit un point du frame NORMALISE (longueur=1, centroide origine) vers le
+// repere local (metres) du leurre, en appliquant echelle L + decalage CG.
+function localFromNorm(pNorm) {
+  return new THREE.Vector3(pNorm.x * params.L, pNorm.y * params.L, pNorm.z * params.L).add(_geomOffset);
+}
+
+// Reciproque : repere local (metres) -> frame normalise (utilise par le champ/hash STL)
+function normFromLocal(pLocal, out) {
+  out.set((pLocal.x - _geomOffset.x) / params.L, (pLocal.y - _geomOffset.y) / params.L, (pLocal.z - _geomOffset.z) / params.L);
+  return out;
+}
+
+function disposeLureChildren() {
+  for (const c of [...bodyGroup.children]) {
+    bodyGroup.remove(c);
+    // ne pas disposer la geometrie STL partagee (reutilisee entre rebuilds)
+    if (c.geometry && c !== bodyMesh) c.geometry.dispose && c.geometry.dispose();
+  }
+}
+
+// Bavette + anneaux de fixation, communs aux deux modes (positions en metres, repere local)
+function addLipAndRings(noseX, tailX, R, showHooks) {
+  const lipW = R * 1.6, lipLen = R * 2.1;
+  const lipGeo = new THREE.BufferGeometry();
+  lipGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([
+    0, 0, 0, -lipLen, 0, lipW * 0.5, -lipLen, 0, -lipW * 0.5,
+  ]), 3));
+  lipGeo.setIndex([0, 1, 2, 0, 2, 1]);
+  lipGeo.computeVertexNormals();
+  lipMesh = new THREE.Mesh(lipGeo, new THREE.MeshPhysicalMaterial({
+    color: 0xdff6ff, transparent: true, opacity: 0.55, roughness: 0.15, metalness: 0.0, side: THREE.DoubleSide,
+  }));
+  lipMesh.position.set(noseX, -R * 0.35, 0);
+  lipMesh.rotation.z = params.lipAngleRad;
+  bodyGroup.add(lipMesh);
+
+  const ringGeo = new THREE.TorusGeometry(R * 0.16, R * 0.045, 8, 16);
+  const ringMat = new THREE.MeshStandardMaterial({ color: 0xc9c9c9, metalness: 0.9, roughness: 0.25 });
+  ringFront = new THREE.Mesh(ringGeo, ringMat);
+  ringFront.position.set(noseX + R * 0.05, -R * 0.1, 0);
+  ringFront.rotation.x = Math.PI / 2;
+  bodyGroup.add(ringFront);
+  ringRear = new THREE.Mesh(ringGeo, ringMat.clone());
+  ringRear.position.set(tailX, 0, 0);
+  ringRear.rotation.x = Math.PI / 2;
+  bodyGroup.add(ringRear);
+
+  hookGroup = new THREE.Group();
+  if (showHooks) {
+    const hookMat = new THREE.MeshStandardMaterial({ color: 0x8891a0, metalness: 0.85, roughness: 0.3 });
+    const makeTreble = (x) => {
+      const g = new THREE.Group();
+      for (let i = 0; i < 3; i++) {
+        const arc = new THREE.Mesh(new THREE.TorusGeometry(R * 0.5, R * 0.035, 6, 10, Math.PI * 1.35), hookMat);
+        arc.rotation.z = Math.PI * 0.15;
+        arc.rotation.y = (i * 2 * Math.PI) / 3;
+        arc.position.y = -R * 0.15;
+        g.add(arc);
+      }
+      g.position.set(x, -R * 0.25, 0);
+      return g;
+    };
+    hookGroup.add(makeTreble(0.5 * (noseX + tailX) + 0.15 * (noseX - tailX)));
+    hookGroup.add(makeTreble(tailX + 0.02 * (noseX - tailX)));
+  }
+  bodyGroup.add(hookGroup);
+}
 
 function buildLure() {
-  if (lureGroup.children.length) { for (const c of [...lureGroup.children]) lureGroup.remove(c); }
+  disposeLureChildren();
+  _geomOffset.set(0, 0, 0);
+  if (geom.mode === 'stl' && geom.stl) buildSTLBody();
+  else buildProceduralBody();
+  buildCharMarkers();
+}
+
+function buildProceduralBody() {
+  geom.metrics = PROC_METRICS;
+  updateParams();
   const L = params.L, R = params.R;
   const cgX = params.cgPos * L; // origine du groupe = centre de gravite
+  _geomOffset.set(0, 0, 0);
 
   const profilePeak = Math.max(...bodyProfile.map(([, r]) => r));
   const pts = bodyProfile.map(([s, r]) => new THREE.Vector2((r / profilePeak) * R, s * L));
@@ -284,78 +399,57 @@ function buildLure() {
   latheGeo.translate(-cgX, 0, 0);      // origine locale = centre de gravite
   latheGeo.computeVertexNormals();
 
-  const bodyMat = new THREE.MeshStandardMaterial({
+  bodyMesh = new THREE.Mesh(latheGeo, new THREE.MeshStandardMaterial({
     color: 0x2f7ea8, metalness: 0.25, roughness: 0.35, vertexColors: false,
-  });
-  bodyMesh = new THREE.Mesh(latheGeo, bodyMat);
+  }));
   bodyMesh.userData.baseColor = new THREE.Color(0x2f7ea8);
-  lureGroup.add(bodyMesh);
+  bodyGroup.add(bodyMesh);
 
-  // Bavette (lip) triangulaire inclinee, a l'avant du nez
-  const lipW = R * 1.6, lipLen = R * 2.1;
-  const lipGeo = new THREE.BufferGeometry();
-  const lipVerts = new Float32Array([
-    0, 0, 0,
-    -lipLen, 0, lipW * 0.5,
-    -lipLen, 0, -lipW * 0.5,
-  ]);
-  lipGeo.setAttribute('position', new THREE.BufferAttribute(lipVerts, 3));
-  lipGeo.setIndex([0, 1, 2, 0, 2, 1]);
-  lipGeo.computeVertexNormals();
-  const lipMat = new THREE.MeshPhysicalMaterial({
-    color: 0xdff6ff, transparent: true, opacity: 0.55, roughness: 0.15, metalness: 0.0, side: THREE.DoubleSide,
-  });
-  lipMesh = new THREE.Mesh(lipGeo, lipMat);
-  lipMesh.position.set(L - cgX, -R * 0.35, 0);
-  lipMesh.rotation.z = params.lipAngleRad; // angle de bavette reglable
-  lureGroup.add(lipMesh);
+  const noseX = L - cgX, tailX = -cgX, lipLen = R * 2.1;
+  addLipAndRings(noseX, tailX, R, true);
 
-  // Anneaux de fixation (avant : ligne, arriere : hameçon queue)
-  const ringGeo = new THREE.TorusGeometry(R * 0.16, R * 0.045, 8, 16);
-  const ringMat = new THREE.MeshStandardMaterial({ color: 0xc9c9c9, metalness: 0.9, roughness: 0.25 });
-  ringFront = new THREE.Mesh(ringGeo, ringMat);
-  ringFront.position.set(L - cgX + R * 0.05, -R * 0.1, 0);
-  ringFront.rotation.x = Math.PI / 2;
-  lureGroup.add(ringFront);
-
-  ringRear = new THREE.Mesh(ringGeo, ringMat.clone());
-  ringRear.position.set(-cgX, 0, 0);
-  ringRear.rotation.x = Math.PI / 2;
-  lureGroup.add(ringRear);
-
-  // Hameçons triples (visuel uniquement, geometrie simplifiee : 3 arcs a 120°)
-  hookGroup = new THREE.Group();
-  const hookMat = new THREE.MeshStandardMaterial({ color: 0x8891a0, metalness: 0.85, roughness: 0.3 });
-  function makeTreble(x) {
-    const g = new THREE.Group();
-    for (let i = 0; i < 3; i++) {
-      const arc = new THREE.Mesh(new THREE.TorusGeometry(R * 0.5, R * 0.035, 6, 10, Math.PI * 1.35), hookMat);
-      arc.rotation.z = Math.PI * 0.15;
-      arc.rotation.y = (i * 2 * Math.PI) / 3;
-      arc.position.y = -R * 0.15;
-      g.add(arc);
-    }
-    g.position.set(x, -R * 0.25, 0);
-    return g;
-  }
-  hookGroup.add(makeTreble(0.35 * L - cgX));
-  hookGroup.add(makeTreble(-cgX + 0.02 * L));
-  lureGroup.add(hookGroup);
-
-  // Points caracteristiques (reperes locaux) pour hodographes / marqueurs
-  charPoints.nose      = new THREE.Vector3(L - cgX, 0, 0);
-  charPoints.lipTip    = new THREE.Vector3(L - cgX - lipLen * Math.cos(params.lipAngleRad), -R * 0.35 - lipLen * Math.sin(params.lipAngleRad), 0);
+  charPoints.nose      = new THREE.Vector3(noseX, 0, 0);
+  charPoints.lipTip    = new THREE.Vector3(noseX - lipLen * Math.cos(params.lipAngleRad), -R * 0.35 - lipLen * Math.sin(params.lipAngleRad), 0);
   charPoints.ringFront = ringFront.position.clone();
   charPoints.ringRear  = ringRear.position.clone();
-  charPoints.tail      = new THREE.Vector3(-cgX, 0, 0);
+  charPoints.tail      = new THREE.Vector3(tailX, 0, 0);
   charPoints.finLeft   = new THREE.Vector3(0.5 * L - cgX, R * 0.2, R * 1.05);
   charPoints.finRight  = new THREE.Vector3(0.5 * L - cgX, R * 0.2, -R * 1.05);
   charPoints.dorsal    = new THREE.Vector3(0.45 * L - cgX, R * 1.05, 0);
 
   stressHotspots.length = 0;
   stressHotspots.push(charPoints.lipTip.clone(), charPoints.ringFront.clone());
+}
 
-  buildCharMarkers();
+// Corps STL : la geometrie normalisee (longueur=1) est mise a l'echelle L et
+// decalee selon cgPos ; les points caracteristiques auto-detectes (frame
+// normalise) sont convertis en metres via localFromNorm.
+function buildSTLBody() {
+  geom.metrics = geom.stl.metrics;
+  updateParams();
+  const L = params.L, R = params.R;
+  // decalage CG : pivot le long de X (0.5 = centroide), borne par cgPos slider
+  const pivotNormX = clamp(params.cgPos - 0.5, -0.35, 0.35);
+  _geomOffset.set(-pivotNormX * L, 0, 0);
+
+  bodyMesh = new THREE.Mesh(geom.stl.geometry, new THREE.MeshStandardMaterial({
+    color: 0x2f7ea8, metalness: 0.22, roughness: 0.4, vertexColors: false, side: THREE.DoubleSide,
+  }));
+  bodyMesh.userData.baseColor = new THREE.Color(0x2f7ea8);
+  bodyMesh.scale.setScalar(L);
+  bodyMesh.position.copy(_geomOffset);
+  bodyGroup.add(bodyMesh);
+
+  const cn = geom.stl.charNorm;
+  for (const k in cn) charPoints[k] = localFromNorm(cn[k]);
+  // retire d'eventuels points procedural non definis pour le STL
+  for (const k of Object.keys(charPoints)) if (!(k in cn)) delete charPoints[k];
+
+  const noseX = charPoints.nose.x, tailX = charPoints.tail.x;
+  addLipAndRings(noseX, tailX, R, false); // pas de hameçons sur un mesh arbitraire
+
+  stressHotspots.length = 0;
+  stressHotspots.push(charPoints.nose.clone(), charPoints.tail.clone());
 }
 
 const markerColors = {
@@ -364,7 +458,7 @@ const markerColors = {
 };
 let charMarkers = {};
 function buildCharMarkers() {
-  for (const k in charMarkers) lureGroup.remove(charMarkers[k]);
+  for (const k in charMarkers) bodyGroup.remove(charMarkers[k]);
   charMarkers = {};
   const R = params.R;
   for (const key in charPoints) {
@@ -373,12 +467,261 @@ function buildCharMarkers() {
       new THREE.MeshBasicMaterial({ color: markerColors[key] || 0xffffff })
     );
     m.position.copy(charPoints[key]);
-    lureGroup.add(m);
+    bodyGroup.add(m);
     charMarkers[key] = m;
   }
 }
 
 buildLure();
+
+/* ----------------------------------------------------------------------- *
+ * MODULE 2b — Traitement d'un STL importe
+ *
+ *  Pipeline (documente etape par etape ci-dessous) :
+ *   1) parse (STLLoader, ASCII/binaire) -> triangle soup + normales
+ *   2) decimation par clustering de grille si triangles > cible (perf)
+ *   3) PCA sur les sommets -> axes principaux ; alignement axe0 sur X
+ *   4) heuristique nez/queue (l'extremite la plus "massive" = nez, +X)
+ *   5) recentrage + normalisation d'echelle (longueur principale -> 1)
+ *   6) metriques physiques : volume (somme de tetraedres signes),
+ *      rapports d'aspect, section frontale -> alimentent updateParams()
+ *   7) points caracteristiques auto (extrema sur les 3 axes)
+ *   8) echantillonnage de surface + hash spatial -> deviation des streamlines
+ * ----------------------------------------------------------------------- */
+
+// -- Eigen-decomposition symetrique 3x3 (rotations de Jacobi) --------------
+function jacobiEigen3(A) {
+  // A : [[a00,a01,a02],[a01,a11,a12],[a02,a12,a22]] symetrique
+  const a = [A[0].slice(), A[1].slice(), A[2].slice()];
+  const V = [[1,0,0],[0,1,0],[0,0,1]];
+  for (let sweep = 0; sweep < 24; sweep++) {
+    // plus grand element hors-diagonale
+    let p = 0, q = 1, max = Math.abs(a[0][1]);
+    if (Math.abs(a[0][2]) > max) { max = Math.abs(a[0][2]); p = 0; q = 2; }
+    if (Math.abs(a[1][2]) > max) { max = Math.abs(a[1][2]); p = 1; q = 2; }
+    if (max < 1e-12) break;
+    const app = a[p][p], aqq = a[q][q], apq = a[p][q];
+    const phi = 0.5 * Math.atan2(2 * apq, aqq - app);
+    const c = Math.cos(phi), s = Math.sin(phi);
+    for (let k = 0; k < 3; k++) {
+      const akp = a[k][p], akq = a[k][q];
+      a[k][p] = c * akp - s * akq; a[k][q] = s * akp + c * akq;
+    }
+    for (let k = 0; k < 3; k++) {
+      const apk = a[p][k], aqk = a[q][k];
+      a[p][k] = c * apk - s * aqk; a[q][k] = s * apk + c * aqk;
+    }
+    for (let k = 0; k < 3; k++) {
+      const vkp = V[k][p], vkq = V[k][q];
+      V[k][p] = c * vkp - s * vkq; V[k][q] = s * vkp + c * vkq;
+    }
+  }
+  const vals = [a[0][0], a[1][1], a[2][2]];
+  const vecs = [0,1,2].map(j => new THREE.Vector3(V[0][j], V[1][j], V[2][j]).normalize());
+  return { vals, vecs };
+}
+
+// -- Decimation par clustering de grille (triangle soup) -------------------
+// Regroupe les sommets par cellule d'une grille reguliere ; garde un
+// representant par cellule ; reconstruit les triangles non degeneres.
+function decimateSoup(posArr, targetTris) {
+  let cellFrac = 0.9;
+  let result = posArr;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    let minX = Infinity, minY = Infinity, minZ = Infinity, maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+    for (let i = 0; i < posArr.length; i += 3) {
+      minX = Math.min(minX, posArr[i]); maxX = Math.max(maxX, posArr[i]);
+      minY = Math.min(minY, posArr[i+1]); maxY = Math.max(maxY, posArr[i+1]);
+      minZ = Math.min(minZ, posArr[i+2]); maxZ = Math.max(maxZ, posArr[i+2]);
+    }
+    const diag = Math.hypot(maxX-minX, maxY-minY, maxZ-minZ) || 1;
+    const gridN = Math.max(8, Math.round(Math.cbrt(targetTris) * 5.0 * cellFrac));
+    const cell = diag / gridN;
+    const rep = new Map(); // cellKey -> {x,y,z sum,count} + id
+    const keyOf = (x,y,z) => (Math.floor((x-minX)/cell))+'_'+(Math.floor((y-minY)/cell))+'_'+(Math.floor((z-minZ)/cell));
+    for (let i = 0; i < posArr.length; i += 3) {
+      const k = keyOf(posArr[i],posArr[i+1],posArr[i+2]);
+      let r = rep.get(k);
+      if (!r) { r = { x:0,y:0,z:0,n:0 }; rep.set(k, r); }
+      r.x += posArr[i]; r.y += posArr[i+1]; r.z += posArr[i+2]; r.n++;
+    }
+    const out = [];
+    for (let t = 0; t < posArr.length; t += 9) {
+      const k0 = keyOf(posArr[t],posArr[t+1],posArr[t+2]);
+      const k1 = keyOf(posArr[t+3],posArr[t+4],posArr[t+5]);
+      const k2 = keyOf(posArr[t+6],posArr[t+7],posArr[t+8]);
+      if (k0 === k1 || k1 === k2 || k0 === k2) continue; // triangle effondre
+      for (const k of [k0,k1,k2]) { const r = rep.get(k); out.push(r.x/r.n, r.y/r.n, r.z/r.n); }
+    }
+    result = new Float32Array(out);
+    const tris = result.length / 9;
+    if (tris <= targetTris * 1.15 && tris > 8) return result;
+    if (tris > targetTris) cellFrac *= 0.72; else cellFrac *= 1.25; // ajuste la finesse
+  }
+  return result;
+}
+
+// -- Volume par somme de tetraedres signes (origine = 0) -------------------
+function meshVolume(posArr) {
+  let v = 0;
+  for (let t = 0; t < posArr.length; t += 9) {
+    const ax = posArr[t],   ay = posArr[t+1], az = posArr[t+2];
+    const bx = posArr[t+3], by = posArr[t+4], bz = posArr[t+5];
+    const cx = posArr[t+6], cy = posArr[t+7], cz = posArr[t+8];
+    v += (ax * (by * cz - bz * cy) - ay * (bx * cz - bz * cx) + az * (bx * cy - by * cx)) / 6;
+  }
+  return Math.abs(v);
+}
+
+// -- Hash spatial d'un nuage de points (frame normalise) -------------------
+function buildSpatialHash(points, cell) {
+  const map = new Map();
+  for (let i = 0; i < points.length; i += 3) {
+    const k = Math.floor(points[i]/cell)+'_'+Math.floor(points[i+1]/cell)+'_'+Math.floor(points[i+2]/cell);
+    let arr = map.get(k); if (!arr) { arr = []; map.set(k, arr); } arr.push(i);
+  }
+  return { map, cell, points };
+}
+const _nsOut = new THREE.Vector3();
+function nearestSurfaceDist(hash, x, y, z, outDir) {
+  const cell = hash.cell, pts = hash.points;
+  const ix = Math.floor(x/cell), iy = Math.floor(y/cell), iz = Math.floor(z/cell);
+  let best = Infinity, bx = 0, by = 0, bz = 0, found = false;
+  for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
+    const arr = hash.map.get((ix+dx)+'_'+(iy+dy)+'_'+(iz+dz));
+    if (!arr) continue;
+    for (let a = 0; a < arr.length; a++) {
+      const idx = arr[a];
+      const ddx = x - pts[idx], ddy = y - pts[idx+1], ddz = z - pts[idx+2];
+      const d2 = ddx*ddx + ddy*ddy + ddz*ddz;
+      if (d2 < best) { best = d2; bx = ddx; by = ddy; bz = ddz; found = true; }
+    }
+  }
+  if (!found) return Infinity;
+  const d = Math.sqrt(best) || 1e-6;
+  outDir.set(bx/d, by/d, bz/d);
+  return d;
+}
+
+// -- Pipeline principal : BufferGeometry brute -> geom.stl ------------------
+function processSTLGeometry(rawGeo, fileName) {
+  rawGeo.deleteAttribute('normal');
+  let posArr = rawGeo.attributes.position.array;
+  let triCount = posArr.length / 9;
+  const rawTri = triCount;
+
+  // (2) decimation si trop de triangles
+  const target = ui.decim;
+  let decimated = false;
+  if (triCount > target) { posArr = decimateSoup(posArr, target); triCount = posArr.length / 9; decimated = true; }
+
+  // dims brutes (unites du fichier) pour affichage
+  let rminX=Infinity,rminY=Infinity,rminZ=Infinity,rmaxX=-Infinity,rmaxY=-Infinity,rmaxZ=-Infinity;
+  let mx=0,my=0,mz=0, nV = posArr.length/3;
+  for (let i=0;i<posArr.length;i+=3){
+    mx+=posArr[i];my+=posArr[i+1];mz+=posArr[i+2];
+    rminX=Math.min(rminX,posArr[i]);rmaxX=Math.max(rmaxX,posArr[i]);
+    rminY=Math.min(rminY,posArr[i+1]);rmaxY=Math.max(rmaxY,posArr[i+1]);
+    rminZ=Math.min(rminZ,posArr[i+2]);rmaxZ=Math.max(rmaxZ,posArr[i+2]);
+  }
+  mx/=nV;my/=nV;mz/=nV;
+  const rawDims = { x: rmaxX-rminX, y: rmaxY-rminY, z: rmaxZ-rminZ };
+
+  // (3) PCA : covariance des sommets recentres
+  let c00=0,c01=0,c02=0,c11=0,c12=0,c22=0;
+  for (let i=0;i<posArr.length;i+=3){
+    const dx=posArr[i]-mx, dy=posArr[i+1]-my, dz=posArr[i+2]-mz;
+    c00+=dx*dx; c01+=dx*dy; c02+=dx*dz; c11+=dy*dy; c12+=dy*dz; c22+=dz*dz;
+  }
+  const inv = 1/nV;
+  const cov = [[c00*inv,c01*inv,c02*inv],[c01*inv,c11*inv,c12*inv],[c02*inv,c12*inv,c22*inv]];
+  const { vals, vecs } = jacobiEigen3(cov);
+  const order = [0,1,2].sort((i,j)=>vals[j]-vals[i]); // desc : [principal, sec1, sec2]
+  let ax0 = vecs[order[0]].clone(), ax1 = vecs[order[1]].clone(), ax2 = vecs[order[2]].clone();
+  // repere droitier
+  if (ax0.clone().cross(ax1).dot(ax2) < 0) ax2.multiplyScalar(-1);
+
+  // (5 partiel) projette les sommets dans le frame PCA, recentres
+  const proj = new Float32Array(posArr.length);
+  let pMinX=Infinity,pMaxX=-Infinity,pMinY=Infinity,pMaxY=-Infinity,pMinZ=Infinity,pMaxZ=-Infinity;
+  const _v = new THREE.Vector3();
+  for (let i=0;i<posArr.length;i+=3){
+    _v.set(posArr[i]-mx, posArr[i+1]-my, posArr[i+2]-mz);
+    const x = _v.dot(ax0), y = _v.dot(ax1), z = _v.dot(ax2);
+    proj[i]=x; proj[i+1]=y; proj[i+2]=z;
+    pMinX=Math.min(pMinX,x);pMaxX=Math.max(pMaxX,x);
+    pMinY=Math.min(pMinY,y);pMaxY=Math.max(pMaxY,y);
+    pMinZ=Math.min(pMinZ,z);pMaxZ=Math.max(pMaxZ,z);
+  }
+
+  // (4) heuristique nez/queue : l'extremite la plus "epaisse" (grande section) = nez -> +X
+  let spreadPos=0,nPos=0,spreadNeg=0,nNeg=0;
+  for (let i=0;i<proj.length;i+=3){
+    const r = Math.hypot(proj[i+1],proj[i+2]);
+    if (proj[i]>=0){spreadPos+=r;nPos++;} else {spreadNeg+=r;nNeg++;}
+  }
+  const meanPos = spreadPos/Math.max(nPos,1), meanNeg = spreadNeg/Math.max(nNeg,1);
+  let flipX = meanPos < meanNeg;           // nez actuellement du cote -X -> on retourne
+  if (geom.flip) flipX = !flipX;           // inversion manuelle utilisateur
+  if (flipX) { // rotation 180° autour de Y : (x,z)->(-x,-z), conserve l'orientation
+    for (let i=0;i<proj.length;i+=3){ proj[i]=-proj[i]; proj[i+2]=-proj[i+2]; }
+    const t1=pMinX; pMinX=-pMaxX; pMaxX=-t1;
+    const t2=pMinZ; pMinZ=-pMaxZ; pMaxZ=-t2;
+  }
+
+  // (5) normalisation : longueur principale -> 1, centroide deja a l'origine
+  const lengthPCA = (pMaxX - pMinX) || 1;
+  const s = 1 / lengthPCA;
+  for (let i=0;i<proj.length;i++) proj[i]*=s;
+  const halfX = (pMaxX-pMinX)*0.5*s, halfY = Math.max(Math.abs(pMinY),Math.abs(pMaxY))*s, halfZ = Math.max(Math.abs(pMinZ),Math.abs(pMaxZ))*s;
+
+  // (6) metriques physiques adimensionnees (frame normalise, L=1)
+  const volNorm = Math.max(meshVolume(proj), 1e-4);
+  const aspectY = Math.max(halfY, 0.02), aspectZ = Math.max(halfZ, 0.02);
+  const metrics = {
+    Rratio: 0.5 * (aspectY + aspectZ),
+    aspectY, aspectZ,
+    SfrontRatio: Math.PI * aspectY * aspectZ,
+    volNorm,
+  };
+
+  // geometrie normalisee affichable
+  const normGeo = new THREE.BufferGeometry();
+  normGeo.setAttribute('position', new THREE.BufferAttribute(proj, 3));
+  normGeo.computeVertexNormals();
+  normGeo.computeBoundingSphere();
+
+  // (7) points caracteristiques : extrema sur chaque axe (frame normalise)
+  function extremeVertex(axis, sign) {
+    let best = -Infinity, bi = 0;
+    for (let i=0;i<proj.length;i+=3){ const val = sign*proj[i+axis]; if (val>best){best=val;bi=i;} }
+    return new THREE.Vector3(proj[bi],proj[bi+1],proj[bi+2]);
+  }
+  const nose = extremeVertex(0, +1), tail = extremeVertex(0, -1);
+  const dorsal = extremeVertex(1, +1);
+  const finLeft = extremeVertex(2, +1), finRight = extremeVertex(2, -1);
+  const charNorm = {
+    nose, tail, dorsal, finLeft, finRight,
+    ringFront: new THREE.Vector3(nose.x * 0.9, Math.min(nose.y, -0.06), 0),
+    ringRear:  new THREE.Vector3(tail.x * 0.95, 0, 0),
+    lipTip:    new THREE.Vector3(nose.x + 0.12, -aspectY - 0.1, 0),
+  };
+
+  // (8) echantillonnage de surface + hash (deviation des streamlines)
+  const maxSamples = 1600;
+  const stride = Math.max(1, Math.floor((proj.length/3) / maxSamples));
+  const samples = [];
+  for (let i=0;i<proj.length;i+=3*stride){ samples.push(proj[i],proj[i+1],proj[i+2]); }
+  const samplePts = new Float32Array(samples);
+  const hashCell = 0.14;
+  const hash = buildSpatialHash(samplePts, hashCell);
+
+  geom.stl = {
+    geometry: normGeo, metrics, charNorm, hash,
+    influenceR: 0.16,   // rayon d'influence de la repulsion (frame normalise)
+    triCount, rawTri, decimated, rawDims, fileName,
+  };
+}
 
 /* Ligne de peche + point A (tire a vitesse Vf) ------------------------- */
 const lineMat = new THREE.LineBasicMaterial({ color: 0xcfd8e0, linewidth: 1 });
@@ -441,6 +784,7 @@ function wakeVelocityLocal(pLocal, t, VrelAbs, L, R, psiAmp) {
 
 // point/vitesse en coordonnees MONDE -> vitesse relative locale (repere corps)
 const _pLocal = new THREE.Vector3();
+const _pNorm = new THREE.Vector3();
 function fieldVelocityWorld(pWorld, out) {
   _invQuat.copy(lureGroup.quaternion).conjugate();
   _pLocal.copy(pWorld).sub(lureGroup.position).applyQuaternion(_invQuat);
@@ -451,9 +795,26 @@ function fieldVelocityWorld(pWorld, out) {
 
   out.set(-VrelSigned, 0, 0); // ecoulement uniforme relatif, exprime dans le repere local
 
-  const Q = 6 * Math.PI * VrelAbs * R * R; // gain empirique (visibilite) sur le doublet source/puits
-  addPointSource(out, _pLocal, { x: 0.42 * L, y: 0, z: 0 }, Q, 0.35 * R);
-  addPointSource(out, _pLocal, { x: -0.42 * L, y: 0, z: 0 }, -Q, 0.35 * R);
+  // Doublet source(nez)/puits(queue) — corps de Rankine. En mode STL les foyers
+  // suivent la geometrie reelle (nez/queue detectes) via le decalage _geomOffset.
+  const Q = 6 * Math.PI * VrelAbs * R * R; // gain empirique (visibilite)
+  const srcX = geom.mode === 'stl' ? _geomOffset.x + 0.42 * L : 0.42 * L;
+  const snkX = geom.mode === 'stl' ? _geomOffset.x - 0.42 * L : -0.42 * L;
+  addPointSource(out, _pLocal, { x: srcX, y: _geomOffset.y, z: _geomOffset.z }, Q, 0.35 * R);
+  addPointSource(out, _pLocal, { x: snkX, y: _geomOffset.y, z: _geomOffset.z }, -Q, 0.35 * R);
+
+  // Deviation autour du mesh STL reel : repulsion depuis le point de surface le
+  // plus proche (hash spatial). Emule le contournement de la vraie forme sans
+  // resoudre l'ecoulement potentiel exact autour d'un maillage arbitraire.
+  if (geom.mode === 'stl' && geom.stl) {
+    normFromLocal(_pLocal, _pNorm);
+    const infl = geom.stl.influenceR;
+    const d = nearestSurfaceDist(geom.stl.hash, _pNorm.x, _pNorm.y, _pNorm.z, _nsOut);
+    if (d < infl) {
+      const push = VrelAbs * 1.9 * (1 - d / infl); // outDir est identique en local (echelle uniforme)
+      out.x += _nsOut.x * push; out.y += _nsOut.y * push; out.z += _nsOut.z * push;
+    }
+  }
 
   if (toggles.wake) {
     const w = wakeVelocityLocal(_pLocal, simTime, VrelAbs, L, R, state.psi);
@@ -605,7 +966,7 @@ function updateIsosurface(dt) {
   const [r, g, b] = jetColor(clamp(threshold / V_COLOR_MAX, 0, 1));
   isoMat.color.setRGB(r, g, b);
   const steps = 14, maxR = 0.9 * L;
-  const isoCenter = new THREE.Vector3(0, 0, 0); // centre du corps (a mi-chemin source/puits)
+  const isoCenter = _geomOffset.clone(); // centroide du corps (procedural: origine ; STL: decalage CG)
   for (let i = 0; i < pos.count; i++) {
     origDir.set(pos.getX(i), pos.getY(i), pos.getZ(i)).normalize();
     isoDir.copy(origDir);
@@ -635,6 +996,7 @@ function updateIsosurface(dt) {
  * ----------------------------------------------------------------------- */
 const SIGMA_MAX_MPA = 18;
 let stressAccum = 0;
+const _hn = new THREE.Vector3();
 function updateStress(dt) {
   stressAccum += dt;
   if (stressAccum < 0.15) return;
@@ -644,22 +1006,46 @@ function updateStress(dt) {
     geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(geo.attributes.position.count * 3), 3));
   }
   const pos = geo.attributes.position, col = geo.attributes.color;
+  const nrm = geo.attributes.normal;
   const VrelAbs = Math.abs(state.u - params.Vw);
+  // Chargement hydrodynamique normalise : portance de bavette (~V^2 sin(angle))
+  // + effort inertiel de lacet (|psiDot|). Sert de facteur d'echelle global.
   const Fnorm = clamp((0.5 * RHO_WATER * params.ClDive * params.Slip * VrelAbs * VrelAbs * Math.abs(Math.sin(params.lipAngleRad))) / 40, 0, 1)
               + clamp(Math.abs(state.psiDot) / 6, 0, 1);
-  const R = params.R;
-  const sigma2 = (R * 1.1) * (R * 1.1);
-  const v = new THREE.Vector3();
-  for (let i = 0; i < pos.count; i++) {
-    v.set(pos.getX(i), pos.getY(i), pos.getZ(i));
-    let s = 0.08; // contrainte residuelle de base (poids propre / pretension ligne)
-    for (const h of stressHotspots) {
-      const d2 = v.distanceToSquared(h);
-      s += Fnorm * Math.exp(-d2 / sigma2);
+
+  if (geom.mode === 'stl') {
+    // Frame NORMALISE. Contrainte = base + points d'ancrage (anneaux nez/queue)
+    // + protrusion laterale (aretes vives/ailerons) + chargement de pression
+    // deduit des NORMALES du mesh (faces au vent -> nx>0 -> plus contraintes).
+    const Rn = geom.metrics.Rratio;
+    const sigma2 = (Rn * 1.5) * (Rn * 1.5) + 1e-4;
+    // ancrages convertis en frame normalise (suivent un repositionnement manuel)
+    const anchors = [charPoints.nose, charPoints.tail, charPoints.ringFront].map(p => normFromLocal(p.clone(), new THREE.Vector3()));
+    const v = new THREE.Vector3();
+    for (let i = 0; i < pos.count; i++) {
+      v.set(pos.getX(i), pos.getY(i), pos.getZ(i));
+      let s = 0.06;
+      for (const h of anchors) s += Fnorm * 0.9 * Math.exp(-v.distanceToSquared(h) / sigma2);
+      const lateral = Math.hypot(v.y, v.z) / (Rn + 1e-4);
+      s += Fnorm * 0.35 * clamp(lateral - 0.55, 0, 1);   // aretes / ailerons qui depassent
+      if (nrm) { const nx = nrm.getX(i); s += Fnorm * 0.4 * Math.max(nx, 0); } // face au vent (+X)
+      s = clamp(s, 0, 1);
+      const [r, g, b] = jetColor(s);
+      col.setXYZ(i, r, g, b);
     }
-    s = clamp(s, 0, 1);
-    const [r, g, b] = jetColor(s);
-    col.setXYZ(i, r, g, b);
+  } else {
+    // Corps procedural : frame local metres, hotspots bavette/anneau.
+    const R = params.R;
+    const sigma2 = (R * 1.1) * (R * 1.1);
+    const v = new THREE.Vector3();
+    for (let i = 0; i < pos.count; i++) {
+      v.set(pos.getX(i), pos.getY(i), pos.getZ(i));
+      let s = 0.08; // contrainte residuelle de base (poids propre / pretension ligne)
+      for (const h of stressHotspots) s += Fnorm * Math.exp(-v.distanceToSquared(h) / sigma2);
+      s = clamp(s, 0, 1);
+      const [r, g, b] = jetColor(s);
+      col.setXYZ(i, r, g, b);
+    }
   }
   col.needsUpdate = true;
 }
@@ -783,6 +1169,21 @@ document.getElementById('bodyLen').addEventListener('change', () => { updatePara
 document.getElementById('cgPos').addEventListener('change', () => { updateParams(); buildLure(); resetHodo(); });
 document.getElementById('lip').addEventListener('input', () => { if (lipMesh) lipMesh.rotation.z = deg2rad(ui.lipDeg); });
 
+// Materiau (densite) — menu deroulant
+const matSel = document.getElementById('matDensity'), matValEl = document.getElementById('matVal');
+function applyMat() { ui.matDensity = parseFloat(matSel.value); matValEl.textContent = ui.matDensity + ' kg/m³'; }
+matSel.addEventListener('change', applyMat); applyMat();
+
+// Decimation STL — re-traite le mesh importe a la volee
+const decimEl = document.getElementById('decim'), decimValEl = document.getElementById('decimVal');
+const fmtK = v => v >= 1000 ? (v / 1000) + 'k' : ('' + v);
+function applyDecimLabel() { ui.decim = parseFloat(decimEl.value); decimValEl.textContent = fmtK(ui.decim); }
+decimEl.addEventListener('input', applyDecimLabel); applyDecimLabel();
+decimEl.addEventListener('change', () => { if (geom.mode === 'stl' && geom.lastBuffer) loadSTLFromBuffer(geom.lastBuffer, geom.lastName); });
+
+// Etat du mode "repositionnement de points" (declare tot : lu par applyToggleVisibility)
+let reposMode = false, selectedKey = null;
+
 const fieldStatusEl = document.getElementById('fieldStatus');
 function refreshFieldStatus() {
   const on = Object.keys(toggles).filter(k => toggles[k]);
@@ -803,7 +1204,8 @@ function applyToggleVisibility() {
   pressurePlane.visible = toggles.pressure;
   for (const k in hodoLines) hodoLines[k].visible = toggles.hodo;
   document.getElementById('hodo-xz-wrap').style.display = toggles.hodo ? 'block' : 'none';
-  for (const k in charMarkers) charMarkers[k].visible = toggles.hodo;
+  // marqueurs visibles si hodographes actifs OU en mode repositionnement (pour les selectionner)
+  for (const k in charMarkers) charMarkers[k].visible = toggles.hodo || reposMode;
   document.getElementById('isoRow').style.display = toggles.iso ? 'block' : 'none';
   document.getElementById('planeRow').style.display = toggles.pressure ? 'block' : 'none';
   legendVel.style.display = toggles.streamlines ? 'flex' : 'none';
@@ -822,6 +1224,131 @@ window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+/* ----------------------------------------------------------------------- *
+ * Import STL : lecture fichier, drag & drop, parsing, messages
+ * ----------------------------------------------------------------------- */
+const stlStatusEl = document.getElementById('stl-status');
+function setStlStatus(msg, cls) { stlStatusEl.textContent = msg; stlStatusEl.className = cls || ''; }
+
+function loadSTLFromBuffer(buffer, name) {
+  setStlStatus('⏳ Analyse du STL en cours…', 'busy');
+  // differe d'une frame pour que l'indicateur de chargement s'affiche avant le parsing (bloquant)
+  setTimeout(() => {
+    try {
+      const raw = new THREE.STLLoader().parse(buffer);
+      const posAttr = raw.attributes.position;
+      if (!posAttr || posAttr.count < 3 || posAttr.count % 3 !== 0) throw new Error('mesh vide ou non triangulaire');
+      // controle NaN (fichier corrompu / mal decode)
+      const arr = posAttr.array;
+      for (let i = 0; i < Math.min(arr.length, 300); i++) if (!isFinite(arr[i])) throw new Error('coordonnées invalides (fichier non-STL ?)');
+      geom.lastBuffer = buffer; geom.lastName = name;
+      processSTLGeometry(raw, name);
+      geom.mode = 'stl';
+      buildLure(); resetHodo(); applyToggleVisibility();
+      const st = geom.stl, d = st.rawDims;
+      let msg = `✓ ${name || 'STL'} · ${st.triCount.toLocaleString('fr-FR')} triangles`;
+      if (st.decimated) msg += ` (décimé de ${st.rawTri.toLocaleString('fr-FR')})`;
+      msg += ` · bbox ${d.x.toFixed(1)}×${d.y.toFixed(1)}×${d.z.toFixed(1)} (unités fichier) · échelle sim = ${ui.bodyLenMM} mm`;
+      setStlStatus(msg, 'ok');
+      document.getElementById('stl-flip').disabled = false;
+      document.getElementById('stl-reset').disabled = false;
+      document.getElementById('decimRow').style.display = 'block';
+    } catch (e) {
+      // messages bas-niveau (ex: taille de tableau invalide sur un fichier non-STL) -> message clair
+      let m = e.message || 'fichier STL invalide';
+      if (/typed array length|RangeError|Invalid array|out of memory/i.test(m)) m = 'fichier non-STL ou corrompu';
+      setStlStatus('✗ Échec : ' + m + ' — corps procédural conservé', 'err');
+    }
+  }, 30);
+}
+
+function handleFile(file) {
+  if (!file) return;
+  if (file.size > 80 * 1024 * 1024) { setStlStatus('✗ Fichier trop volumineux (> 80 Mo)', 'err'); return; }
+  const name = file.name || 'model.stl';
+  if (!/\.stl$/i.test(name)) { setStlStatus('✗ Extension non .stl — importez un fichier STL', 'err'); return; }
+  const reader = new FileReader();
+  reader.onload = (e) => loadSTLFromBuffer(e.target.result, name);
+  reader.onerror = () => setStlStatus('✗ Erreur de lecture du fichier', 'err');
+  reader.readAsArrayBuffer(file);
+}
+
+const dropEl = document.getElementById('stl-drop');
+const inputEl = document.getElementById('stl-input');
+dropEl.addEventListener('click', () => inputEl.click());
+inputEl.addEventListener('change', (e) => { handleFile(e.target.files[0]); inputEl.value = ''; });
+['dragenter', 'dragover'].forEach(ev => dropEl.addEventListener(ev, (e) => { e.preventDefault(); dropEl.classList.add('dragover'); }));
+['dragleave', 'drop'].forEach(ev => dropEl.addEventListener(ev, (e) => { e.preventDefault(); dropEl.classList.remove('dragover'); }));
+dropEl.addEventListener('drop', (e) => { handleFile(e.dataTransfer.files[0]); });
+// empeche le navigateur d'ouvrir le fichier si lache a cote de la zone
+window.addEventListener('dragover', (e) => e.preventDefault());
+window.addEventListener('drop', (e) => e.preventDefault());
+
+document.getElementById('stl-flip').addEventListener('click', () => {
+  if (geom.mode !== 'stl' || !geom.lastBuffer) return;
+  geom.flip = !geom.flip;
+  loadSTLFromBuffer(geom.lastBuffer, geom.lastName);
+});
+document.getElementById('stl-reset').addEventListener('click', () => {
+  geom.mode = 'procedural'; geom.stl = null; geom.flip = false;
+  buildLure(); resetHodo(); applyToggleVisibility();
+  setStlStatus('Géométrie actuelle : corps procédural (démo)', '');
+  document.getElementById('stl-flip').disabled = true;
+  document.getElementById('stl-reset').disabled = true;
+  document.getElementById('decimRow').style.display = 'none';
+});
+
+/* ----------------------------------------------------------------------- *
+ * Repositionnement manuel des points caracteristiques (raycast clic)
+ * ----------------------------------------------------------------------- */
+const reposBtn = document.getElementById('repos-toggle');
+const reposHintEl = document.getElementById('reposHint');
+const reposSelEl = document.getElementById('reposSel');
+function highlightSelected() {
+  for (const k in charMarkers) charMarkers[k].scale.setScalar(k === selectedKey ? 1.9 : 1);
+  reposSelEl.textContent = selectedKey ? ('point sélectionné : ' + selectedKey) : 'aucun point sélectionné';
+}
+reposBtn.addEventListener('click', () => {
+  reposMode = !reposMode;
+  reposBtn.classList.toggle('active', reposMode);
+  reposHintEl.style.display = reposMode ? 'block' : 'none';
+  if (!reposMode) { selectedKey = null; }
+  applyToggleVisibility();
+  highlightSelected();
+});
+
+const raycaster = new THREE.Raycaster();
+const _ndc = new THREE.Vector2();
+let _downX = 0, _downY = 0;
+renderer.domElement.addEventListener('pointerdown', (e) => { _downX = e.clientX; _downY = e.clientY; });
+renderer.domElement.addEventListener('pointerup', (e) => {
+  if (!reposMode) return;
+  if (Math.hypot(e.clientX - _downX, e.clientY - _downY) > 5) return; // c'etait un glisser (orbite camera)
+  const rect = renderer.domElement.getBoundingClientRect();
+  _ndc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+  _ndc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+  raycaster.setFromCamera(_ndc, camera);
+
+  // 1) clic sur un marqueur -> le selectionner
+  const entries = Object.entries(charMarkers);
+  const hitMarkers = raycaster.intersectObjects(entries.map(([, m]) => m), false);
+  if (hitMarkers.length) {
+    selectedKey = entries.find(([, m]) => m === hitMarkers[0].object)[0];
+    highlightSelected();
+    return;
+  }
+  // 2) un point est selectionne + clic sur le corps -> le deplacer a la surface
+  if (selectedKey && bodyMesh) {
+    const hb = raycaster.intersectObject(bodyMesh, false);
+    if (hb.length) {
+      const localP = lureGroup.worldToLocal(hb[0].point.clone());
+      charPoints[selectedKey].copy(localP);
+      charMarkers[selectedKey].position.copy(localP);
+      hodoHistory[selectedKey] = []; // reinitialise la trace de ce point
+    }
+  }
 });
 
 /* ----------------------------------------------------------------------- *
@@ -854,14 +1381,15 @@ function animate() {
   requestAnimationFrame(animate);
   const dt = Math.min(clock.getDelta(), 0.05);
   updateParams();
-  stepPhysics(dt);
-  updateLureTransform();
+  // En mode repositionnement, on fige la nage : les marqueurs restent immobiles
+  // et donc faciles a cliquer/deplacer precisement sur le mesh.
+  if (!reposMode) { stepPhysics(dt); updateLureTransform(); }
 
   if (toggles.streamlines || toggles.wake) updateStreamlines(dt);
   if (toggles.pressure) updatePressurePlane();
   if (toggles.iso) updateIsosurface(dt);
   if (toggles.stress) updateStress(dt);
-  updateHodographs(dt);
+  if (!reposMode) updateHodographs(dt);
 
   const VrelAbs = Math.abs(state.u - params.Vw);
   const fShed = params.St * VrelAbs / params.L;
