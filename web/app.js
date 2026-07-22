@@ -62,8 +62,15 @@ const ui = {
   bodyLenMM: 100, cgPos: 45, density: 260, isoTh: 0.9, planeX: 0.10,
   matDensity: 500,     // kg/m3, densite du materiau (bois/plastique/metal) — masse du leurre
   decim: 50000,        // cible max de triangles pour le STL importe
+  visualGain: 1.0,     // AXE 2.1 — gain d'AFFICHAGE de la nage (1 = physique reelle), non-physique
+  lipAsymmetryDeg: 0,  // AXE 3.4 — biais d'asymetrie de bavette (defaut de fabrication)
 };
-const toggles = { streamlines: true, iso: false, pressure: false, hodo: true, stress: false, wake: true };
+const toggles = { streamlines: true, iso: false, pressure: false, hodo: true, stress: false, wake: true,
+  vectors: false, bodyTrail: false, refAxis: false }; // AXE 1.4 / 2.2 / 2.4
+// Objets crees plus bas mais references par applyToggleVisibility() appele des l'init :
+// forward-declares (initialises a null/[]) pour eviter la zone morte temporelle (TDZ).
+let refAxisLine = null;
+let ghostMeshes = [];
 
 /* ----------------------------------------------------------------------- *
  * Etat de geometrie : soit le corps PROCEDURAL par defaut, soit un mesh STL
@@ -145,6 +152,7 @@ function updateParams() {
   params.gammaCouple = 450;                           // couplage quadratique psi^2 -> theta (regle pour amplitude visible en resonance)
   params.kBuoyBase = 6.0;
   params.cgPos = ui.cgPos / 100;
+  params.thetaEq = deg2rad(ui.lipAsymmetryDeg); // AXE 3.4 — biais d'equilibre du roulis
 }
 updateParams();
 
@@ -194,21 +202,33 @@ function derivatives(s, p) {
   const uDot = (Tline - Ddrag) / p.mTrans;
   const xRelDot = Vf - s.u;
 
+  // AXE 3.1 — micro-irregularites de nage : modulation LENTE et FAIBLE (~5%) des
+  // coefficients qui pilotent psi (pas un forcage sur psi lui-meme), via le fBm
+  // existant evalue avec le temps comme seule coordonnee. Reproduit les petites
+  // irregularites d'un vrai leurre (micro-turbulence, imperfections mecaniques)
+  // sans casser la stabilite du cycle limite de Van der Pol.
+  const nFreq = 1 + 0.05 * fbmNoise3(simTime * 0.15, 0, 0);
+  const nAmp  = 1 + 0.045 * fbmNoise3(simTime * 0.15 + 17.3, 0, 0);
+
   // MODULE B.3 : la frequence de lacet est modulee par l'inertie/CM (yawFreqFactor,
   // ~1/sqrt(I) : plus d'inertie -> nage plus lente) ; l'amplitude par yawAmpFactor.
   const fShed = p.St * VrelAbs / p.L;
-  const omega0 = 2 * Math.PI * Math.max(fShed, 0.02) * (p.yawFreqFactor || 1);
+  const omega0 = 2 * Math.PI * Math.max(fShed, 0.02) * (p.yawFreqFactor || 1) * nFreq;
   // Note : avec xi=psi/psiThresh, cette equation se ramene a la forme normalisee
   // classique de Van der Pol (xi''=mu(1-xi^2)xi'-xi) dont le cycle limite a une
   // amplitude stationnaire proche de 2*psiThresh (propriete connue de VdP, quasi
   // independante de mu) -> on divise par 2 pour que psiSatBase soit bien
   // l'amplitude REELLE de lacet obtenue en regime etabli.
-  const psiThresh = (p.psiSatBase * speedFactor) / 2 * (p.yawAmpFactor || 1) + 1e-6;
+  const psiThresh = (p.psiSatBase * speedFactor) / 2 * (p.yawAmpFactor || 1) * nAmp + 1e-6;
   const mu = p.muBase * speedFactor;
   const psiDotDot = mu * omega0 * (1 - (s.psi * s.psi) / (psiThresh * psiThresh)) * s.psiDot - omega0 * omega0 * s.psi;
 
+  // AXE 3.4 — asymetrie de bavette : la position d'equilibre du roulis est decalee
+  // de thetaEq (biais constant) pour simuler une bavette legerement desaxee (defaut
+  // de fabrication) -> nage un peu moins parfaitement symetrique.
   const omegaTh = 2 * omega0, zetaTh = 0.35;
-  const thetaDotDot = -omegaTh * omegaTh * s.theta - 2 * zetaTh * omegaTh * s.thetaDot + p.gammaCouple * s.psi * s.psi * speedFactor;
+  const thetaEq = (p.thetaEq || 0) * speedFactor;
+  const thetaDotDot = -omegaTh * omegaTh * (s.theta - thetaEq) - 2 * zetaTh * omegaTh * s.thetaDot + p.gammaCouple * s.psi * s.psi * speedFactor;
 
   const kBuoy = p.kBuoyBase * (5 / Math.max(p.lineLen, 0.5));
   const cZ = 1.8 * Math.sqrt(p.mTrans * kBuoy);
@@ -829,10 +849,14 @@ function addPointSource(vAccum, p, srcPos, strength, rMin) {
   vAccum.x += dx * coeff; vAccum.y += dy * coeff; vAccum.z += dz * coeff;
 }
 
+// AXE 1.2 — masque de sillage reutilisable (ne depend que de la coordonnee X locale) :
+// 0 en amont/lateral (ecoulement laminaire), ->1 derriere le corps (zone tourbillonnaire).
+function wakeMask(pLocalX, L) { return smoothstep(-0.05 * L, -0.55 * L, pLocalX); }
+
 const _wakeV = new THREE.Vector3();
 function wakeVelocityLocal(pLocal, t, VrelAbs, L, R, psiAmp) {
   _wakeV.set(0, 0, 0);
-  const mask = smoothstep(-0.05 * L, -0.55 * L, pLocal.x);
+  const mask = wakeMask(pLocal.x, L);
   if (mask <= 0.001) return _wakeV;
   const fShed = params.St * VrelAbs / L;
   const omega = 2 * Math.PI * Math.max(fShed, 0.02);
@@ -896,7 +920,7 @@ function fieldVelocityWorld(pWorld, out) {
   if (toggles.wake) {
     const w = wakeVelocityLocal(_pLocal, simTime, VrelAbs, L, R, state.psi);
     out.x += w.x; out.z += w.z;
-    const mask = smoothstep(-0.05 * L, -0.55 * L, _pLocal.x);
+    const mask = wakeMask(_pLocal.x, L);
     if (mask > 0.001) {
       const n = fbmNoise3(_pLocal.x * 9 + simTime * 0.4, _pLocal.y * 9, _pLocal.z * 9 + simTime * 0.4);
       const n2 = fbmNoise3(_pLocal.z * 9 - simTime * 0.3, _pLocal.y * 9, _pLocal.x * 9);
@@ -911,18 +935,39 @@ function fieldVelocityWorld(pWorld, out) {
 /* ----------------------------------------------------------------------- *
  * MODULE 4 — Streamlines (particules advectees, trainee courte colorée par |V|)
  * ----------------------------------------------------------------------- */
-const TAIL_LEN = 7;
+// AXE 1.1 — trainees plus longues (TAIL_LEN 7 -> 20) et degrade d'opacite le long
+// de chaque trainee (queue transparente -> tete opaque) via un attribut `alpha`
+// par sommet et un ShaderMaterial minimal (garde vertexColors pour la vitesse).
+const TAIL_LEN = 20;
 const MAX_PARTICLES = 700;
 const particles = [];
-function makeParticle() { return { pos: new THREE.Vector3(), tail: [], age: 0, life: 0 }; }
+function makeParticle() { return { pos: new THREE.Vector3(), tail: [], age: 0, life: 0, wake: 0 }; }
 for (let i = 0; i < MAX_PARTICLES; i++) particles.push(makeParticle());
 
 const streamGeo = new THREE.BufferGeometry();
 const streamPosArr = new Float32Array(MAX_PARTICLES * (TAIL_LEN - 1) * 2 * 3);
 const streamColArr = new Float32Array(MAX_PARTICLES * (TAIL_LEN - 1) * 2 * 3);
+const streamAlphaArr = new Float32Array(MAX_PARTICLES * (TAIL_LEN - 1) * 2);
 streamGeo.setAttribute('position', new THREE.BufferAttribute(streamPosArr, 3));
 streamGeo.setAttribute('color', new THREE.BufferAttribute(streamColArr, 3));
-const streamMat = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.85 });
+streamGeo.setAttribute('alpha', new THREE.BufferAttribute(streamAlphaArr, 1));
+const streamMat = new THREE.ShaderMaterial({
+  transparent: true, depthWrite: false,
+  vertexShader: `
+    attribute vec3 color;
+    attribute float alpha;
+    varying vec3 vColor;
+    varying float vAlpha;
+    void main() {
+      vColor = color; vAlpha = alpha;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }`,
+  fragmentShader: `
+    precision mediump float;
+    varying vec3 vColor;
+    varying float vAlpha;
+    void main() { gl_FragColor = vec4(vColor, vAlpha); }`,
+});
 const streamLines = new THREE.LineSegments(streamGeo, streamMat);
 // La sphere englobante calculee au 1er rendu (avant toute particule reelle) resterait
 // figee (degenerescence rayon=0) sans recalcul -> desactive le frustum culling ici.
@@ -942,10 +987,13 @@ function spawnParticle(pt) {
 for (const pt of particles) spawnParticle(pt);
 
 const _fieldTmp = new THREE.Vector3();
+const _slLocal = new THREE.Vector3();
 function updateStreamlines(dt) {
   const activeN = Math.round(ui.density);
   const L = params.L;
-  let vi = 0; // index vertex courant dans les buffers
+  _invQuat.copy(lureGroup.quaternion).conjugate();
+  let vi = 0;  // index composante position (x3)
+  let ai = 0;  // index alpha (x1)
   for (let i = 0; i < MAX_PARTICLES; i++) {
     const pt = particles[i];
     if (i < activeN) {
@@ -955,27 +1003,113 @@ function updateStreamlines(dt) {
       pt.tail.push(pt.pos.clone());
       if (pt.tail.length > TAIL_LEN) pt.tail.shift();
 
-      const localX = pt.pos.clone().sub(lureGroup.position).applyQuaternion(_invQuat.copy(lureGroup.quaternion).conjugate()).x;
-      const outOfBounds = localX < -3.2 * L || pt.age > pt.life || Math.abs(pt.pos.y - lureGroup.position.y) > L * 2.5;
-      if (outOfBounds) spawnParticle(pt);
+      _slLocal.copy(pt.pos).sub(lureGroup.position).applyQuaternion(_invQuat);
+      const outOfBounds = _slLocal.x < -3.2 * L || pt.age > pt.life || Math.abs(pt.pos.y - lureGroup.position.y) > L * 2.5;
+      if (outOfBounds) { spawnParticle(pt); }
+      // AXE 1.2 — distinction laminaire / sillage : les particules du sillage sont
+      // plus opaques et plus saturees ; les laminaires plus fines/discretes.
+      pt.wake = wakeMask(_slLocal.x, L);
+      const inWake = pt.wake > 0.35;
 
       const speed = _fieldTmp.length();
-      const [r, g, b] = jetColor(speed / V_COLOR_MAX);
-      for (let s = 0; s < pt.tail.length - 1; s++) {
-        const a = pt.tail[s], bpt = pt.tail[s + 1];
-        streamPosArr[vi] = a.x; streamPosArr[vi + 1] = a.y; streamPosArr[vi + 2] = a.z;
-        streamColArr[vi] = r; streamColArr[vi + 1] = g; streamColArr[vi + 2] = b;
-        vi += 3;
-        streamPosArr[vi] = bpt.x; streamPosArr[vi + 1] = bpt.y; streamPosArr[vi + 2] = bpt.z;
-        streamColArr[vi] = r; streamColArr[vi + 1] = g; streamColArr[vi + 2] = b;
-        vi += 3;
+      let [r, g, b] = jetColor(speed / V_COLOR_MAX);
+      const headAlpha = inWake ? 0.95 : 0.6;       // sillage plus marque
+      if (inWake) { r = Math.min(1, r * 1.15); g = Math.min(1, g * 1.15); b = Math.min(1, b * 1.15); } // + sature
+      const tlen = pt.tail.length;
+      for (let s = 0; s < tlen - 1; s++) {
+        // degrade d'opacite : queue (s=0) quasi transparente -> tete (s=tlen-2) opaque
+        const a0 = headAlpha * Math.pow(s / (tlen - 1), 1.6) + 0.02;
+        const a1 = headAlpha * Math.pow((s + 1) / (tlen - 1), 1.6) + 0.02;
+        const A = pt.tail[s], B = pt.tail[s + 1];
+        streamPosArr[vi] = A.x; streamPosArr[vi+1] = A.y; streamPosArr[vi+2] = A.z;
+        streamColArr[vi] = r; streamColArr[vi+1] = g; streamColArr[vi+2] = b; streamAlphaArr[ai++] = a0; vi += 3;
+        streamPosArr[vi] = B.x; streamPosArr[vi+1] = B.y; streamPosArr[vi+2] = B.z;
+        streamColArr[vi] = r; streamColArr[vi+1] = g; streamColArr[vi+2] = b; streamAlphaArr[ai++] = a1; vi += 3;
       }
     }
   }
-  // degenerer le reste du buffer (segments de longueur nulle -> invisibles)
-  for (; vi < streamPosArr.length; vi += 3) { streamPosArr[vi] = 0; streamPosArr[vi + 1] = -999; streamPosArr[vi + 2] = 0; }
+  // degenerer le reste du buffer (segments invisibles)
+  for (; vi < streamPosArr.length; vi += 3) { streamPosArr[vi] = 0; streamPosArr[vi+1] = -999; streamPosArr[vi+2] = 0; }
+  for (; ai < streamAlphaArr.length; ai++) streamAlphaArr[ai] = 0;
   streamGeo.attributes.position.needsUpdate = true;
   streamGeo.attributes.color.needsUpdate = true;
+  streamGeo.attributes.alpha.needsUpdate = true;
+}
+
+/* ----------------------------------------------------------------------- *
+ * AXE 1.3 — Marqueurs de vortex explicites (allee de Karman)
+ * Un anneau (LineLoop dans le plan XZ, axe de rotation vertical Y) par tourbillon
+ * de wakeVelocityLocal, positionne sur le cœur (xk,zk) et dont l'opacite PULSE avec
+ * le meme terme sin(omega*t - k*pi/2) que la circulation Gamma -> rend visible le
+ * detachement alterne des tourbillons sans zoomer sur les streamlines.
+ * ----------------------------------------------------------------------- */
+const VORTEX_K = 6;
+const vortexGroup = new THREE.Group();
+lureGroup.add(vortexGroup);
+const vortexRings = [];
+{
+  const circPts = [];
+  for (let i = 0; i <= 32; i++) { const a = i/32*Math.PI*2; circPts.push(new THREE.Vector3(Math.cos(a), 0, Math.sin(a))); }
+  const circGeo = new THREE.BufferGeometry().setFromPoints(circPts);
+  for (let k = 0; k < VORTEX_K; k++) {
+    const ring = new THREE.LineLoop(circGeo, new THREE.LineBasicMaterial({
+      transparent: true, opacity: 0, color: k % 2 === 0 ? 0x3fe0ff : 0xff9a4d }));
+    vortexGroup.add(ring); vortexRings.push(ring);
+  }
+}
+function updateVortexRings() {
+  const L = params.L, R = params.R;
+  const VrelAbs = Math.abs(state.u - params.Vw) + 1e-4;
+  const omega = 2 * Math.PI * Math.max(params.St * VrelAbs / L, 0.02);
+  const coreR = 0.25 * R, spacing = 1.15 * R, tailX = -0.5 * L;
+  const bShed = 0.3 * R + 1.4 * R * clamp(Math.abs(state.psi) / 0.35, 0, 1);
+  const speedVis = clamp(VrelAbs / 0.3, 0, 1);
+  for (let k = 0; k < VORTEX_K; k++) {
+    const ring = vortexRings[k];
+    ring.position.set(tailX - (k + 0.5) * spacing, 0, (k % 2 === 0 ? 1 : -1) * bShed);
+    ring.scale.setScalar(coreR * 2.2);
+    const pulse = 0.5 + 0.5 * Math.sin(omega * simTime - (k * Math.PI) / 2);
+    ring.material.opacity = (0.12 + 0.55 * pulse) * speedVis;
+  }
+}
+
+/* ----------------------------------------------------------------------- *
+ * AXE 1.4 — Vecteurs de vitesse ponctuels (toggle "Vecteurs V")
+ * Grille de points fixes dans le repere local (englobant le corps + le sillage) ;
+ * a chaque point une fleche orientee/mise a l'echelle par fieldVelocityWorld,
+ * coloree par jetColor -> lecture instantanee de la structure du champ.
+ * ----------------------------------------------------------------------- */
+const VEC_NX = 6, VEC_NY = 3, VEC_NZ = 4;
+const vectorGroup = new THREE.Group();
+scene.add(vectorGroup);
+const vectorArrows = [];
+for (let n = 0; n < VEC_NX * VEC_NY * VEC_NZ; n++) {
+  const ar = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(), 0.02, 0xffffff, 0.012, 0.008);
+  ar.line.material.transparent = true; ar.cone.material.transparent = true;
+  vectorGroup.add(ar); vectorArrows.push(ar);
+}
+vectorGroup.visible = false;
+const _vp = new THREE.Vector3(), _vcol = new THREE.Color();
+function updateVelocityVectors() {
+  const L = params.L;
+  let idx = 0;
+  for (let ix = 0; ix < VEC_NX; ix++) for (let iy = 0; iy < VEC_NY; iy++) for (let iz = 0; iz < VEC_NZ; iz++) {
+    const lx = lerp(0.9 * L, -2.0 * L, ix / (VEC_NX - 1));   // amont -> aval (sillage)
+    const ly = lerp(-0.55 * L, 0.55 * L, iy / (VEC_NY - 1));
+    const lz = lerp(-0.75 * L, 0.75 * L, iz / (VEC_NZ - 1));
+    _vp.set(lx, ly, lz).applyQuaternion(lureGroup.quaternion).add(lureGroup.position);
+    const ar = vectorArrows[idx++];
+    ar.position.copy(_vp);
+    fieldVelocityWorld(_vp, _fieldTmp);
+    const sp = _fieldTmp.length();
+    if (sp < 1e-4) { ar.visible = false; continue; }
+    ar.visible = true;
+    ar.setDirection(_fieldTmp.normalize());
+    const len = clamp(sp * 0.06, 0.006, 0.055);
+    ar.setLength(len, len * 0.35, len * 0.22);
+    const [r, g, b] = jetColor(sp / V_COLOR_MAX);
+    ar.setColor(_vcol.setRGB(r, g, b));
+  }
 }
 
 /* ----------------------------------------------------------------------- *
@@ -1254,10 +1388,17 @@ bindSlider('cgPos', 'cgPos', 'cgVal', v => v.toFixed(0) + '%');
 bindSlider('density', 'density', 'densVal', v => v.toFixed(0));
 bindSlider('isoTh', 'isoTh', 'isoThVal', v => v.toFixed(2));
 bindSlider('planeX', 'planeX', 'planeXVal', v => v.toFixed(2));
+bindSlider('lipAsym', 'lipAsymmetryDeg', 'lipAsymVal', v => v.toFixed(1) + '°'); // AXE 3.4
+bindSlider('visualGain', 'visualGain', 'visGainVal', v => v.toFixed(1) + '×');    // AXE 2.1 (affichage)
 
 document.getElementById('bodyLen').addEventListener('change', () => { updateParams(); buildLure(); resetHodo(); });
 document.getElementById('cgPos').addEventListener('change', () => { updateParams(); buildLure(); resetHodo(); });
 document.getElementById('lip').addEventListener('input', () => { if (lipMesh) lipMesh.rotation.z = deg2rad(ui.lipDeg); });
+// AXE 3.2 — relance la nage avec une perturbation initiale VISIBLE (non-physique :
+// juste un etat initial different pour voir le cycle limite s'etablir tout de suite).
+document.getElementById('restartSwim').addEventListener('click', () => {
+  state = Object.assign(zeroState(), { psi: 0.15, psiDot: 0.3 });
+});
 
 // Materiau (densite) — menu deroulant
 const matSel = document.getElementById('matDensity'), matValEl = document.getElementById('matVal');
@@ -1306,6 +1447,12 @@ function applyToggleVisibility() {
   legendStress.style.flexDirection = 'column'; legendStress.style.alignItems = 'flex-end';
   if (!toggles.stress && bodyMesh) bodyMesh.material.vertexColors = false, bodyMesh.material.color.set(0x2f7ea8), bodyMesh.material.needsUpdate = true;
   if (toggles.stress && bodyMesh) bodyMesh.material.vertexColors = true, bodyMesh.material.needsUpdate = true;
+  // AXE 1.3/1.4/2.4 — visibilite des nouveaux calques (refAxisLine/ghostMeshes
+  // peuvent ne pas encore exister au tout 1er appel -> gardes).
+  vortexGroup.visible = toggles.wake;
+  vectorGroup.visible = toggles.vectors;
+  if (refAxisLine) refAxisLine.visible = toggles.refAxis;
+  if (!toggles.bodyTrail) for (const g of ghostMeshes) g.visible = false;
 }
 applyToggleVisibility();
 refreshFieldStatus();
@@ -2098,7 +2245,12 @@ function updateLureTransform() {
   const L = params.L;
   lureGroup.position.set(state.dispX, -state.z, state.dispZ);
   const pitch = clamp(-3.0 * state.zDot, -0.35, 0.35);
-  const euler = new THREE.Euler(pitch, state.psi, state.theta, 'YXZ');
+  // AXE 2.1 — gain d'AFFICHAGE UNIQUEMENT : amplifie visuellement lacet/roulis pour la
+  // pedagogie, sans jamais toucher `state` ni la physique (le HUD reste sur les vraies
+  // valeurs). visualGain=1 -> mouvement physique reel inchange.
+  const g = ui.visualGain;
+  const psiDisplay = state.psi * g, thetaDisplay = state.theta * g;
+  const euler = new THREE.Euler(pitch, psiDisplay, thetaDisplay, 'YXZ');
   lureGroup.quaternion.setFromEuler(euler);
 
   // Ligne de peche : point A tire a Vf, relie a l'anneau avant (leger affaissement)
@@ -2112,6 +2264,99 @@ function updateLureTransform() {
   fishingLine.geometry = new THREE.BufferGeometry().setFromPoints(linePts);
 }
 
+/* ----------------------------------------------------------------------- *
+ * AXE 2.2 — Trainee fantome du corps (photo stroboscopique de l'oscillation)
+ * Historique court (~0.6 s) des transforms AFFICHES du leurre ; 5 copies fantomes
+ * semi-transparentes (opacite degressive, non eclairees) rendent la nage en S
+ * lisible sur une seule frame. Les fantomes partagent la geometrie du corps.
+ * ----------------------------------------------------------------------- */
+const GHOST_COUNT = 5, GHOST_SPAN = 0.6;
+ghostMeshes = []; // (forward-declare plus haut pour applyToggleVisibility)
+let ghostGeoRef = null;
+const bodyXform = []; // { m: Matrix4 (monde, pose affichee du corps), t }
+const _lureMat = new THREE.Matrix4();
+function ensureGhosts() {
+  if (ghostGeoRef === bodyMesh.geometry && ghostMeshes.length) return;
+  for (const g of ghostMeshes) { scene.remove(g); g.material.dispose(); }
+  ghostMeshes.length = 0;
+  ghostGeoRef = bodyMesh.geometry;
+  for (let i = 0; i < GHOST_COUNT; i++) {
+    const op = lerp(0.22, 0.03, i / (GHOST_COUNT - 1));
+    const g = new THREE.Mesh(ghostGeoRef, new THREE.MeshBasicMaterial({
+      color: 0x3fb6ff, transparent: true, opacity: op, depthWrite: false }));
+    g.matrixAutoUpdate = false; g.visible = false;
+    scene.add(g); ghostMeshes.push(g);
+  }
+}
+function updateBodyTrail() {
+  ensureGhosts();
+  bodyMesh.updateMatrix(); // matrice locale du corps (echelle L + offset en STL)
+  _lureMat.compose(lureGroup.position, lureGroup.quaternion, lureGroup.scale);
+  bodyXform.push({ m: _lureMat.clone().multiply(bodyMesh.matrix), t: simTime });
+  while (bodyXform.length && simTime - bodyXform[0].t > GHOST_SPAN) bodyXform.shift();
+  if (!toggles.bodyTrail) { for (const g of ghostMeshes) g.visible = false; return; }
+  for (let i = 0; i < GHOST_COUNT; i++) {
+    const targetAge = ((i + 1) / GHOST_COUNT) * GHOST_SPAN;
+    // echantillon le plus proche de l'age vise
+    let best = null, bestErr = 1e9;
+    for (const s of bodyXform) { const e = Math.abs((simTime - s.t) - targetAge); if (e < bestErr) { bestErr = e; best = s; } }
+    if (best) { ghostMeshes[i].matrix.copy(best.m); ghostMeshes[i].visible = true; }
+    else ghostMeshes[i].visible = false;
+  }
+}
+
+/* AXE 2.4 — Axe de reference (direction moyenne de deplacement, world X) : repere
+ * fixe semi-transparent pour juger l'amplitude du "S". */
+refAxisLine = new THREE.Line(
+  new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-0.5, 0, 0), new THREE.Vector3(0.5, 0, 0)]),
+  new THREE.LineBasicMaterial({ color: 0x8fa6bb, transparent: true, opacity: 0.35 }));
+refAxisLine.visible = false;
+scene.add(refAxisLine);
+function updateRefAxis() {
+  // centre sur la position moyenne du leurre, oriente selon meanU (avance = +X monde)
+  const y = lureGroup.position.y, x0 = lureGroup.position.x;
+  const span = Math.max(0.35, params.L * 4);
+  refAxisLine.geometry.setFromPoints([new THREE.Vector3(x0 - span, y, 0), new THREE.Vector3(x0 + span, y, 0)]);
+}
+
+/* ----------------------------------------------------------------------- *
+ * AXE 2.3 — Indicateur de signal temporel psi(t)/theta(t) (fenetre ~4 s)
+ * Vue "signal" complementaire aux hodographes 3D : lit d'un coup d'œil la
+ * frequence et l'amplitude d'oscillation. Reutilise fsiHist (t, psi, theta).
+ * ----------------------------------------------------------------------- */
+const signalCanvas = document.getElementById('signalCanvas');
+const signalCtx = signalCanvas ? signalCanvas.getContext('2d') : null;
+const SIGNAL_WIN = 4;
+function drawSignalWidget() {
+  if (!signalCtx) return;
+  const W = signalCanvas.width, H = signalCanvas.height, mid = H / 2;
+  signalCtx.clearRect(0, 0, W, H);
+  signalCtx.fillStyle = '#070a0e'; signalCtx.fillRect(0, 0, W, H);
+  signalCtx.strokeStyle = '#1c2733'; signalCtx.lineWidth = 1;
+  signalCtx.beginPath(); signalCtx.moveTo(0, mid); signalCtx.lineTo(W, mid); signalCtx.stroke();
+  if (fsiHist.length < 2) return;
+  const t1 = simTime, t0 = t1 - SIGNAL_WIN;
+  // echelle verticale : amplitude max observee (psi/theta affiches SANS le gain visuel)
+  let amax = 0.05;
+  for (const s of fsiHist) if (s.t >= t0) { amax = Math.max(amax, Math.abs(s.psi), Math.abs(s.theta)); }
+  const draw = (key, color) => {
+    signalCtx.strokeStyle = color; signalCtx.lineWidth = 1.4; signalCtx.beginPath();
+    let started = false;
+    for (const s of fsiHist) {
+      if (s.t < t0) continue;
+      const x = ((s.t - t0) / SIGNAL_WIN) * W, y = mid - (s[key] / amax) * (mid - 4);
+      if (!started) { signalCtx.moveTo(x, y); started = true; } else signalCtx.lineTo(x, y);
+    }
+    signalCtx.stroke();
+  };
+  draw('psi', '#3fb6ff');    // lacet (yaw)
+  draw('theta', '#ff9a4d');  // roulis
+  // legende
+  signalCtx.font = '9px monospace';
+  signalCtx.fillStyle = '#3fb6ff'; signalCtx.fillText('psi (lacet)', 6, 11);
+  signalCtx.fillStyle = '#ff9a4d'; signalCtx.fillText('theta (roulis)', 6, 22);
+}
+
 function animate() {
   requestAnimationFrame(animate);
   const dt = Math.min(clock.getDelta(), 0.05);
@@ -2121,10 +2366,15 @@ function animate() {
   if (!reposMode) { stepPhysics(dt); updateLureTransform(); }
 
   if (toggles.streamlines || toggles.wake) updateStreamlines(dt);
+  if (toggles.wake) updateVortexRings();          // AXE 1.3 — anneaux de Karman
+  if (toggles.vectors) updateVelocityVectors();   // AXE 1.4 — vecteurs de vitesse
   if (toggles.pressure) updatePressurePlane();
   if (toggles.iso) updateIsosurface(dt);
   if (toggles.stress) updateStress(dt);
   if (!reposMode) updateHodographs(dt);
+  if (!reposMode) updateBodyTrail();              // AXE 2.2 — trainee fantome du corps
+  if (toggles.refAxis) updateRefAxis();           // AXE 2.4 — axe de reference
+  drawSignalWidget();                             // AXE 2.3 — signal psi(t)/theta(t)
 
   // MODULES A/B/D : recalculs throttles (masse/CM, stats FSI, profil Vf) — jamais
   // a chaque frame brute (cf. pattern stressAccum/isoAccum).
