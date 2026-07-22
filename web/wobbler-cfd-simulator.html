@@ -22,8 +22,34 @@
   .hud .sub{color:var(--dim);font-size:11px;margin-top:2px;}
 
   #title-badge{position:fixed;top:12px;right:12px;background:rgba(11,15,20,.72);border:1px solid var(--line);
-    border-radius:6px;padding:8px 14px;font-size:11px;color:var(--dim);text-align:right;backdrop-filter:blur(4px);}
-  #title-badge b{color:var(--text);font-size:12px;}
+    border-radius:6px;padding:6px 12px;font-size:10px;color:var(--dim);text-align:right;backdrop-filter:blur(4px);z-index:6;}
+  #title-badge b{color:var(--text);font-size:11px;}
+
+  /* MODULE F — panneau masse/composants (haut-droite, sous le badge) */
+  #massPanel{position:fixed;top:58px;right:12px;width:270px;max-height:calc(100vh - 84px);overflow-y:auto;
+    background:rgba(11,15,20,.86);border:1px solid var(--line);border-radius:8px;padding:10px 12px;
+    backdrop-filter:blur(4px);font-size:11px;z-index:5;}
+  #massPanel::-webkit-scrollbar{width:6px;}
+  #massPanel::-webkit-scrollbar-thumb{background:#2a3644;border-radius:3px;}
+  #massPanel h3{margin:0 0 6px;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--accent);
+    border-bottom:1px solid var(--line);padding-bottom:4px;}
+  .mp-sep{height:1px;background:var(--line);margin:9px 0;}
+  .mp-note{font-size:10px;color:var(--dim);margin:3px 0;line-height:1.4;}
+  .mp-detail{display:flex;flex-wrap:wrap;gap:3px 8px;font-size:9.5px;color:var(--dim);margin:4px 0;}
+  .mp-detail b{color:var(--text);}
+  .mp-badge{display:inline-block;font-size:11px;font-weight:600;letter-spacing:.05em;border-radius:4px;
+    padding:3px 10px;border:1px solid var(--line);}
+  .mp-badge.reg-float{color:#8effa0;border-color:#8effa0;background:rgba(142,255,160,.1);}
+  .mp-badge.reg-susp{color:#3fb6ff;border-color:#3fb6ff;background:rgba(63,182,255,.1);}
+  .mp-badge.reg-sink{color:#ff7a6b;border-color:#ff7a6b;background:rgba(255,122,107,.1);}
+  #massPanel canvas{display:block;border-radius:3px;background:#070a0e;margin:5px 0;width:100%;}
+  .toggles3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;}
+  .ballast-row{border:1px solid var(--line);border-radius:5px;padding:5px 7px;margin-bottom:6px;background:rgba(63,182,255,.03);}
+  .ballast-hd{font-size:10px;color:var(--accent);margin-bottom:3px;display:flex;justify-content:space-between;}
+  .bll-del{cursor:pointer;color:var(--dim);}
+  .bll-del:hover{color:#ff7a6b;}
+  .ballast-row label{display:flex;justify-content:space-between;color:var(--dim);margin:2px 0;font-size:10px;}
+  .ballast-row label .val{color:var(--text);}
 
   #panel{position:fixed;bottom:12px;left:12px;width:340px;max-height:56vh;overflow-y:auto;
     background:rgba(11,15,20,.82);border:1px solid var(--line);border-radius:8px;padding:12px 14px;
@@ -100,6 +126,8 @@
 
 <div id="reposHint">Mode repositionnement : cliquez un point puis un endroit du mesh · <span id="reposSel">aucun point sélectionné</span></div>
 
+<div id="massPanel"></div>
+
 <div id="hodo-xz-wrap">
   <div class="lg-title">Hodographe — vue XZ (dessus)</div>
   <canvas id="hodoXZ" width="360" height="150"></canvas>
@@ -160,7 +188,7 @@
   </div>
   <div class="row">
     <label>Longueur du corps <span class="val" id="bodyLenVal">100 mm</span></label>
-    <input type="range" id="bodyLen" min="60" max="150" step="1" value="100">
+    <input type="range" id="bodyLen" min="35" max="160" step="1" value="100">
   </div>
   <div class="row">
     <label>Centre de gravité (X, 0=nez) <span class="val" id="cgVal">45%</span></label>
@@ -1634,6 +1662,208 @@
 </script>
 
 <!-- ======================================================================
+     STLExporter (r128 examples/js, non-module, global THREE.STLExporter)
+     ====================================================================== -->
+<script>( function () {
+
+	/**
+ * Usage:
+ *  const exporter = new STLExporter();
+ *
+ *  // second argument is a list of options
+ *  const data = exporter.parse( mesh, { binary: true } );
+ *
+ */
+
+	class STLExporter {
+
+		parse( scene, options = {} ) {
+
+			const binary = options.binary !== undefined ? options.binary : false; //
+
+			const objects = [];
+			let triangles = 0;
+			scene.traverse( function ( object ) {
+
+				if ( object.isMesh ) {
+
+					const geometry = object.geometry;
+
+					if ( geometry.isBufferGeometry !== true ) {
+
+						throw new Error( 'THREE.STLExporter: Geometry is not of type THREE.BufferGeometry.' );
+
+					}
+
+					const index = geometry.index;
+					const positionAttribute = geometry.getAttribute( 'position' );
+					triangles += index !== null ? index.count / 3 : positionAttribute.count / 3;
+					objects.push( {
+						object3d: object,
+						geometry: geometry
+					} );
+
+				}
+
+			} );
+			let output;
+			let offset = 80; // skip header
+
+			if ( binary === true ) {
+
+				const bufferLength = triangles * 2 + triangles * 3 * 4 * 4 + 80 + 4;
+				const arrayBuffer = new ArrayBuffer( bufferLength );
+				output = new DataView( arrayBuffer );
+				output.setUint32( offset, triangles, true );
+				offset += 4;
+
+			} else {
+
+				output = '';
+				output += 'solid exported\n';
+
+			}
+
+			const vA = new THREE.Vector3();
+			const vB = new THREE.Vector3();
+			const vC = new THREE.Vector3();
+			const cb = new THREE.Vector3();
+			const ab = new THREE.Vector3();
+			const normal = new THREE.Vector3();
+
+			for ( let i = 0, il = objects.length; i < il; i ++ ) {
+
+				const object = objects[ i ].object3d;
+				const geometry = objects[ i ].geometry;
+				const index = geometry.index;
+				const positionAttribute = geometry.getAttribute( 'position' );
+
+				if ( index !== null ) {
+
+					// indexed geometry
+					for ( let j = 0; j < index.count; j += 3 ) {
+
+						const a = index.getX( j + 0 );
+						const b = index.getX( j + 1 );
+						const c = index.getX( j + 2 );
+						writeFace( a, b, c, positionAttribute, object );
+
+					}
+
+				} else {
+
+					// non-indexed geometry
+					for ( let j = 0; j < positionAttribute.count; j += 3 ) {
+
+						const a = j + 0;
+						const b = j + 1;
+						const c = j + 2;
+						writeFace( a, b, c, positionAttribute, object );
+
+					}
+
+				}
+
+			}
+
+			if ( binary === false ) {
+
+				output += 'endsolid exported\n';
+
+			}
+
+			return output;
+
+			function writeFace( a, b, c, positionAttribute, object ) {
+
+				vA.fromBufferAttribute( positionAttribute, a );
+				vB.fromBufferAttribute( positionAttribute, b );
+				vC.fromBufferAttribute( positionAttribute, c );
+
+				if ( object.isSkinnedMesh === true ) {
+
+					object.boneTransform( a, vA );
+					object.boneTransform( b, vB );
+					object.boneTransform( c, vC );
+
+				}
+
+				vA.applyMatrix4( object.matrixWorld );
+				vB.applyMatrix4( object.matrixWorld );
+				vC.applyMatrix4( object.matrixWorld );
+				writeNormal( vA, vB, vC );
+				writeVertex( vA );
+				writeVertex( vB );
+				writeVertex( vC );
+
+				if ( binary === true ) {
+
+					output.setUint16( offset, 0, true );
+					offset += 2;
+
+				} else {
+
+					output += '\t\tendloop\n';
+					output += '\tendfacet\n';
+
+				}
+
+			}
+
+			function writeNormal( vA, vB, vC ) {
+
+				cb.subVectors( vC, vB );
+				ab.subVectors( vA, vB );
+				cb.cross( ab ).normalize();
+				normal.copy( cb ).normalize();
+
+				if ( binary === true ) {
+
+					output.setFloat32( offset, normal.x, true );
+					offset += 4;
+					output.setFloat32( offset, normal.y, true );
+					offset += 4;
+					output.setFloat32( offset, normal.z, true );
+					offset += 4;
+
+				} else {
+
+					output += '\tfacet normal ' + normal.x + ' ' + normal.y + ' ' + normal.z + '\n';
+					output += '\t\touter loop\n';
+
+				}
+
+			}
+
+			function writeVertex( vertex ) {
+
+				if ( binary === true ) {
+
+					output.setFloat32( offset, vertex.x, true );
+					offset += 4;
+					output.setFloat32( offset, vertex.y, true );
+					offset += 4;
+					output.setFloat32( offset, vertex.z, true );
+					offset += 4;
+
+				} else {
+
+					output += '\t\t\tvertex ' + vertex.x + ' ' + vertex.y + ' ' + vertex.z + '\n';
+
+				}
+
+			}
+
+		}
+
+	}
+
+	THREE.STLExporter = STLExporter;
+
+} )();
+</script>
+
+<!-- ======================================================================
      Application: modèle FSI, champ d'écoulement procédural, rendu CFD-Post
      ====================================================================== -->
 <script>/* ============================================================================
@@ -1729,6 +1959,24 @@ const geom = {
   flip: false,          // inversion manuelle nez/queue
 };
 
+/* Etat masse/inertie (MODULES A & B) — recalcule de facon throttlee, jamais a
+ * chaque frame brute. updateParams() le lit pour alimenter mTrans et les
+ * facteurs de lacet ; il est declare ici pour eviter tout probleme d'ordre. */
+let massState = {
+  massTotal: 0,        // kg, somme de tous les composants (MODULE A)
+  volumeTotal: 0,      // m^3
+  densite: 0,          // kg/m^3
+  Iyaw: 0,             // kg·m^2, inertie de lacet autour du CM (MODULE B, Huygens)
+  yawAmpFactor: 1,     // facteur multiplicatif sur l'amplitude de lacet (MODULE B.3)
+  yawFreqFactor: 1,    // facteur multiplicatif sur la frequence de lacet (MODULE B.3)
+  com: new THREE.Vector3(),   // centre de masse local (m)
+  budget: null,        // detail par composant (rempli par computeMassBudget)
+};
+let IYAW_REF = null;   // inertie de reference (config par defaut) — fixee au 1er calcul
+
+/* Profil de vitesse de recuperation dans le temps (MODULE D) */
+const retrievalProfile = { mode: 'constant', paramA: 1.0, paramB: 0.6, paramC: 1.4 };
+
 const params = {}; // recalcule chaque frame depuis `ui` et `geom`
 function updateParams() {
   const m = geom.metrics;
@@ -1745,8 +1993,16 @@ function updateParams() {
   params.Slip = 0.42 * params.Sfront;                       // surface effective de bavette
   const volume = m.volNorm * params.L * params.L * params.L; // volume reel (m^3)
   params.volume = volume;
-  params.mass = ui.matDensity * volume;              // masse = densite materiau x volume
-  params.mTrans = params.mass * 1.15 + 1e-4;         // + masse ajoutee axiale (~15%), plancher
+  params.mass = ui.matDensity * volume;              // masse "carcasse" = densite materiau x volume
+  // MODULE B.3 : la masse translatee inclut desormais TOUS les composants
+  // (accessoires + ballasts), via massState.massTotal ; repli sur params.mass
+  // tant que le bilan de masse n'a pas encore ete calcule (1er frame).
+  const mTot = massState.massTotal > 0 ? massState.massTotal : params.mass;
+  params.mTrans = mTot * 1.15 + 1e-4;                // + masse ajoutee axiale (~15%), plancher
+  // Facteurs de lacet issus de l'inertie/CM (MODULE B.3), 1 par defaut
+  params.yawAmpFactor = massState.yawAmpFactor || 1;
+  params.yawFreqFactor = massState.yawFreqFactor || 1;
+  params.VfInstant = params.Vf;                      // MODULE D : Vf instantane (surcharge par stepPhysics)
   params.cLine = 2 * Math.sqrt(params.kLine * params.mTrans) * 0.4; // sous-amorti
   params.Cd = 0.9;
   params.St = 0.22;                                  // nombre de Strouhal (sillage corps de leurre)
@@ -1798,19 +2054,24 @@ function derivatives(s, p) {
   const VrelAbs = Math.abs(VrelSigned);
   const speedFactor = clamp(VrelAbs / 0.15, 0, 1); // pas de nage sans ecoulement relatif
 
-  const Tline = p.kLine * s.xRel + p.cLine * (p.Vf - s.u);
+  // MODULE D : vitesse de traction instantanee (profil jerk/pause). En mode
+  // 'constant', Vf === p.Vf, donc comportement identique a l'existant.
+  const Vf = (p.VfInstant !== undefined) ? p.VfInstant : p.Vf;
+  const Tline = p.kLine * s.xRel + p.cLine * (Vf - s.u);
   const Ddrag = 0.5 * RHO_WATER * p.Cd * p.Sfront * VrelSigned * VrelAbs;
   const uDot = (Tline - Ddrag) / p.mTrans;
-  const xRelDot = p.Vf - s.u;
+  const xRelDot = Vf - s.u;
 
+  // MODULE B.3 : la frequence de lacet est modulee par l'inertie/CM (yawFreqFactor,
+  // ~1/sqrt(I) : plus d'inertie -> nage plus lente) ; l'amplitude par yawAmpFactor.
   const fShed = p.St * VrelAbs / p.L;
-  const omega0 = 2 * Math.PI * Math.max(fShed, 0.02);
+  const omega0 = 2 * Math.PI * Math.max(fShed, 0.02) * (p.yawFreqFactor || 1);
   // Note : avec xi=psi/psiThresh, cette equation se ramene a la forme normalisee
   // classique de Van der Pol (xi''=mu(1-xi^2)xi'-xi) dont le cycle limite a une
   // amplitude stationnaire proche de 2*psiThresh (propriete connue de VdP, quasi
   // independante de mu) -> on divise par 2 pour que psiSatBase soit bien
   // l'amplitude REELLE de lacet obtenue en regime etabli.
-  const psiThresh = (p.psiSatBase * speedFactor) / 2 + 1e-6;
+  const psiThresh = (p.psiSatBase * speedFactor) / 2 * (p.yawAmpFactor || 1) + 1e-6;
   const mu = p.muBase * speedFactor;
   const psiDotDot = mu * omega0 * (1 - (s.psi * s.psi) / (psiThresh * psiThresh)) * s.psiDot - omega0 * omega0 * s.psi;
 
@@ -1862,6 +2123,9 @@ function stepPhysics(dt) {
   const sub = clamp(Math.ceil((growthRate * dt) / 0.2), 4, 80);
   const h = dt / sub;
   for (let i = 0; i < sub; i++) {
+    // MODULE D : Vf(t) est quasi constant a l'echelle d'un sous-pas -> on l'evalue
+    // une fois par sous-pas (piecewise-constant), suffisant pour le rendu.
+    params.VfInstant = getInstantVf(simTime, params.Vf);
     state = rk4(state, h, params);
     simTime += h;
   }
@@ -1947,6 +2211,25 @@ const charPoints = {}; // points caracteristiques en coordonnees LOCALES (repere
 const stressHotspots = [];
 const _geomOffset = new THREE.Vector3(); // decalage nez/queue de la geometrie visible dans le repere local
 
+// MODULES A & B : positions LOCALES (m) des composants, pour le bilan de masse et
+// le centre de masse. Renseignees a chaque buildLure (meme quand les hameçons ne
+// sont pas affiches visuellement en mode STL — leur masse reste comptee).
+const geomComp = {
+  frameCentroid: new THREE.Vector3(), // centroide du volume (= centre de carene)
+  lip: new THREE.Vector3(), ringFront: new THREE.Vector3(), ringRear: new THREE.Vector3(),
+  hookFront: new THREE.Vector3(), hookRear: new THREE.Vector3(),
+};
+
+// Centroide geometrique (moyenne des sommets) d'un mesh, exprime dans le repere
+// LOCAL du leurre (applique l'echelle et la position propres au mesh).
+function geometryCentroidLocal(mesh) {
+  const pos = mesh.geometry.attributes.position;
+  let sx = 0, sy = 0, sz = 0;
+  for (let i = 0; i < pos.count; i++) { sx += pos.getX(i); sy += pos.getY(i); sz += pos.getZ(i); }
+  const n = Math.max(pos.count, 1);
+  return new THREE.Vector3(sx / n, sy / n, sz / n).multiply(mesh.scale).add(mesh.position);
+}
+
 // Convertit un point du frame NORMALISE (longueur=1, centroide origine) vers le
 // repere local (metres) du leurre, en appliquant echelle L + decalage CG.
 function localFromNorm(pNorm) {
@@ -1994,6 +2277,16 @@ function addLipAndRings(noseX, tailX, R, showHooks) {
   ringRear.rotation.x = Math.PI / 2;
   bodyGroup.add(ringRear);
 
+  // Positions des hameçons (comptees en masse dans les deux modes ; affichees
+  // seulement en procedural). MODULE A/B : on les memorise systematiquement.
+  const hookFrontX = 0.5 * (noseX + tailX) + 0.15 * (noseX - tailX);
+  const hookRearX = tailX + 0.02 * (noseX - tailX);
+  geomComp.lip.copy(lipMesh.position);
+  geomComp.ringFront.copy(ringFront.position);
+  geomComp.ringRear.copy(ringRear.position);
+  geomComp.hookFront.set(hookFrontX, -R * 0.25, 0);
+  geomComp.hookRear.set(hookRearX, -R * 0.25, 0);
+
   hookGroup = new THREE.Group();
   if (showHooks) {
     const hookMat = new THREE.MeshStandardMaterial({ color: 0x8891a0, metalness: 0.85, roughness: 0.3 });
@@ -2009,8 +2302,8 @@ function addLipAndRings(noseX, tailX, R, showHooks) {
       g.position.set(x, -R * 0.25, 0);
       return g;
     };
-    hookGroup.add(makeTreble(0.5 * (noseX + tailX) + 0.15 * (noseX - tailX)));
-    hookGroup.add(makeTreble(tailX + 0.02 * (noseX - tailX)));
+    hookGroup.add(makeTreble(hookFrontX));
+    hookGroup.add(makeTreble(hookRearX));
   }
   bodyGroup.add(hookGroup);
 }
@@ -2045,6 +2338,7 @@ function buildProceduralBody() {
 
   const noseX = L - cgX, tailX = -cgX, lipLen = R * 2.1;
   addLipAndRings(noseX, tailX, R, true);
+  geomComp.frameCentroid.copy(geometryCentroidLocal(bodyMesh)); // centre de carene
 
   charPoints.nose      = new THREE.Vector3(noseX, 0, 0);
   charPoints.lipTip    = new THREE.Vector3(noseX - lipLen * Math.cos(params.lipAngleRad), -R * 0.35 - lipLen * Math.sin(params.lipAngleRad), 0);
@@ -2085,6 +2379,7 @@ function buildSTLBody() {
 
   const noseX = charPoints.nose.x, tailX = charPoints.tail.x;
   addLipAndRings(noseX, tailX, R, false); // pas de hameçons sur un mesh arbitraire
+  geomComp.frameCentroid.copy(geometryCentroidLocal(bodyMesh)); // centre de carene (STL)
 
   stressHotspots.length = 0;
   stressHotspots.push(charPoints.nose.clone(), charPoints.tail.clone());
@@ -2095,6 +2390,7 @@ const markerColors = {
   tail: 0xff8fe0, finLeft: 0xb98cff, finRight: 0x66ff9e, dorsal: 0xffa63f,
 };
 let charMarkers = {};
+let comMarker = null, careneMarker = null, comLine = null; // MODULE B.2 : marqueurs CM / centre de carene
 function buildCharMarkers() {
   for (const k in charMarkers) bodyGroup.remove(charMarkers[k]);
   charMarkers = {};
@@ -2108,6 +2404,17 @@ function buildCharMarkers() {
     bodyGroup.add(m);
     charMarkers[key] = m;
   }
+  // Marqueur du centre de masse (doré) + centre de carene (cyan) + ligne d'ecart
+  comMarker = new THREE.Mesh(new THREE.SphereGeometry(R * 0.14, 10, 10),
+    new THREE.MeshBasicMaterial({ color: 0xffd23f }));
+  bodyGroup.add(comMarker);
+  careneMarker = new THREE.Mesh(new THREE.SphereGeometry(R * 0.10, 8, 8),
+    new THREE.MeshBasicMaterial({ color: 0x3fe0ff, transparent: true, opacity: 0.8 }));
+  careneMarker.position.copy(geomComp.frameCentroid);
+  bodyGroup.add(careneMarker);
+  comLine = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]),
+    new THREE.LineBasicMaterial({ color: 0xffd23f, transparent: true, opacity: 0.7 }));
+  bodyGroup.add(comLine);
 }
 
 buildLure();
@@ -2733,6 +3040,19 @@ function updateHodographs(dt) {
   hodoCtx.beginPath(); hodoCtx.moveTo(0, hodoXZCanvas.height / 2); hodoCtx.lineTo(hodoXZCanvas.width, hodoXZCanvas.height / 2); hodoCtx.stroke();
   const cx = hodoXZCanvas.width / 2, cy = hodoXZCanvas.height / 2;
   const scale = 900;
+  // MODULE B.4 : trace AVANT (grise) superposee pour la comparaison avant/apres
+  if (typeof hodoGhost !== 'undefined' && hodoGhost) {
+    hodoCtx.strokeStyle = 'rgba(140,150,165,0.5)'; hodoCtx.lineWidth = 1;
+    for (const k in hodoGhost) {
+      const g = hodoGhost[k]; if (!g || g.length < 2) continue;
+      hodoCtx.beginPath();
+      for (let i = 0; i < g.length; i++) {
+        const px = cx + (g[i].x - lureGroup.position.x) * scale, py = cy - (g[i].z - lureGroup.position.z) * scale;
+        if (i === 0) hodoCtx.moveTo(px, py); else hodoCtx.lineTo(px, py);
+      }
+      hodoCtx.stroke();
+    }
+  }
   for (const k in charPoints) {
     const hist = hodoHistory[k];
     if (hist.length < 2) continue;
@@ -2989,6 +3309,651 @@ renderer.domElement.addEventListener('pointerup', (e) => {
   }
 });
 
+/* =======================================================================
+ * MODULES A–F — Composants, masse/densite, centre de masse, presets,
+ * recuperation non-constante, export. Étend l'existant sans le casser.
+ * ===================================================================== */
+
+/* ----- MODULE A.1 : donnees composants -------------------------------- */
+const HOOK_MASS_TABLE = { '#14':0.05,'#12':0.08,'#10':0.12,'#8':0.18,'#6':0.28,'#4':0.42,'#2':0.65,'#1':0.85,'#1/0':1.1,'#2/0':1.5,'#3/0':2.1 };
+const lureComponents = {
+  frame:  { massMode: 'auto', massG: 0 },      // 'auto' = params.mass (densite x volume)
+  epoxy:  { thicknessMM: 0.15, densityKgM3: 1120 },
+  lip:    { lengthMM: null, widthMM: null, thicknessMM: 1.2, densityKgM3: 1150 },
+  ringFront: { wireDiaMM: 0.8, coilDiaMM: 3.2, densityKgM3: 7900 },
+  ringRear:  { wireDiaMM: 0.8, coilDiaMM: 3.2, densityKgM3: 7900 },
+  clip:   { massG: 0.25 },
+  hookFront: { enabled: true, size: '#6' },
+  hookRear:  { enabled: true, size: '#4' },
+  ballasts: [ { massG: 0, posXFrac: 0.5, posYmm: 0, posZmm: 0, id: 'b1' } ],
+  waterType: 'fresh',                          // 'fresh' (1000) | 'salt' (1025)
+};
+let _ballastSeq = 2;
+
+/* ----- MODULE A.2 : aire de surface + bilan de masse ------------------ */
+const _saA = new THREE.Vector3(), _saB = new THREE.Vector3(), _saC = new THREE.Vector3(),
+      _saAB = new THREE.Vector3(), _saAC = new THREE.Vector3();
+function meshSurfaceArea(geometry) {
+  const pos = geometry.attributes.position, idx = geometry.index;
+  const tri = idx ? idx.count / 3 : pos.count / 3;
+  let area = 0;
+  for (let t = 0; t < tri; t++) {
+    const i0 = idx ? idx.getX(t*3) : t*3, i1 = idx ? idx.getX(t*3+1) : t*3+1, i2 = idx ? idx.getX(t*3+2) : t*3+2;
+    _saA.fromBufferAttribute(pos, i0); _saB.fromBufferAttribute(pos, i1); _saC.fromBufferAttribute(pos, i2);
+    _saAB.subVectors(_saB, _saA); _saAC.subVectors(_saC, _saA);
+    area += _saAB.cross(_saAC).length() * 0.5;
+  }
+  return area;
+}
+// masse d'un tore (anneau brise) : volume = 2π²·R·r² -> m = 2π²·R·r²·ρ
+function torusMass(rc) {
+  return 2 * Math.PI * Math.PI * (rc.coilDiaMM/2/1000) * Math.pow(rc.wireDiaMM/2/1000, 2) * rc.densityKgM3;
+}
+function computeMassBudget() {
+  const lc = lureComponents;
+  const rhoEff = lc.waterType === 'salt' ? 1025 : 1000;
+  const per = {};
+  per.frame = lc.frame.massMode === 'auto' ? params.mass : Math.max(lc.frame.massG, 0)/1000;
+  // epoxy : aire de surface (m², echelle du mesh prise en compte) x epaisseur x densite
+  const areaLocal = meshSurfaceArea(bodyMesh.geometry) * bodyMesh.scale.x * bodyMesh.scale.x;
+  per.epoxy = areaLocal * (lc.epoxy.thicknessMM/1000) * lc.epoxy.densityKgM3;
+  // lip : plaque L x l x e (dims deduites de R si nulles) — coherent avec addLipAndRings
+  const lipL = (lc.lip.lengthMM != null ? lc.lip.lengthMM : 2.1*params.R*1000)/1000;
+  const lipW = (lc.lip.widthMM  != null ? lc.lip.widthMM  : 1.6*params.R*1000)/1000;
+  per.lip = lipL * lipW * (lc.lip.thicknessMM/1000) * lc.lip.densityKgM3;
+  per.ringFront = torusMass(lc.ringFront);
+  per.ringRear  = torusMass(lc.ringRear);
+  per.clip = Math.max(lc.clip.massG, 0)/1000;
+  per.hookFront = lc.hookFront.enabled ? (HOOK_MASS_TABLE[lc.hookFront.size]||0)/1000 : 0;
+  per.hookRear  = lc.hookRear.enabled  ? (HOOK_MASS_TABLE[lc.hookRear.size] ||0)/1000 : 0;
+  per.ballasts = lc.ballasts.reduce((s,b)=>s + Math.max(b.massG,0)/1000, 0);
+  let massTotal = 0; for (const k in per) massTotal += per[k];
+  // Approximation "de confort" : les accessoires n'ajoutent pas de volume de carene
+  // significatif -> volume deplace = volume du corps (params.volume).
+  const volumeTotal = params.volume;
+  const densite = massTotal / Math.max(volumeTotal, 1e-9);
+  return { massTotal, volumeTotal, densite, rhoEff, parComposant: per };
+}
+/* ----- MODULE A.3 : classification regime ----------------------------- */
+function classifyRegime(densite, rhoEff) {
+  if (densite < 0.97 * rhoEff) return { label: 'FLOTTANT', cls: 'reg-float' };
+  if (densite > 1.03 * rhoEff) return { label: 'COULANT', cls: 'reg-sink' };
+  return { label: 'SUSPENDU (neutre)', cls: 'reg-susp' };
+}
+/* ----- MODULE A.4 : vitesse terminale en eau calme -------------------- *
+ * Equilibre poids apparent / trainee : |m - ρ·V|·g = 0.5·ρ·Cd·S·v²
+ *  -> v = sqrt( 2·|Fnet| / (ρ·Cd·S) ). Signe + = coule, - = remonte.       */
+function terminalVelocity() {
+  const b = computeMassBudget();
+  const Fnet = (b.massTotal - b.rhoEff * b.volumeTotal) * G;
+  const v = Math.sqrt(2 * Math.abs(Fnet) / (b.rhoEff * params.Cd * params.Sfront + 1e-12));
+  return { vcms: Math.sign(Fnet) * v * 100, sinks: Fnet > 0, Fnet };
+}
+/* ----- MODULE A.5 : suggestion de lestage pour un regime cible -------- */
+function suggestWeight(targetFactor) {
+  const b = computeMassBudget();
+  const nonBallast = b.massTotal - b.parComposant.ballasts;                 // kg
+  const requiredBallast = Math.max(0, targetFactor * b.rhoEff * b.volumeTotal - nonBallast);
+  const reqG = requiredBallast * 1000;
+  const bs = lureComponents.ballasts;
+  const curSum = bs.reduce((s,x)=>s + Math.max(x.massG,0), 0);
+  if (bs.length === 1 || curSum < 1e-6) bs.forEach((x,i)=> x.massG = i === 0 ? reqG : 0);
+  else bs.forEach(x=> x.massG = reqG * (Math.max(x.massG,0)/curSum));       // au prorata
+  refreshBallastUI(); recomputeMass(); updateMassPanelReadouts();
+}
+
+/* ----- MODULE B.2/B.3 : centre de masse, inertie, facteurs de lacet ---- */
+let _nbCache = []; // composants NON-ballast {m, p} (positions figees entre deux rebuilds)
+function refreshComponentCache() {
+  const b = computeMassBudget();
+  _nbCache = [
+    { m: b.parComposant.frame,     p: geomComp.frameCentroid },
+    { m: b.parComposant.epoxy,     p: geomComp.frameCentroid },
+    { m: b.parComposant.lip,       p: geomComp.lip },
+    { m: b.parComposant.ringFront, p: geomComp.ringFront },
+    { m: b.parComposant.ringRear,  p: geomComp.ringRear },
+    { m: b.parComposant.clip,      p: geomComp.ringFront },   // clip a l'anneau avant
+    { m: b.parComposant.hookFront, p: geomComp.hookFront },
+    { m: b.parComposant.hookRear,  p: geomComp.hookRear },
+  ];
+  return b;
+}
+function ballastPos(bl) {
+  const noseX = charPoints.nose ? charPoints.nose.x : 0;
+  const tailX = charPoints.tail ? charPoints.tail.x : 0;
+  return new THREE.Vector3(lerp(noseX, tailX, clamp(bl.posXFrac, 0, 1)), bl.posYmm/1000, bl.posZmm/1000);
+}
+function computeCenterOfMass(ballasts) {
+  let M = 0; const c = new THREE.Vector3();
+  for (const it of _nbCache) if (it.m > 0) { c.addScaledVector(it.p, it.m); M += it.m; }
+  for (const bl of ballasts) { const m = Math.max(bl.massG,0)/1000; if (m > 0) { c.addScaledVector(ballastPos(bl), m); M += m; } }
+  if (M > 0) c.multiplyScalar(1 / M);
+  return c;
+}
+// Iyaw autour de l'axe vertical passant par le CM (Huygens, masses ponctuelles)
+function computeIyaw(ballasts, com) {
+  let I = 0;
+  for (const it of _nbCache) if (it.m > 0) { const dx = it.p.x-com.x, dz = it.p.z-com.z; I += it.m*(dx*dx+dz*dz); }
+  for (const bl of ballasts) { const m = Math.max(bl.massG,0)/1000; if (m > 0) { const p = ballastPos(bl); const dx = p.x-com.x, dz = p.z-com.z; I += m*(dx*dx+dz*dz); } }
+  return I;
+}
+/* Approximation (pas un solveur multi-corps rigide) : plus d'inertie de lacet
+ * -> nage plus lente (freq ~ 1/sqrt(I)) et de plus grande amplitude ; un CM
+ * decale vers la queue accentue l'amplitude et ralentit encore la frequence. */
+function yawFactorsFrom(Iyaw, com) {
+  const ref = IYAW_REF || Iyaw || 1;
+  const ratio = clamp(Iyaw / ref, 0.4, 2.6);
+  const cmRear = clamp((geomComp.frameCentroid.x - com.x) / (0.25 * params.L + 1e-6), -1.5, 1.5);
+  const amp  = clamp(Math.sqrt(ratio) * (1 + 0.30 * cmRear), 0.4, 3.0);
+  const freq = clamp((1 / Math.sqrt(ratio)) * (1 - 0.15 * cmRear), 0.4, 2.2);
+  return { amp, freq };
+}
+function recomputeMass() {
+  const b = refreshComponentCache();
+  massState.massTotal = b.massTotal; massState.volumeTotal = b.volumeTotal;
+  massState.densite = b.densite; massState.budget = b;
+  const com = computeCenterOfMass(lureComponents.ballasts);
+  massState.com.copy(com);
+  const I = computeIyaw(lureComponents.ballasts, com);
+  massState.Iyaw = I;
+  if (IYAW_REF === null && I > 0) IYAW_REF = I; // reference = 1re config (defaut, sans ballast)
+  const f = yawFactorsFrom(I, com);
+  massState.yawAmpFactor = f.amp; massState.yawFreqFactor = f.freq;
+}
+
+/* ----- MODULE D.1 : profil de vitesse de recuperation Vf(t) ----------- */
+const RETRIEVAL_LABELS = {
+  'constant':         ['—', '—', '—'],
+  'steady-pause':     ['Durée traction (s)', 'Durée pause (s)', '—'],
+  'jerk-jerk-pause':  ['—', 'Durée pause (s)', 'Intensité jerk (×)'],
+  'twitch':           ['—', '—', 'Amplitude twitch (×)'],
+  'custom':           ['Fréquence (Hz)', 'Offset (×base)', 'Amplitude (×base)'],
+};
+function getInstantVf(t, baseVf) {
+  const p = retrievalProfile;
+  switch (p.mode) {
+    case 'steady-pause': {
+      const A = Math.max(p.paramA, 0.05), B = Math.max(p.paramB, 0.05), per = A + B;
+      return ((t % per) + per) % per < A ? baseVf : 0;
+    }
+    case 'jerk-jerk-pause': {
+      const jerk = 0.15, gap = 0.2, pause = Math.max(p.paramB, 0.1), per = jerk*2 + gap + pause;
+      const ph = ((t % per) + per) % per;
+      if (ph < jerk) return baseVf * p.paramC;
+      if (ph < jerk + gap) return baseVf * 0.15;
+      if (ph < jerk*2 + gap) return baseVf * p.paramC;
+      return 0;
+    }
+    case 'twitch': {
+      const per = 0.4; // oscillation rapide autour de 0.3·base, sans pause complete
+      return Math.max(baseVf * 0.05, baseVf*0.3 + baseVf*p.paramC*0.5*Math.sin(2*Math.PI*t/per));
+    }
+    case 'custom':
+      return Math.max(0, baseVf*p.paramB + baseVf*p.paramC*0.5*Math.sin(2*Math.PI*t*Math.max(p.paramA,0.05)));
+    default: return baseVf; // 'constant' — comportement d'origine
+  }
+}
+
+/* ----- MODULE B.4 : simulation headless + optimisation multi-poids ----- *
+ * On duplique state/params dans des variables locales et on integre N s SANS
+ * toucher a la simulation visible. Optimisation par "coordinate descent"
+ * (un ballast a la fois, 2-3 passes) — pas un solveur global, suffisant ici. */
+function simulateHeadless(ballasts, seconds, dt) {
+  const p = Object.assign({}, params);
+  const com = computeCenterOfMass(ballasts);
+  const f = yawFactorsFrom(computeIyaw(ballasts, com), com);
+  p.yawAmpFactor = f.amp; p.yawFreqFactor = f.freq; // masse fixe -> mTrans inchange
+  let s = Object.assign({}, state);
+  let t = 0; const steps = Math.round(seconds / dt), subN = 4, h = dt / subN;
+  const rec = [];
+  for (let i = 0; i < steps; i++) {
+    for (let j = 0; j < subN; j++) {
+      p.VfInstant = getInstantVf(t, p.Vf);
+      s = rk4(s, h, p); t += h;
+      s.psi = clamp(s.psi, -Math.PI, Math.PI); s.psiDot = clamp(s.psiDot, -200, 200);
+      s.theta = clamp(s.theta, -Math.PI, Math.PI); s.u = clamp(s.u, -3, 6);
+      if (!isFinite(s.psi)) return { psiPP: 0, thetaAmp: 1e9, zVar: 1e9 };
+    }
+    if (t > seconds - 1.0) rec.push({ psi: s.psi, theta: s.theta, z: s.z });
+  }
+  let pmin=1e9, pmax=-1e9, tmin=1e9, tmax=-1e9, zs=0, z2=0;
+  for (const r of rec) { pmin=Math.min(pmin,r.psi); pmax=Math.max(pmax,r.psi);
+    tmin=Math.min(tmin,r.theta); tmax=Math.max(tmax,r.theta); zs+=r.z; z2+=r.z*r.z; }
+  const n = rec.length || 1, zm = zs/n;
+  return { psiPP: pmax-pmin, thetaAmp: tmax-tmin, zVar: Math.max(z2/n - zm*zm, 0) };
+}
+function scoreConfig(cfg, objective) {
+  const m = simulateHeadless(cfg, 3, 0.02);
+  return objective === 'vive' ? m.psiPP : -(m.thetaAmp + 5 * m.zVar); // + = meilleur
+}
+let optRunning = false, optResult = null, hodoGhost = null;
+function optimizeBallasts(objective) {
+  if (optRunning) return;
+  optRunning = true; optResult = null;
+  M.optApply.style.display = 'none';
+  M.optStatus.textContent = 'Optimisation en cours… 0%';
+  refreshComponentCache(); // fige les masses non-ballast pour toute l'optimisation
+  // sauvegarde la trace actuelle pour la comparaison avant/apres (grise)
+  hodoGhost = {}; for (const k in hodoHistory) hodoGhost[k] = hodoHistory[k].map(pt => ({ x: pt.x, z: pt.z }));
+
+  const bs = lureComponents.ballasts;
+  const activeIdx = bs.map((b,i)=>i).filter(i => bs[i].massG > 0);
+  const targets = activeIdx.length ? activeIdx : [0];
+  const passes = targets.length > 1 ? 3 : 1;
+  const fracs = [0.15,0.24,0.33,0.42,0.5,0.58,0.67,0.76,0.85];
+  const yMax = params.R * 1000 * 0.7;
+  const ys = [-yMax, -yMax/2, 0, yMax/2, yMax];
+
+  const work = bs.map(b => ({ ...b }));               // config de travail
+  let best = { cfg: work.map(b=>({...b})), score: scoreConfig(work, objective) };
+
+  // file de taches (une par candidat) evaluee par lots pour ne pas bloquer le rendu
+  const tasks = [];
+  for (let pass = 0; pass < passes; pass++)
+    for (const ti of targets)
+      for (const fr of fracs)
+        for (const yv of ys)
+          tasks.push({ ti, fr, yv });
+  let done = 0; const total = tasks.length;
+  let curBestForTarget = null, curTarget = -1;
+
+  function chunk() {
+    const t0 = performance.now();
+    while (tasks.length && performance.now() - t0 < 12) { // ~12ms/frame max
+      const tk = tasks.shift();
+      if (tk.ti !== curTarget) { curTarget = tk.ti; curBestForTarget = null; }
+      const trial = work.map(b=>({...b}));
+      trial[tk.ti].posXFrac = tk.fr; trial[tk.ti].posYmm = tk.yv;
+      const sc = scoreConfig(trial, objective);
+      if (!curBestForTarget || sc > curBestForTarget.score) {
+        curBestForTarget = { fr: tk.fr, yv: tk.yv, score: sc };
+        // commit immediat sur la config de travail (coordinate descent)
+        work[tk.ti].posXFrac = tk.fr; work[tk.ti].posYmm = tk.yv;
+        if (sc > best.score) best = { cfg: work.map(b=>({...b})), score: sc };
+      }
+      done++;
+    }
+    M.optStatus.textContent = 'Optimisation en cours… ' + Math.round(100*done/total) + '%';
+    if (tasks.length) { setTimeout(chunk, 0); return; }
+    // termine
+    optRunning = false; optResult = best.cfg;
+    const posTxt = optResult.filter(b=>b.massG>0).map((b,i)=>`P${i+1}: X=${Math.round(b.posXFrac*100)}% Y=${b.posYmm.toFixed(1)}mm`).join(' · ');
+    M.optStatus.textContent = `Trouvé (${objective}) — ${posTxt || 'aucun poids actif'}`;
+    M.optApply.style.display = optResult ? 'block' : 'none';
+  }
+  setTimeout(chunk, 0);
+}
+function applyOptResult() {
+  if (!optResult) return;
+  lureComponents.ballasts = optResult.map(b => ({ ...b }));
+  refreshBallastUI(); recomputeMass(); buildLure(); resetHodo();
+  updateMassPanelReadouts();
+  M.optApply.style.display = 'none';
+  M.optStatus.textContent = 'Configuration appliquée (trace grise = avant).';
+}
+
+/* ----- MODULE C.1 : presets de types de leurres ----------------------- */
+const LURE_PRESETS = {
+  crankbait_square: { bodyLenMM: 55,  lipDeg: 35, matDensity: 180,  hookFront:'#4', hookRear:'#2',  ballastHint:'ventral-avant',           desc:'Crank à bavette carrée, nage large et rapide' },
+  jerkbait:         { bodyLenMM: 110, lipDeg: 8,  matDensity: 1050, hookFront:'#4', hookRear:'#4',  ballastHint:'centre-bas (suspending)', desc:'Jerkbait suspending, nage erratique par saccades' },
+  popper:           { bodyLenMM: 70,  lipDeg: 0,  matDensity: 500,  hookFront:'#2', hookRear:'#1',  ballastHint:'arrière (queue haute)',   desc:'Popper de surface, pas de bavette' },
+  swimbait:         { bodyLenMM: 130, lipDeg: 12, matDensity: 1150, hookFront:'#1/0', hookRear:null, ballastHint:'ventral-centre',          desc:'Swimbait fusiforme, nage ondulante' },
+  spinnerbait_body: { bodyLenMM: 40,  lipDeg: 0,  matDensity: 7900, hookFront:null, hookRear:'#2/0', ballastHint:'nez (tête plombée)',      desc:'Corps/tête de spinnerbait' },
+};
+const BALLAST_HINT_POS = { // texte -> (posXFrac, posYmm relatif a R)
+  'ventral-avant':        (R)=>({ posXFrac:0.3,  posYmm:-R*1000*0.5 }),
+  'centre-bas (suspending)':(R)=>({ posXFrac:0.5, posYmm:-R*1000*0.4 }),
+  'arrière (queue haute)':(R)=>({ posXFrac:0.72, posYmm: R*1000*0.2 }),
+  'ventral-centre':       (R)=>({ posXFrac:0.5,  posYmm:-R*1000*0.5 }),
+  'nez (tête plombée)':   (R)=>({ posXFrac:0.15, posYmm:-R*1000*0.3 }),
+};
+function applyPreset(name) {
+  const pr = LURE_PRESETS[name]; if (!pr) return;
+  M.presetDesc.textContent = pr.desc;
+  // hooks (toujours applicables, meme en STL) + synchro des menus deroulants
+  lureComponents.hookFront.enabled = pr.hookFront != null;
+  if (pr.hookFront) lureComponents.hookFront.size = pr.hookFront;
+  lureComponents.hookRear.enabled = pr.hookRear != null;
+  if (pr.hookRear) lureComponents.hookRear.size = pr.hookRear;
+  if (M.hookFront) M.hookFront.value = pr.hookFront != null ? pr.hookFront : 'off';
+  if (M.hookRear) M.hookRear.value = pr.hookRear != null ? pr.hookRear : 'off';
+  // materiau (toujours)
+  ui.matDensity = pr.matDensity;
+  const matSelEl = document.getElementById('matDensity');
+  if (matSelEl) { matSelEl.value = String(pr.matDensity); matSelEl.dispatchEvent(new Event('change')); }
+  // geometrie seulement en mode procedural (un STL importe garde sa forme)
+  if (geom.mode === 'procedural') {
+    const bl = document.getElementById('bodyLen'), lp = document.getElementById('lip');
+    bl.value = pr.bodyLenMM; bl.dispatchEvent(new Event('input')); bl.dispatchEvent(new Event('change'));
+    lp.value = pr.lipDeg; lp.dispatchEvent(new Event('input'));
+  }
+  updateParams();
+  // ballast principal selon l'indice de positionnement
+  const hint = BALLAST_HINT_POS[pr.ballastHint];
+  if (hint && lureComponents.ballasts.length) {
+    const h = hint(params.R);
+    lureComponents.ballasts[0].posXFrac = h.posXFrac;
+    lureComponents.ballasts[0].posYmm = h.posYmm;
+  }
+  refreshBallastUI(); recomputeMass(); updateMassPanelReadouts();
+}
+
+/* ----- MODULE E : export rapport + STL modifie ------------------------ */
+function download(filename, content, mime) {
+  const blob = new Blob([content], { type: mime || 'application/octet-stream' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+function buildReportObject() {
+  const b = computeMassBudget();
+  const reg = classifyRegime(b.densite, b.rhoEff);
+  const tv = terminalVelocity();
+  const carene = geomComp.frameCentroid;
+  return {
+    geometry: { mode: geom.mode, bodyLenMM: ui.bodyLenMM, matDensity: ui.matDensity, cgPos: ui.cgPos },
+    components: lureComponents,
+    massBudget: { massTotal_g: b.massTotal*1000, volume_cm3: b.volumeTotal*1e6, densite_kgm3: b.densite,
+                  parComposant_g: Object.fromEntries(Object.entries(b.parComposant).map(([k,v])=>[k, +(v*1000).toFixed(3)])) },
+    centerOfMass: { local_mm: { x:+(massState.com.x*1000).toFixed(2), y:+(massState.com.y*1000).toFixed(2), z:+(massState.com.z*1000).toFixed(2) },
+                    buoyancyCenter_mm: { x:+(carene.x*1000).toFixed(2), y:+(carene.y*1000).toFixed(2), z:+(carene.z*1000).toFixed(2) },
+                    offset_mm: +(massState.com.distanceTo(carene)*1000).toFixed(2) },
+    regime: reg.label,
+    terminalVelocity_cms: +tv.vcms.toFixed(2),
+    retrievalProfile: { ...retrievalProfile },
+    fsiSummary: { psiAmplitudeDeg: +fsiStats.psiAmpDeg.toFixed(1), thetaAmplitudeDeg: +fsiStats.thetaAmpDeg.toFixed(1), dominantFreqHz: +fsiStats.freqHz.toFixed(2) },
+  };
+}
+function exportReport() {
+  download('rapport_leurre.json', JSON.stringify(buildReportObject(), null, 2), 'application/json');
+}
+function exportReportTxt() {
+  const r = buildReportObject(), mb = r.massBudget;
+  const L = [];
+  L.push('=== RAPPORT LEURRE — Simulateur CFD/FSI ===');
+  L.push('Géométrie      : ' + r.geometry.mode + ' · longueur ' + r.geometry.bodyLenMM + ' mm · matériau ' + r.geometry.matDensity + ' kg/m³ · CG ' + r.geometry.cgPos + '%');
+  L.push('Masse totale   : ' + mb.massTotal_g.toFixed(2) + ' g   (volume ' + mb.volume_cm3.toFixed(2) + ' cm³)');
+  L.push('Densité        : ' + mb.densite_kgm3.toFixed(1) + ' kg/m³  ->  ' + r.regime);
+  L.push('Vitesse chute  : ' + r.terminalVelocity_cms.toFixed(2) + ' cm/s (+ = coule)');
+  L.push('Détail masses (g) :');
+  for (const k in mb.parComposant_g) L.push('   - ' + k.padEnd(10) + ' : ' + mb.parComposant_g[k]);
+  L.push('Centre de masse (mm)   : X=' + r.centerOfMass.local_mm.x + ' Y=' + r.centerOfMass.local_mm.y + ' Z=' + r.centerOfMass.local_mm.z);
+  L.push('Centre de carène (mm)  : X=' + r.centerOfMass.buoyancyCenter_mm.x + ' Y=' + r.centerOfMass.buoyancyCenter_mm.y + ' Z=' + r.centerOfMass.buoyancyCenter_mm.z);
+  L.push('Écart CM/carène        : ' + r.centerOfMass.offset_mm + ' mm');
+  L.push('Récupération   : ' + r.retrievalProfile.mode + ' (A=' + r.retrievalProfile.paramA + ' B=' + r.retrievalProfile.paramB + ' C=' + r.retrievalProfile.paramC + ')');
+  L.push('Nage (régime établi) : lacet ' + r.fsiSummary.psiAmplitudeDeg + '°  · roulis ' + r.fsiSummary.thetaAmplitudeDeg + '°  · f ' + r.fsiSummary.dominantFreqHz + ' Hz');
+  download('rapport_leurre.txt', L.join('\n'), 'text/plain');
+}
+// STL modifie : corps + sphere(s) "cavite suggeree" par ballast (PAS un vrai CSG boolean)
+function exportModifiedSTL() {
+  const geos = [];
+  // corps, en coordonnees monde-local du bodyGroup (echelle + offset appliques)
+  const bodyG = bodyMesh.geometry.clone();
+  bodyG.scale(bodyMesh.scale.x, bodyMesh.scale.y, bodyMesh.scale.z);
+  bodyG.translate(bodyMesh.position.x, bodyMesh.position.y, bodyMesh.position.z);
+  geos.push(bodyG);
+  const RHO_BALLAST = 7900; // acier/plomb approx pour deduire un rayon depuis la masse
+  for (const bl of lureComponents.ballasts) {
+    const m = Math.max(bl.massG, 0)/1000; if (m <= 0) continue;
+    const vol = m / RHO_BALLAST; const rad = Math.cbrt(3*vol/(4*Math.PI));
+    const sph = new THREE.SphereGeometry(Math.max(rad, params.R*0.05), 12, 8);
+    const p = ballastPos(bl); sph.translate(p.x, p.y, p.z);
+    geos.push(sph);
+  }
+  // Fusion = simple concatenation d'attributs (PAS de soustraction booleenne).
+  const merged = mergeGeometriesSimple(geos);
+  let stl = new THREE.STLExporter().parse(new THREE.Mesh(merged), { binary: false });
+  // L'ASCII STLExporter n'expose pas de header : on encode l'avertissement dans le
+  // nom du "solid" (les spheres sont INDICATIVES — pas une vraie cavite booleenne).
+  const name = 'CAVITES_INDICATIVES_non_booleen_a_ajuster_en_CAO';
+  stl = stl.replace('solid exported', 'solid ' + name).replace('endsolid exported', 'endsolid ' + name);
+  download('leurre_ballast_cavites.stl', stl, 'model/stl');
+}
+// concatenation minimale de BufferGeometries non indexees (fallback sans BufferGeometryUtils)
+function mergeGeometriesSimple(geos) {
+  let total = 0;
+  const nonIndexed = geos.map(g => g.index ? g.toNonIndexed() : g);
+  for (const g of nonIndexed) total += g.attributes.position.count;
+  const pos = new Float32Array(total * 3);
+  let off = 0;
+  for (const g of nonIndexed) { const a = g.attributes.position.array; pos.set(a, off); off += a.length; }
+  const out = new THREE.BufferGeometry();
+  out.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  out.computeVertexNormals();
+  return out;
+}
+
+/* ----- Statistiques FSI en regime etabli (pour rapport / lecture) ------ */
+let fsiHist = [];
+const fsiStats = { psiAmpDeg: 0, thetaAmpDeg: 0, freqHz: 0 };
+function sampleFsiStats() {
+  fsiHist.push({ t: simTime, psi: state.psi, theta: state.theta });
+  while (fsiHist.length && simTime - fsiHist[0].t > 3.0) fsiHist.shift();
+  if (fsiHist.length < 8) return;
+  let pmin=1e9,pmax=-1e9,tmin=1e9,tmax=-1e9, crossings=0, prev=fsiHist[0].psi;
+  for (const s of fsiHist) {
+    pmin=Math.min(pmin,s.psi); pmax=Math.max(pmax,s.psi);
+    tmin=Math.min(tmin,s.theta); tmax=Math.max(tmax,s.theta);
+    if ((prev < 0 && s.psi >= 0) || (prev > 0 && s.psi <= 0)) crossings++;
+    prev = s.psi;
+  }
+  const span = Math.max(fsiHist[fsiHist.length-1].t - fsiHist[0].t, 1e-3);
+  fsiStats.psiAmpDeg = (pmax - pmin) * 180/Math.PI;
+  fsiStats.thetaAmpDeg = (tmax - tmin) * 180/Math.PI;
+  fsiStats.freqHz = (crossings / 2) / span; // 2 passages par zero -> 1 periode
+}
+
+/* ----- MODULE F : construction du panneau flottant #massPanel ---------- */
+const M = {}; // refs d'elements
+function el(id) { return document.getElementById(id); }
+function buildMassPanel() {
+  const massPanel = el('massPanel');
+  const hookOpts = (sel) => Object.keys(HOOK_MASS_TABLE).map(s => `<option value="${s}"${s===sel?' selected':''}>${s}</option>`).join('');
+  const presetOpts = ['<option value="">— choisir —</option>'].concat(
+    Object.entries(LURE_PRESETS).map(([k,v]) => `<option value="${k}">${k.replace(/_/g,' ')}</option>`)).join('');
+  massPanel.innerHTML = `
+    <h3>Preset de leurre</h3>
+    <select id="mp-preset">${presetOpts}</select>
+    <div id="mp-presetDesc" class="mp-note">Point de départ ; tous les réglages restent modifiables.</div>
+
+    <div class="mp-sep"></div><h3>Composants</h3>
+    <div class="row"><label>Eau <span class="val"></span></label>
+      <select id="mp-water"><option value="fresh">Douce (1000)</option><option value="salt">Mer (1025)</option></select></div>
+    <div class="row"><label>Carcasse <span class="val"></span></label>
+      <select id="mp-frameMode"><option value="auto">Auto (densité × volume)</option><option value="manual">Masse manuelle</option></select></div>
+    <div class="row" id="mp-frameManualRow" style="display:none"><label>Masse carcasse (g) <span class="val" id="mp-frameMassVal">0</span></label>
+      <input type="range" id="mp-frameMass" min="0" max="80" step="0.5" value="0"></div>
+    <div class="row"><label>Hameçon avant <span class="val"></span></label>
+      <select id="mp-hookFront"><option value="off">Aucun</option>${hookOpts(lureComponents.hookFront.size)}</select></div>
+    <div class="row"><label>Hameçon arrière <span class="val"></span></label>
+      <select id="mp-hookRear"><option value="off">Aucun</option>${hookOpts(lureComponents.hookRear.size)}</select></div>
+    <div class="mp-note">Poids internes (ballasts) :</div>
+    <div id="mp-ballastList"></div>
+    <button class="mini-btn" id="mp-addBallast">+ Ajouter un poids</button>
+
+    <div class="mp-sep"></div><h3>Bilan masse &amp; densité</h3>
+    <div id="mp-badge" class="mp-badge">—</div>
+    <div class="mp-note" id="mp-massTotals">—</div>
+    <div class="mp-detail" id="mp-massDetail"></div>
+    <canvas id="mp-fall" width="240" height="70"></canvas>
+    <div class="mp-note" id="mp-fallVal">—</div>
+
+    <div class="mp-sep"></div><h3>Régime cible (lestage auto)</h3>
+    <div class="toggles3">
+      <button class="mini-btn" id="mp-regFloat">Flottant</button>
+      <button class="mini-btn" id="mp-regSuspend">Suspendu</button>
+      <button class="mini-btn" id="mp-regSink">Coulant</button></div>
+
+    <div class="mp-sep"></div><h3>Centre de masse</h3>
+    <div class="mp-note" id="mp-comCoords">—</div>
+    <div class="row" style="margin-top:6px"><label>Objectif d'optimisation <span class="val"></span></label></div>
+    <div class="toggles">
+      <div class="toggle-btn active" id="mp-objVive" data-obj="vive">Nage vive</div>
+      <div class="toggle-btn" id="mp-objStable" data-obj="stable">Nage stable</div></div>
+    <div class="stl-actions" style="margin-top:6px">
+      <button class="mini-btn" id="mp-optimize">⚙ Optimiser</button>
+      <button class="mini-btn" id="mp-optApply" style="display:none">✓ Appliquer</button></div>
+    <div class="mp-note" id="mp-optStatus"></div>
+
+    <div class="mp-sep"></div><h3>Récupération</h3>
+    <select id="mp-retMode">
+      <option value="constant">Constante</option>
+      <option value="steady-pause">Stop-and-go</option>
+      <option value="jerk-jerk-pause">Jerk-jerk-pause</option>
+      <option value="twitch">Twitch rapide</option>
+      <option value="custom">Personnalisé</option></select>
+    <div class="row" id="mp-retARow" style="margin-top:6px;display:none"><label id="mp-retALabel">A <span class="val" id="mp-retAVal">1.0</span></label>
+      <input type="range" id="mp-retA" min="0.05" max="3" step="0.05" value="1.0"></div>
+    <div class="row" id="mp-retBRow" style="display:none"><label id="mp-retBLabel">B <span class="val" id="mp-retBVal">0.6</span></label>
+      <input type="range" id="mp-retB" min="0.05" max="3" step="0.05" value="0.6"></div>
+    <div class="row" id="mp-retCRow" style="display:none"><label id="mp-retCLabel">C <span class="val" id="mp-retCVal">1.4</span></label>
+      <input type="range" id="mp-retC" min="0.1" max="3" step="0.05" value="1.4"></div>
+    <canvas id="mp-vf" width="240" height="60"></canvas>
+
+    <div class="mp-sep"></div><h3>Export</h3>
+    <div class="stl-actions"><button class="mini-btn" id="mp-expJson">Rapport JSON</button>
+      <button class="mini-btn" id="mp-expTxt">Résumé TXT</button></div>
+    <div class="stl-actions" style="margin-top:6px"><button class="mini-btn" id="mp-expStl">Exporter STL + cavité(s)</button></div>
+  `;
+  // refs
+  for (const k of ['preset','presetDesc','water','frameMode','frameManualRow','frameMass','frameMassVal',
+    'hookFront','hookRear','ballastList','addBallast','badge','massTotals','massDetail','fall','fallVal',
+    'regFloat','regSuspend','regSink','comCoords','objVive','objStable','optimize','optApply','optStatus',
+    'retMode','retARow','retBRow','retCRow','retA','retB','retC','retAVal','retBVal','retCVal',
+    'retALabel','retBLabel','retCLabel','vf','expJson','expTxt','expStl'])
+    M[k] = el('mp-' + k);
+  M.fallCtx = M.fall.getContext('2d');
+  M.vfCtx = M.vf.getContext('2d');
+  wireMassPanel();
+  refreshBallastUI();
+}
+
+let swimObjective = 'vive';
+function wireMassPanel() {
+  M.preset.addEventListener('change', () => { if (M.preset.value) applyPreset(M.preset.value); });
+  M.water.addEventListener('change', () => { lureComponents.waterType = M.water.value; recomputeMass(); updateMassPanelReadouts(); });
+  M.frameMode.addEventListener('change', () => {
+    lureComponents.frame.massMode = M.frameMode.value;
+    M.frameManualRow.style.display = M.frameMode.value === 'manual' ? 'block' : 'none';
+    recomputeMass(); updateMassPanelReadouts();
+  });
+  M.frameMass.addEventListener('input', () => { lureComponents.frame.massG = parseFloat(M.frameMass.value); M.frameMassVal.textContent = M.frameMass.value; recomputeMass(); updateMassPanelReadouts(); });
+  M.hookFront.addEventListener('change', () => { const v = M.hookFront.value; lureComponents.hookFront.enabled = v !== 'off'; if (v !== 'off') lureComponents.hookFront.size = v; recomputeMass(); updateMassPanelReadouts(); });
+  M.hookRear.addEventListener('change', () => { const v = M.hookRear.value; lureComponents.hookRear.enabled = v !== 'off'; if (v !== 'off') lureComponents.hookRear.size = v; recomputeMass(); updateMassPanelReadouts(); });
+  M.addBallast.addEventListener('click', () => {
+    if (lureComponents.ballasts.length >= 4) return;
+    lureComponents.ballasts.push({ massG: 2, posXFrac: 0.5, posYmm: 0, posZmm: 0, id: 'b' + (_ballastSeq++) });
+    refreshBallastUI(); recomputeMass(); updateMassPanelReadouts();
+  });
+  M.regFloat.addEventListener('click', () => suggestWeight(0.95));
+  M.regSuspend.addEventListener('click', () => suggestWeight(1.00));
+  M.regSink.addEventListener('click', () => suggestWeight(1.05));
+  M.objVive.addEventListener('click', () => { swimObjective = 'vive'; M.objVive.classList.add('active'); M.objStable.classList.remove('active'); });
+  M.objStable.addEventListener('click', () => { swimObjective = 'stable'; M.objStable.classList.add('active'); M.objVive.classList.remove('active'); });
+  M.optimize.addEventListener('click', () => optimizeBallasts(swimObjective));
+  M.optApply.addEventListener('click', applyOptResult);
+  M.retMode.addEventListener('change', () => { retrievalProfile.mode = M.retMode.value; refreshRetrievalUI(); });
+  const bindRet = (slider, valEl, key) => slider.addEventListener('input', () => { retrievalProfile[key] = parseFloat(slider.value); valEl.textContent = slider.value; });
+  bindRet(M.retA, M.retAVal, 'paramA'); bindRet(M.retB, M.retBVal, 'paramB'); bindRet(M.retC, M.retCVal, 'paramC');
+  M.expJson.addEventListener('click', exportReport);
+  M.expTxt.addEventListener('click', exportReportTxt);
+  M.expStl.addEventListener('click', exportModifiedSTL);
+  refreshRetrievalUI();
+}
+function refreshRetrievalUI() {
+  const lab = RETRIEVAL_LABELS[retrievalProfile.mode] || ['—','—','—'];
+  const rows = [[M.retARow, M.retALabel, lab[0], M.retAVal, retrievalProfile.paramA],
+               [M.retBRow, M.retBLabel, lab[1], M.retBVal, retrievalProfile.paramB],
+               [M.retCRow, M.retCLabel, lab[2], M.retCVal, retrievalProfile.paramC]];
+  for (const [row, labEl, text, valEl, val] of rows) {
+    if (text === '—') { row.style.display = 'none'; }
+    else { row.style.display = 'block'; labEl.firstChild.textContent = text + ' '; valEl.textContent = val; }
+  }
+}
+function refreshBallastUI() {
+  const bs = lureComponents.ballasts;
+  M.ballastList.innerHTML = bs.map((b, i) => `
+    <div class="ballast-row" data-i="${i}">
+      <div class="ballast-hd">Poids ${i+1}${bs.length>1?` <span class="bll-del" data-i="${i}">🗑</span>`:''}</div>
+      <label>masse <span class="val">${b.massG.toFixed(1)} g</span></label>
+      <input type="range" class="bll-mass" data-i="${i}" min="0" max="20" step="0.5" value="${b.massG}">
+      <label>X (0=nez) <span class="val">${Math.round(b.posXFrac*100)}%</span></label>
+      <input type="range" class="bll-x" data-i="${i}" min="0" max="100" step="1" value="${Math.round(b.posXFrac*100)}">
+      <label>Y (mm) <span class="val">${b.posYmm.toFixed(1)}</span></label>
+      <input type="range" class="bll-y" data-i="${i}" min="-20" max="20" step="0.5" value="${b.posYmm}">
+      <label>Z (mm) <span class="val">${b.posZmm.toFixed(1)}</span></label>
+      <input type="range" class="bll-z" data-i="${i}" min="-20" max="20" step="0.5" value="${b.posZmm}">
+    </div>`).join('');
+  const onIn = (cls, key, scale, fmt) => M.ballastList.querySelectorAll('.' + cls).forEach(inp => {
+    inp.addEventListener('input', () => {
+      const i = +inp.dataset.i; lureComponents.ballasts[i][key] = parseFloat(inp.value) * scale;
+      inp.previousElementSibling.querySelector('.val').textContent = fmt(parseFloat(inp.value));
+      recomputeMass(); updateMassPanelReadouts();
+    });
+  });
+  onIn('bll-mass', 'massG', 1, v => v.toFixed(1) + ' g');
+  onIn('bll-x', 'posXFrac', 0.01, v => Math.round(v) + '%');
+  onIn('bll-y', 'posYmm', 1, v => v.toFixed(1));
+  onIn('bll-z', 'posZmm', 1, v => v.toFixed(1));
+  M.ballastList.querySelectorAll('.bll-del').forEach(d => d.addEventListener('click', () => {
+    lureComponents.ballasts.splice(+d.dataset.i, 1); refreshBallastUI(); recomputeMass(); updateMassPanelReadouts();
+  }));
+}
+function updateMassPanelReadouts() {
+  const b = massState.budget || computeMassBudget();
+  const reg = classifyRegime(b.densite, b.rhoEff);
+  M.badge.textContent = reg.label; M.badge.className = 'mp-badge ' + reg.cls;
+  M.massTotals.textContent = `Masse ${(b.massTotal*1000).toFixed(2)} g · Vol ${(b.volumeTotal*1e6).toFixed(2)} cm³ · ρ ${b.densite.toFixed(0)} kg/m³`;
+  const pc = b.parComposant;
+  M.massDetail.innerHTML = Object.keys(pc).map(k => `<span>${k}: <b>${(pc[k]*1000).toFixed(2)}g</b></span>`).join('');
+  const tv = terminalVelocity();
+  const d10 = Math.abs(tv.vcms) > 0.01 ? (10/Math.abs(tv.vcms)).toFixed(1) : '∞';
+  M.fallVal.textContent = `${tv.sinks?'Chute':'Remontée'} ${Math.abs(tv.vcms).toFixed(1)} cm/s · 10 cm en ${d10} s`;
+  const com = massState.com, car = geomComp.frameCentroid;
+  M.comCoords.innerHTML = `CM (mm) X=${(com.x*1000).toFixed(1)} Y=${(com.y*1000).toFixed(1)} Z=${(com.z*1000).toFixed(1)} · écart carène <b>${(com.distanceTo(car)*1000).toFixed(1)} mm</b>`;
+  drawFallCanvas(tv);
+}
+// petit graphe z(t) au repos (integration simple jusqu'a 5s), MODULE A.4
+function drawFallCanvas(tv) {
+  const ctx = M.fallCtx, W = M.fall.width, H = M.fall.height;
+  ctx.clearRect(0,0,W,H); ctx.fillStyle = '#070a0e'; ctx.fillRect(0,0,W,H);
+  // integration verticale simple : m z'' = Fnet - 0.5ρCd S z'|z'|
+  const b = massState.budget || computeMassBudget();
+  const m = Math.max(b.massTotal, 1e-5); let z = 0, v = 0; const dt = 0.02; const pts = [];
+  for (let t = 0; t <= 5; t += dt) {
+    const drag = 0.5 * b.rhoEff * params.Cd * params.Sfront * v * Math.abs(v);
+    const a = (tv.Fnet - drag) / (m * 1.15);
+    v += a*dt; z += v*dt; pts.push(z);
+    if (Math.abs(v) < 1e-4 && t > 0.5) break;
+  }
+  const zmax = Math.max(0.02, ...pts.map(Math.abs));
+  ctx.strokeStyle = '#2a3644'; ctx.beginPath(); ctx.moveTo(0,H/2); ctx.lineTo(W,H/2); ctx.stroke();
+  ctx.strokeStyle = tv.sinks ? '#ff7a6b' : '#8effa0'; ctx.lineWidth = 1.5; ctx.beginPath();
+  pts.forEach((zz,i) => { const x = (i/(pts.length-1||1))*W, y = H/2 + (zz/zmax)*(H/2-4);
+    if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y); });
+  ctx.stroke();
+}
+// profil Vf(t) glissant sur ~6s + curseur present, MODULE D
+function drawVfCanvas() {
+  const ctx = M.vfCtx, W = M.vf.width, H = M.vf.height;
+  ctx.clearRect(0,0,W,H); ctx.fillStyle = '#070a0e'; ctx.fillRect(0,0,W,H);
+  const base = params.Vf, win = 6, t0 = simTime - win;
+  let vmax = 1e-3; const N = 120, vals = [];
+  for (let i = 0; i < N; i++) { const t = t0 + (i/(N-1))*win; const vf = getInstantVf(t, base); vals.push(vf); vmax = Math.max(vmax, vf); }
+  ctx.strokeStyle = '#2a3644'; ctx.beginPath(); ctx.moveTo(0,H-2); ctx.lineTo(W,H-2); ctx.stroke();
+  ctx.strokeStyle = '#3fb6ff'; ctx.lineWidth = 1.5; ctx.beginPath();
+  vals.forEach((vf,i) => { const x = (i/(N-1))*W, y = H-2 - (vf/vmax)*(H-6); if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y); });
+  ctx.stroke();
+  ctx.strokeStyle = '#ff7a45'; ctx.beginPath(); ctx.moveTo(W-1, 0); ctx.lineTo(W-1, H); ctx.stroke(); // instant present a droite
+}
+
+buildMassPanel();
+recomputeMass();
+updateMassPanelReadouts();
+let massAccum = 0;
+
 /* ----------------------------------------------------------------------- *
  * Boucle principale
  * ----------------------------------------------------------------------- */
@@ -3029,10 +3994,28 @@ function animate() {
   if (toggles.stress) updateStress(dt);
   if (!reposMode) updateHodographs(dt);
 
+  // MODULES A/B/D : recalculs throttles (masse/CM, stats FSI, profil Vf) — jamais
+  // a chaque frame brute (cf. pattern stressAccum/isoAccum).
+  if (!reposMode) sampleFsiStats();
+  massAccum += dt;
+  if (massAccum > 0.2) {
+    massAccum = 0;
+    if (!optRunning) recomputeMass();     // pendant l'optimisation, les masses sont figees
+    updateMassPanelReadouts();
+    drawVfCanvas();
+  }
+  // MODULE B.2 : marqueurs CM (doré) / centre de carene (cyan) + ligne d'ecart
+  if (comMarker) {
+    comMarker.position.copy(massState.com);
+    careneMarker.position.copy(geomComp.frameCentroid);
+    comLine.geometry.setFromPoints([massState.com, geomComp.frameCentroid]);
+  }
+
   const VrelAbs = Math.abs(state.u - params.Vw);
   const fShed = params.St * VrelAbs / params.L;
+  const vfNow = getInstantVf(simTime, params.Vf);
   timeValEl.textContent = simTime.toFixed(2);
-  regimeValEl.textContent = `V_rel = ${VrelAbs.toFixed(2)} m/s · f_shed = ${fShed.toFixed(2)} Hz · profondeur = ${state.z.toFixed(2)} m`;
+  regimeValEl.textContent = `V_rel = ${VrelAbs.toFixed(2)} m/s · f_shed = ${fShed.toFixed(2)} Hz · profondeur = ${state.z.toFixed(2)} m · Vf(t) = ${vfNow.toFixed(2)} m/s`;
 
   controls.update();
   renderer.render(scene, camera);
