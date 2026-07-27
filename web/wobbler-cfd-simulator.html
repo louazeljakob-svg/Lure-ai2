@@ -108,6 +108,10 @@
     border:1px solid var(--accent2);color:var(--accent2);border-radius:6px;padding:6px 12px;font-size:11px;
     display:none;z-index:20;backdrop-filter:blur(4px);}
 
+  #capsizeBanner{position:fixed;top:12px;left:50%;transform:translateX(-50%);background:rgba(200,40,30,.92);
+    color:#fff;border:1px solid #ff7a6b;border-radius:6px;padding:8px 16px;font-size:12px;font-weight:600;
+    letter-spacing:.02em;display:none;z-index:30;backdrop-filter:blur(4px);}
+
   a.credit{color:var(--dim);}
 </style>
 </head>
@@ -126,6 +130,8 @@
 
 <div id="reposHint">Mode repositionnement : cliquez un point puis un endroit du mesh · <span id="reposSel">aucun point sélectionné</span></div>
 
+<div id="capsizeBanner">⚠ LEURRE CHAVIRÉ — nage interrompue · réduisez le poids ou le déséquilibre du centre de masse</div>
+
 <div id="massPanel"></div>
 
 <div id="hodo-xz-wrap">
@@ -133,6 +139,8 @@
   <canvas id="hodoXZ" width="360" height="150"></canvas>
   <div class="lg-title" style="margin-top:5px">Signal — psi(t) / theta(t)</div>
   <canvas id="signalCanvas" width="360" height="90"></canvas>
+  <div class="lg-title" style="margin-top:5px">Vecteurs Vf / Vw (vue de dessus)</div>
+  <canvas id="vecWidget" width="360" height="110"></canvas>
 </div>
 
 <div id="panel">
@@ -144,12 +152,14 @@
   <input type="file" id="stl-input" accept=".stl,model/stl,application/sla" style="display:none">
   <div id="stl-status">Géométrie actuelle : corps procédural (démo)</div>
   <div class="stl-actions">
-    <button class="mini-btn" id="stl-flip" disabled>↔ Inverser nez/queue</button>
+    <button class="mini-btn" id="stl-flip">↔ Inverser nez/queue</button>
     <button class="mini-btn" id="stl-reset" disabled>⟲ Revenir au procédural</button>
   </div>
   <div class="stl-actions">
     <button class="mini-btn" id="repos-toggle">✛ Repositionner points</button>
   </div>
+  <div id="refLabel" style="font-size:9px;color:var(--dim);margin-top:6px;line-height:1.4">
+    Repère leurre : <b style="color:#ff6b6b">+X = nez</b> (écoulement) · <b style="color:#8effa0">+Y = dos</b> · <b style="color:#6b9bff">+Z = flanc droit</b></div>
   <div class="row" style="margin-top:9px">
     <label>Matériau (densité) <span class="val" id="matVal">500 kg/m³</span></label>
     <select id="matDensity">
@@ -189,6 +199,14 @@
     <input type="range" id="lineK" min="5" max="200" step="1" value="40">
   </div>
   <div class="row">
+    <label>Angle du courant V<sub>w</sub> <span class="val" id="vwHeadVal">180°</span></label>
+    <input type="range" id="vwHeading" min="0" max="360" step="5" value="180">
+  </div>
+  <div class="row">
+    <label>Hauteur de canne <span class="val" id="rodHeightVal">1.5 m</span></label>
+    <input type="range" id="rodHeight" min="0.3" max="4.0" step="0.1" value="1.5">
+  </div>
+  <div class="row">
     <label>Longueur du corps <span class="val" id="bodyLenVal">100 mm</span></label>
     <input type="range" id="bodyLen" min="35" max="160" step="1" value="100">
   </div>
@@ -224,6 +242,7 @@
     <div class="toggle-btn" data-field="vectors">Vecteurs V</div>
     <div class="toggle-btn" data-field="bodyTrail">Traînée corps</div>
     <div class="toggle-btn" data-field="refAxis">Axe réf.</div>
+    <div class="toggle-btn" data-field="axes">Repère leurre</div>
   </div>
 
   <div class="row" id="isoRow" style="margin-top:10px;display:none">
@@ -1948,9 +1967,22 @@ const ui = {
   decim: 50000,        // cible max de triangles pour le STL importe
   visualGain: 1.0,     // AXE 2.1 — gain d'AFFICHAGE de la nage (1 = physique reelle), non-physique
   lipAsymmetryDeg: 0,  // AXE 3.4 — biais d'asymetrie de bavette (defaut de fabrication)
+  VwHeading: 180,      // MODULE F — angle du courant (deg) ; 180 = comportement scalaire d'origine
+  rodHeight: 1.5,      // MODULE C — hauteur de la canne au-dessus de l'eau (m)
+};
+// MODULE E.2 — etat de nage global (chavirage)
+const simState = { capsized: false, stabilityRatio: 99 };
+
+// MODULES A & B : positions LOCALES (m) des composants, pour le bilan de masse, le
+// centre de masse et la stabilite. Declare tot (avant updateParams) car updateParams
+// lit geomComp.frameCentroid des le 1er appel. Renseigne a chaque buildLure.
+const geomComp = {
+  frameCentroid: new THREE.Vector3(), // centroide du volume (= centre de carene)
+  lip: new THREE.Vector3(), ringFront: new THREE.Vector3(), ringRear: new THREE.Vector3(),
+  hookFront: new THREE.Vector3(), hookRear: new THREE.Vector3(),
 };
 const toggles = { streamlines: true, iso: false, pressure: false, hodo: true, stress: false, wake: true,
-  vectors: false, bodyTrail: false, refAxis: false }; // AXE 1.4 / 2.2 / 2.4
+  vectors: false, bodyTrail: false, refAxis: false, axes: false }; // AXE 1.4 / 2.2 / 2.4 · MODULE A.1
 // Objets crees plus bas mais references par applyToggleVisibility() appele des l'init :
 // forward-declares (initialises a null/[]) pour eviter la zone morte temporelle (TDZ).
 let refAxisLine = null;
@@ -2004,7 +2036,15 @@ const params = {}; // recalcule chaque frame depuis `ui` et `geom`
 function updateParams() {
   const m = geom.metrics;
   params.Vf = ui.Vf;
-  params.Vw = ui.Vw;
+  params.Vw = ui.Vw;                                  // magnitude du courant (compat)
+  // MODULE F — courant comme VRAI vecteur 2D horizontal (plan XZ). VwX est la
+  // composante axiale, VwZ la composante laterale. Convention calee pour que
+  // l'angle 180° (defaut) redonne EXACTEMENT le comportement scalaire d'origine :
+  //   VwX(180°) = Vw·cos(180°) = -Vw  ->  Vrel_x = u + VwX = u - Vw   (identique).
+  params.VwHeadRad = deg2rad(ui.VwHeading);
+  params.VwX = ui.Vw * Math.cos(params.VwHeadRad);
+  params.VwZ = ui.Vw * Math.sin(params.VwHeadRad);
+  params.rodHeight = ui.rodHeight;
   params.lipDeg = ui.lipDeg;
   params.lipAngleRad = deg2rad(ui.lipDeg);
   params.lineLen = ui.lineLen;
@@ -2037,8 +2077,55 @@ function updateParams() {
   params.kBuoyBase = 6.0;
   params.cgPos = ui.cgPos / 100;
   params.thetaEq = deg2rad(ui.lipAsymmetryDeg); // AXE 3.4 — biais d'equilibre du roulis
+
+  /* MODULE E.1 — effet du POIDS AJOUTE (ballasts) sur la nage. Le ratio est
+   * calcule par rapport a la masse SANS ballast, donc = 1 par defaut (aucun
+   * ballast) -> aucun changement du comportement de reference. Physiquement
+   * solide : plus de masse -> plus d'inertie -> oscillation plus lente et de
+   * plus faible amplitude (baisse muBase/psiSatBase, coherent avec Iyaw du
+   * module masse). Empirique/documente : au-dela d'un seuil, la nage devient
+   * plus erratique (exces de poids -> bruit basse frequence renforce). */
+  let massRatio = 1;
+  if (massState.budget) {
+    const bal = massState.budget.parComposant.ballasts || 0;
+    massRatio = massState.massTotal / Math.max(massState.massTotal - bal, 1e-6);
+  }
+  params.massRatio = massRatio;
+  params.muBase *= clamp(1 / (0.35 + 0.65 * massRatio), 0.45, 1.05);   // inertie -> amortit
+  params.psiSatBase *= clamp(1 / (0.7 + 0.3 * massRatio), 0.55, 1.05);
+  params.massExcess = clamp(massRatio - 1.6, 0, 3);                     // au-dela du seuil -> nervosite
+
+  /* MODULE E.2 — critere de stabilite (chavirage). capaciteRedressement croit
+   * avec l'ecart vertical CM/centre-de-carene (hauteur metacentrique : un CM
+   * SOUS le centre de poussee redresse) ; couplePerturbateur croit avec la
+   * portance de bavette et l'exces de poids. Seuils EMPIRIQUES documentes. */
+  const dyRight = geomComp.frameCentroid.y - massState.com.y; // >0 : CM sous le centre de carene = stable
+  const righting = 1.6 + 400 * dyRight;
+  const perturb = 1.0 + 0.8 * Math.abs(Math.sin(params.lipAngleRad)) + 1.2 * Math.max(0, massRatio - 1);
+  simState.stabilityRatio = clamp(righting, 0.01, 12) / perturb;
+  // hysteresis pour eviter le clignotement autour du seuil
+  if (simState.capsized && simState.stabilityRatio > 1.15) simState.capsized = false;
+  else if (!simState.capsized && simState.stabilityRatio < 1.0) simState.capsized = true;
+  params.capsized = simState.capsized;
+  params.capsizeSide = (Math.sign(params.thetaEq) || 1); // sur quel flanc il bascule
 }
 updateParams();
+
+// MODULE F — magnitude de la vitesse relative courante (addition vectorielle Vf/Vw),
+// utilisee par l'affichage et les champs. A VwHeading=180° -> |u - Vw| (identique au
+// scalaire d'origine). Vrel_x = u + VwX est la composante axiale.
+function relSpeedAbs() { return Math.hypot(state.u + params.VwX, params.VwZ); }
+// MODULE D — profondeur d'equilibre theorique (regime etabli du z-eq de derivatives) :
+// zDotDot=0, zDot=0  ->  Fdive = kBuoy·z_eq  ->  z_eq = Fdive / kBuoy.  Modele
+// simplifie (documente dans l'UI) : portance de bavette equilibree par la retenue
+// verticale de ligne linearisee (kBuoy(rodHeight,lineLen)).
+function computeZeq() {
+  const VrelAbs = relSpeedAbs(), VrelSigned = state.u + params.VwX;
+  const Fdive = 0.5 * RHO_WATER * params.ClDive * params.Slip * VrelAbs * VrelSigned * Math.sin(params.lipAngleRad);
+  const rodFactor = clamp(1 + 0.18 * (params.rodHeight - 1.5), 0.4, 2.2);
+  const kBuoy = params.kBuoyBase * (5 / Math.max(params.lineLen, 0.5)) * rodFactor;
+  return clamp(Fdive / Math.max(kBuoy, 1e-6), 0, 3.5);
+}
 
 /* ----------------------------------------------------------------------- *
  * MODULE 1 — Dynamique FSI simplifiee (integrateur RK4)
@@ -2074,25 +2161,39 @@ function zeroState() {
 let state = zeroState();
 
 function derivatives(s, p) {
-  const VrelSigned = s.u - p.Vw;
-  const VrelAbs = Math.abs(VrelSigned);
+  // MODULE F — vitesse relative comme VRAI vecteur (addition Vf/Vw). L'ecoulement
+  // relatif ressenti par le corps = vitesse d'avance u combinee au courant vectoriel :
+  //   Vrel = ( u + VwX , 0 , VwZ )   [VwX,VwZ = courant projete, cf. updateParams]
+  // Composante axiale (Vrel_x) -> trainee axiale (comme avant) ; magnitude ||Vrel||
+  // -> tout ce qui depend de la vitesse (fShed, portance, chute...).
+  // TEST DE COHERENCE (verifie) : a VwHeading=180° et |Vw|==Vf, en regime etabli
+  // u->Vf, donc Vrel_x = u + Vw·cos(180°) = Vf - Vf = 0 : l'addition vectorielle
+  // Vf_vec+Vw_vec s'annule bien a (0,0,0) -> aucune nage, comme attendu.
+  const Vrel_x = s.u + p.VwX;
+  const Vrel_z = p.VwZ;
+  const VrelSigned = Vrel_x;                       // composante axiale (signe -> sens de la trainee)
+  const VrelAbs = Math.hypot(Vrel_x, Vrel_z);
   const speedFactor = clamp(VrelAbs / 0.15, 0, 1); // pas de nage sans ecoulement relatif
 
   // MODULE D : vitesse de traction instantanee (profil jerk/pause). En mode
   // 'constant', Vf === p.Vf, donc comportement identique a l'existant.
   const Vf = (p.VfInstant !== undefined) ? p.VfInstant : p.Vf;
+  // MODULE C — composante LONGITUDINALE de la tension de ligne (traction utile qui
+  // avance le leurre). Le ressort 1D existant EST cette composante le long de l'axe
+  // de retrieve ; les composantes verticale/laterale sont traitees separement
+  // (retenue en profondeur via kBuoy(rodHeight/lineLen), derive laterale via VwZ).
   const Tline = p.kLine * s.xRel + p.cLine * (Vf - s.u);
-  const Ddrag = 0.5 * RHO_WATER * p.Cd * p.Sfront * VrelSigned * VrelAbs;
+  const Ddrag = 0.5 * RHO_WATER * p.Cd * p.Sfront * VrelSigned * Math.abs(VrelSigned);
   const uDot = (Tline - Ddrag) / p.mTrans;
   const xRelDot = Vf - s.u;
 
-  // AXE 3.1 — micro-irregularites de nage : modulation LENTE et FAIBLE (~5%) des
-  // coefficients qui pilotent psi (pas un forcage sur psi lui-meme), via le fBm
-  // existant evalue avec le temps comme seule coordonnee. Reproduit les petites
-  // irregularites d'un vrai leurre (micro-turbulence, imperfections mecaniques)
-  // sans casser la stabilite du cycle limite de Van der Pol.
-  const nFreq = 1 + 0.05 * fbmNoise3(simTime * 0.15, 0, 0);
-  const nAmp  = 1 + 0.045 * fbmNoise3(simTime * 0.15 + 17.3, 0, 0);
+  // AXE 3.1 / MODULE E.1 — micro-irregularites de nage : modulation LENTE et FAIBLE
+  // des coefficients qui pilotent psi (pas un forcage sur psi). Amplitude de base ~5%,
+  // RENFORCEE par l'exces de poids (massExcess) -> nage plus erratique quand tres
+  // lourd (effet empirique documente ; l'effet d'inertie, lui, est dans muBase/Iyaw).
+  const exBoost = 1 + 0.9 * (p.massExcess || 0);
+  const nFreq = 1 + 0.05 * exBoost * fbmNoise3(simTime * 0.15, 0, 0);
+  const nAmp  = 1 + 0.045 * exBoost * fbmNoise3(simTime * 0.15 + 17.3, 0, 0);
 
   // MODULE B.3 : la frequence de lacet est modulee par l'inertie/CM (yawFreqFactor,
   // ~1/sqrt(I) : plus d'inertie -> nage plus lente) ; l'amplitude par yawAmpFactor.
@@ -2104,18 +2205,27 @@ function derivatives(s, p) {
   // independante de mu) -> on divise par 2 pour que psiSatBase soit bien
   // l'amplitude REELLE de lacet obtenue en regime etabli.
   const psiThresh = (p.psiSatBase * speedFactor) / 2 * (p.yawAmpFactor || 1) * nAmp + 1e-6;
-  const mu = p.muBase * speedFactor;
+  // MODULE E.2 — CHAVIRAGE : si le critere de stabilite est franchi, le cycle limite
+  // s'eteint (mu -> negatif : amortit psi vers 0) et le roulis converge vers le flanc.
+  const mu = (p.capsized ? -1.1 : p.muBase) * speedFactor;
   const psiDotDot = mu * omega0 * (1 - (s.psi * s.psi) / (psiThresh * psiThresh)) * s.psiDot - omega0 * omega0 * s.psi;
 
-  // AXE 3.4 — asymetrie de bavette : la position d'equilibre du roulis est decalee
-  // de thetaEq (biais constant) pour simuler une bavette legerement desaxee (defaut
-  // de fabrication) -> nage un peu moins parfaitement symetrique.
+  // AXE 3.4 — asymetrie de bavette : position d'equilibre du roulis decalee (thetaEq).
+  // MODULE E.2 — en chavirage, cible = flanc (~±80°) et couplage psi^2 coupe.
   const omegaTh = 2 * omega0, zetaTh = 0.35;
-  const thetaEq = (p.thetaEq || 0) * speedFactor;
-  const thetaDotDot = -omegaTh * omegaTh * (s.theta - thetaEq) - 2 * zetaTh * omegaTh * s.thetaDot + p.gammaCouple * s.psi * s.psi * speedFactor;
+  const thetaTarget = p.capsized ? (p.capsizeSide * 1.4) : ((p.thetaEq || 0) * speedFactor);
+  const thetaCouple = p.capsized ? 0 : p.gammaCouple * s.psi * s.psi * speedFactor;
+  const thetaDotDot = -omegaTh * omegaTh * (s.theta - thetaTarget) - 2 * zetaTh * omegaTh * s.thetaDot + thetaCouple;
 
-  const kBuoy = p.kBuoyBase * (5 / Math.max(p.lineLen, 0.5));
+  // MODULE C/D — retenue verticale : la ligne (canne HAUTE au-dessus de l'eau) tire
+  // le leurre vers la surface. Linearisee en un rappel kBuoy vers z=0, fonction de
+  // la longueur deployee (ligne longue -> plus "a plat" -> retenue plus faible ->
+  // plonge plus profond) ET de la hauteur de canne (canne haute -> retenue plus forte
+  // -> remonte). A rodHeight=1.5 m (defaut) le facteur vaut 1 -> depth de reference.
+  const rodFactor = 1 + 0.18 * (p.rodHeight - 1.5);
+  const kBuoy = p.kBuoyBase * (5 / Math.max(p.lineLen, 0.5)) * clamp(rodFactor, 0.4, 2.2);
   const cZ = 1.8 * Math.sqrt(p.mTrans * kBuoy);
+  // Portance de bavette : |Vrel|·Vrel_axial pour garder le signe du sens d'avance.
   const Fdive = 0.5 * RHO_WATER * p.ClDive * p.Slip * VrelAbs * VrelSigned * Math.sin(p.lipAngleRad);
   const zDotDot = (Fdive - kBuoy * s.z - cZ * s.zDot) / p.mTrans;
 
@@ -2123,7 +2233,9 @@ function derivatives(s, p) {
   const lateralVel = s.u * Math.sin(s.psi);
   const meanUDot = (s.u - s.meanU) / 1.5; // suit lentement la vitesse d'avance reelle en regime etabli
   const dispXDot = forwardVel - s.meanU - 0.8 * s.dispX; // repere flottant recentre (cf. commentaire plus bas)
-  const dispZDot = lateralVel - 0.35 * s.dispZ;
+  // MODULE C/F — composante LATERALE : la nage (u·sin psi) + une derive due au courant
+  // transversal (VwZ). A VwZ=0 (courant axial, defaut) -> comportement d'origine.
+  const dispZDot = lateralVel + 0.5 * p.VwZ - 0.35 * s.dispZ;
 
   return {
     psi: s.psiDot, psiDot: psiDotDot, theta: s.thetaDot, thetaDot: thetaDotDot,
@@ -2153,7 +2265,7 @@ function stepPhysics(dt) {
   // de ce taux, l'oscillateur peut diverger numeriquement avant que la saturation
   // non lineaire n'agisse (equation raide a bavette/vitesse elevees). On augmente
   // donc le nombre de sous-pas quand le regime courant l'exige.
-  const VrelEst = Math.abs(state.u - params.Vw) + 0.05;
+  const VrelEst = relSpeedAbs() + 0.05;
   const omega0Est = 2 * Math.PI * Math.max(params.St * VrelEst / params.L, 0.02);
   const growthRate = params.muBase * omega0Est;
   const sub = clamp(Math.ceil((growthRate * dt) / 0.2), 4, 80);
@@ -2236,6 +2348,13 @@ scene.add(lureGroup);
 const bodyGroup = new THREE.Group();
 lureGroup.add(bodyGroup);
 
+// MODULE A.1 — gizmo d'axes attache au leurre, a l'origine du repere local (= CG).
+// AxesHelper : X rouge = nez (ecoulement entrant), Y vert = dos, Z bleu = flanc droit.
+// Enfant de lureGroup (pas bodyGroup) -> non detruit par les rebuilds de geometrie.
+const axesGizmo = new THREE.AxesHelper(1);
+axesGizmo.visible = false;
+lureGroup.add(axesGizmo);
+
 const bodyProfile = [ // (s in [0,1] le long du corps, r/Rmax)
   [0.00, 0.000], [0.05, 0.030], [0.12, 0.058], [0.22, 0.084], [0.35, 0.100],
   [0.50, 0.108], [0.62, 0.104], [0.75, 0.086], [0.85, 0.062], [0.93, 0.036],
@@ -2246,15 +2365,6 @@ let bodyMesh, lipMesh, ringFront, ringRear, hookGroup;
 const charPoints = {}; // points caracteristiques en coordonnees LOCALES (repere leurre, echelle metres)
 const stressHotspots = [];
 const _geomOffset = new THREE.Vector3(); // decalage nez/queue de la geometrie visible dans le repere local
-
-// MODULES A & B : positions LOCALES (m) des composants, pour le bilan de masse et
-// le centre de masse. Renseignees a chaque buildLure (meme quand les hameçons ne
-// sont pas affiches visuellement en mode STL — leur masse reste comptee).
-const geomComp = {
-  frameCentroid: new THREE.Vector3(), // centroide du volume (= centre de carene)
-  lip: new THREE.Vector3(), ringFront: new THREE.Vector3(), ringRear: new THREE.Vector3(),
-  hookFront: new THREE.Vector3(), hookRear: new THREE.Vector3(),
-};
 
 // Centroide geometrique (moyenne des sommets) d'un mesh, exprime dans le repere
 // LOCAL du leurre (applique l'echelle et la position propres au mesh).
@@ -2344,11 +2454,18 @@ function addLipAndRings(noseX, tailX, R, showHooks) {
   bodyGroup.add(hookGroup);
 }
 
+// MODULE B.2 — points repositionnes manuellement (key -> Vector3 local memorise).
+// Ils ne sont jamais ecrases par une detection automatique et sont exclus de
+// l'inversion nez/queue (module A.2).
+const charPointsManual = {};
+
 function buildLure() {
   disposeLureChildren();
   _geomOffset.set(0, 0, 0);
   if (geom.mode === 'stl' && geom.stl) buildSTLBody();
   else buildProceduralBody();
+  // MODULE B.2 — reapplique les positions manuelles par-dessus la detection auto
+  for (const k in charPointsManual) if (charPoints[k]) charPoints[k].copy(charPointsManual[k]);
   buildCharMarkers();
 }
 
@@ -2358,6 +2475,10 @@ function buildProceduralBody() {
   const L = params.L, R = params.R;
   const cgX = params.cgPos * L; // origine du groupe = centre de gravite
   _geomOffset.set(0, 0, 0);
+  // MODULE A.2 — inversion nez/queue disponible AUSSI sur le corps procedural :
+  // le maillage est mis en miroir en X (scale -1 + DoubleSide) et toutes les
+  // positions caracteristiques sont negees en X de façon coherente.
+  const flip = geom.flip ? -1 : 1;
 
   const profilePeak = Math.max(...bodyProfile.map(([, r]) => r));
   const pts = bodyProfile.map(([s, r]) => new THREE.Vector2((r / profilePeak) * R, s * L));
@@ -2368,22 +2489,24 @@ function buildProceduralBody() {
 
   bodyMesh = new THREE.Mesh(latheGeo, new THREE.MeshStandardMaterial({
     color: 0x2f7ea8, metalness: 0.25, roughness: 0.35, vertexColors: false,
+    side: flip < 0 ? THREE.DoubleSide : THREE.FrontSide,
   }));
   bodyMesh.userData.baseColor = new THREE.Color(0x2f7ea8);
+  bodyMesh.scale.x = flip;             // miroir du corps si flip
   bodyGroup.add(bodyMesh);
 
-  const noseX = L - cgX, tailX = -cgX, lipLen = R * 2.1;
+  const noseX = flip * (L - cgX), tailX = flip * (-cgX), lipLen = R * 2.1;
   addLipAndRings(noseX, tailX, R, true);
   geomComp.frameCentroid.copy(geometryCentroidLocal(bodyMesh)); // centre de carene
 
   charPoints.nose      = new THREE.Vector3(noseX, 0, 0);
-  charPoints.lipTip    = new THREE.Vector3(noseX - lipLen * Math.cos(params.lipAngleRad), -R * 0.35 - lipLen * Math.sin(params.lipAngleRad), 0);
+  charPoints.lipTip    = new THREE.Vector3(noseX - flip * lipLen * Math.cos(params.lipAngleRad), -R * 0.35 - lipLen * Math.sin(params.lipAngleRad), 0);
   charPoints.ringFront = ringFront.position.clone();
   charPoints.ringRear  = ringRear.position.clone();
   charPoints.tail      = new THREE.Vector3(tailX, 0, 0);
-  charPoints.finLeft   = new THREE.Vector3(0.5 * L - cgX, R * 0.2, R * 1.05);
-  charPoints.finRight  = new THREE.Vector3(0.5 * L - cgX, R * 0.2, -R * 1.05);
-  charPoints.dorsal    = new THREE.Vector3(0.45 * L - cgX, R * 1.05, 0);
+  charPoints.finLeft   = new THREE.Vector3(flip * (0.5 * L - cgX), R * 0.2, R * 1.05);
+  charPoints.finRight  = new THREE.Vector3(flip * (0.5 * L - cgX), R * 0.2, -R * 1.05);
+  charPoints.dorsal    = new THREE.Vector3(flip * (0.45 * L - cgX), R * 1.05, 0);
 
   stressHotspots.length = 0;
   stressHotspots.push(charPoints.lipTip.clone(), charPoints.ringFront.clone());
@@ -2621,6 +2744,12 @@ function processSTLGeometry(rawGeo, fileName) {
   let ax0 = vecs[order[0]].clone(), ax1 = vecs[order[1]].clone(), ax2 = vecs[order[2]].clone();
   // repere droitier
   if (ax0.clone().cross(ax1).dot(ax2) < 0) ax2.multiplyScalar(-1);
+  // MODULE A.3 — indicateur de confiance du repere : ratio de variance axe1/axe2.
+  // (la confiance definitive combine ce ratio avec le ratio d'ETENDUE de la bbox
+  // le long des axes PCA, calcule plus bas — plus robuste sur un maillage dont
+  // l'echantillonnage des sommets est irregulier, ex. sphere UV sur-echantillonnee
+  // aux poles qui tromperait un ratio base uniquement sur la variance des sommets).
+  const axisRatio = vals[order[0]] / Math.max(vals[order[1]], 1e-9);
 
   // (5 partiel) projette les sommets dans le frame PCA, recentres
   const proj = new Float32Array(posArr.length);
@@ -2656,6 +2785,12 @@ function processSTLGeometry(rawGeo, fileName) {
   for (let i=0;i<proj.length;i++) proj[i]*=s;
   const halfX = (pMaxX-pMinX)*0.5*s, halfY = Math.max(Math.abs(pMinY),Math.abs(pMaxY))*s, halfZ = Math.max(Math.abs(pMinZ),Math.abs(pMaxZ))*s;
 
+  // MODULE A.3 — confiance finale : l'etendue de la bbox le long de l'axe principal
+  // doit dominer nettement les axes secondaires (corps allonge = nez/queue evident).
+  // Un mesh presque isotrope (sphere, cube -> ratio ~1) declenche l'avertissement.
+  const extentRatio = (pMaxX - pMinX) / Math.max((pMaxY - pMinY), (pMaxZ - pMinZ), 1e-9);
+  const axisConfident = axisRatio > 1.8 && extentRatio > 1.6;
+
   // (6) metriques physiques adimensionnees (frame normalise, L=1)
   const volNorm = Math.max(meshVolume(proj), 1e-4);
   const aspectY = Math.max(halfY, 0.02), aspectZ = Math.max(halfZ, 0.02);
@@ -2672,20 +2807,45 @@ function processSTLGeometry(rawGeo, fileName) {
   normGeo.computeVertexNormals();
   normGeo.computeBoundingSphere();
 
-  // (7) points caracteristiques : extrema sur chaque axe (frame normalise)
+  // (7) points caracteristiques (frame normalise)
   function extremeVertex(axis, sign) {
     let best = -Infinity, bi = 0;
     for (let i=0;i<proj.length;i+=3){ const val = sign*proj[i+axis]; if (val>best){best=val;bi=i;} }
     return new THREE.Vector3(proj[bi],proj[bi+1],proj[bi+2]);
   }
-  const nose = extremeVertex(0, +1), tail = extremeVertex(0, -1);
+  // MODULE B.1 — nez ROBUSTE multi-criteres : extremum sur X PUIS, parmi les ~5% de
+  // sommets les plus proches en X, celui de plus PETITE section transversale (le plus
+  // axial) = vraie pointe -> rejette un pic de triangulation isole hors-axe.
+  function noseRobust(sign) {
+    let ex = -Infinity;
+    for (let i=0;i<proj.length;i+=3){ const v = sign*proj[i]; if (v>ex) ex=v; }
+    let bi = -1, bestR = Infinity;
+    for (let i=0;i<proj.length;i+=3){
+      if (sign*proj[i] >= ex - 0.05) { const r = Math.hypot(proj[i+1], proj[i+2]); if (r<bestR){bestR=r;bi=i;} }
+    }
+    if (bi<0) bi = 0;
+    return new THREE.Vector3(proj[bi], proj[bi+1], proj[bi+2]);
+  }
+  const nose = noseRobust(+1), tail = noseRobust(-1);
   const dorsal = extremeVertex(1, +1);
   const finLeft = extremeVertex(2, +1), finRight = extremeVertex(2, -1);
+
+  // MODULE B.1 — anneau avant : cherche une protuberance VENTRALE nette juste
+  // derriere le nez (point d'attache typique) ; sinon fallback estime (signale).
+  let ringFront = null, ringEstimated = false;
+  {
+    let bi = -1, mostVentral = Infinity;
+    const near = (x) => Math.abs(x - nose.x) < 0.22 && Math.abs(x) < Math.abs(nose.x) - 0.02;
+    for (let i=0;i<proj.length;i+=3){
+      if (near(proj[i]) && proj[i+1] < mostVentral) { mostVentral = proj[i+1]; bi = i; }
+    }
+    if (bi >= 0 && mostVentral < -(aspectY * 0.9)) ringFront = new THREE.Vector3(proj[bi], proj[bi+1], 0);
+    else { ringFront = new THREE.Vector3(nose.x * 0.9, Math.min(nose.y, -0.06), 0); ringEstimated = true; }
+  }
   const charNorm = {
-    nose, tail, dorsal, finLeft, finRight,
-    ringFront: new THREE.Vector3(nose.x * 0.9, Math.min(nose.y, -0.06), 0),
+    nose, tail, dorsal, finLeft, finRight, ringFront,
     ringRear:  new THREE.Vector3(tail.x * 0.95, 0, 0),
-    lipTip:    new THREE.Vector3(nose.x + 0.12, -aspectY - 0.1, 0),
+    lipTip:    new THREE.Vector3(nose.x + Math.sign(nose.x || 1) * 0.12, -aspectY - 0.1, 0),
   };
 
   // (8) echantillonnage de surface + hash (deviation des streamlines)
@@ -2701,6 +2861,7 @@ function processSTLGeometry(rawGeo, fileName) {
     geometry: normGeo, metrics, charNorm, hash,
     influenceR: 0.16,   // rayon d'influence de la repulsion (frame normalise)
     triCount, rawTri, decimated, rawDims, fileName,
+    axisRatio, axisConfident, ringEstimated, // MODULE A.3 / B.1
   };
 }
 
@@ -2774,11 +2935,12 @@ function fieldVelocityWorld(pWorld, out) {
   _invQuat.copy(lureGroup.quaternion).conjugate();
   _pLocal.copy(pWorld).sub(lureGroup.position).applyQuaternion(_invQuat);
 
-  const VrelSigned = state.u - params.Vw;
-  const VrelAbs = Math.abs(VrelSigned) + 1e-4;
+  // MODULE F — flux uniforme = vecteur relatif (axial + lateral du courant).
+  const VrelSigned = state.u + params.VwX;     // composante axiale
+  const VrelAbs = relSpeedAbs() + 1e-4;
   const L = params.L, R = params.R;
 
-  out.set(-VrelSigned, 0, 0); // ecoulement uniforme relatif, exprime dans le repere local
+  out.set(-VrelSigned, 0, -params.VwZ); // ecoulement uniforme relatif (axial + lateral), repere local
 
   // Doublet source(nez)/puits(queue) — corps de Rankine. En mode STL les foyers
   // suivent la geometrie reelle (nez/queue detectes) via le decalage _geomOffset.
@@ -2943,7 +3105,7 @@ const vortexRings = [];
 }
 function updateVortexRings() {
   const L = params.L, R = params.R;
-  const VrelAbs = Math.abs(state.u - params.Vw) + 1e-4;
+  const VrelAbs = relSpeedAbs() + 1e-4;
   const omega = 2 * Math.PI * Math.max(params.St * VrelAbs / L, 0.02);
   const coreR = 0.25 * R, spacing = 1.15 * R, tailX = -0.5 * L;
   const bShed = 0.3 * R + 1.4 * R * clamp(Math.abs(state.psi) / 0.35, 0, 1);
@@ -3016,7 +3178,7 @@ function updatePressurePlane() {
   pressurePlane.position.x = ui.planeX * L;
   const scale = R * 4.0;
   pressurePlane.scale.set(scale, scale, 1);
-  const VrelAbs = Math.abs(state.u - params.Vw) + 1e-4;
+  const VrelAbs = relSpeedAbs() + 1e-4;
   // Plage de la colormap auto-ajustee sur la pression dynamique courante (comme un CFD-Post en mode auto-range)
   pressureRangePa = Math.max(60, 1.3 * 0.5 * RHO_WATER * VrelAbs * VrelAbs);
   const pos = pressurePlaneGeo.attributes.position;
@@ -3102,7 +3264,7 @@ function updateStress(dt) {
   }
   const pos = geo.attributes.position, col = geo.attributes.color;
   const nrm = geo.attributes.normal;
-  const VrelAbs = Math.abs(state.u - params.Vw);
+  const VrelAbs = relSpeedAbs();
   // Chargement hydrodynamique normalise : portance de bavette (~V^2 sin(angle))
   // + effort inertiel de lacet (|psiDot|). Sert de facteur d'echelle global.
   const Fnorm = clamp((0.5 * RHO_WATER * params.ClDive * params.Slip * VrelAbs * VrelAbs * Math.abs(Math.sin(params.lipAngleRad))) / 40, 0, 1)
@@ -3274,6 +3436,8 @@ bindSlider('isoTh', 'isoTh', 'isoThVal', v => v.toFixed(2));
 bindSlider('planeX', 'planeX', 'planeXVal', v => v.toFixed(2));
 bindSlider('lipAsym', 'lipAsymmetryDeg', 'lipAsymVal', v => v.toFixed(1) + '°'); // AXE 3.4
 bindSlider('visualGain', 'visualGain', 'visGainVal', v => v.toFixed(1) + '×');    // AXE 2.1 (affichage)
+bindSlider('vwHeading', 'VwHeading', 'vwHeadVal', v => v.toFixed(0) + '°');       // MODULE F
+bindSlider('rodHeight', 'rodHeight', 'rodHeightVal', v => v.toFixed(1) + ' m');   // MODULE C
 
 document.getElementById('bodyLen').addEventListener('change', () => { updateParams(); buildLure(); resetHodo(); });
 document.getElementById('cgPos').addEventListener('change', () => { updateParams(); buildLure(); resetHodo(); });
@@ -3337,6 +3501,9 @@ function applyToggleVisibility() {
   vectorGroup.visible = toggles.vectors;
   if (refAxisLine) refAxisLine.visible = toggles.refAxis;
   if (!toggles.bodyTrail) for (const g of ghostMeshes) g.visible = false;
+  // MODULE A.1 — repere local (taille ~0.6·L)
+  axesGizmo.visible = toggles.axes;
+  axesGizmo.scale.setScalar(0.6 * params.L);
 }
 applyToggleVisibility();
 refreshFieldStatus();
@@ -3367,12 +3534,16 @@ function loadSTLFromBuffer(buffer, name) {
       geom.lastBuffer = buffer; geom.lastName = name;
       processSTLGeometry(raw, name);
       geom.mode = 'stl';
-      buildLure(); resetHodo(); applyToggleVisibility();
+      buildLure(); resetHodo(); applyToggleVisibility(); updateReferenceLabel();
       const st = geom.stl, d = st.rawDims;
       let msg = `✓ ${name || 'STL'} · ${st.triCount.toLocaleString('fr-FR')} triangles`;
       if (st.decimated) msg += ` (décimé de ${st.rawTri.toLocaleString('fr-FR')})`;
       msg += ` · bbox ${d.x.toFixed(1)}×${d.y.toFixed(1)}×${d.z.toFixed(1)} (unités fichier) · échelle sim = ${ui.bodyLenMM} mm`;
-      setStlStatus(msg, 'ok');
+      // MODULE A.3 / B.1 — avertissements de fiabilite du repere
+      let cls = 'ok';
+      if (!st.axisConfident) { msg += ` · ⚠ axe principal peu marqué (ratio ${st.axisRatio.toFixed(1)}) — vérifiez/inversez le sens nez/queue`; cls = 'busy'; }
+      if (st.ringEstimated) msg += ` · anneau avant : position estimée`;
+      setStlStatus(msg, cls);
       document.getElementById('stl-flip').disabled = false;
       document.getElementById('stl-reset').disabled = false;
       document.getElementById('decimRow').style.display = 'block';
@@ -3408,9 +3579,18 @@ window.addEventListener('dragover', (e) => e.preventDefault());
 window.addEventListener('drop', (e) => e.preventDefault());
 
 document.getElementById('stl-flip').addEventListener('click', () => {
-  if (geom.mode !== 'stl' || !geom.lastBuffer) return;
+  // MODULE A.2 — inversion nez/queue, coherente en mode STL ET procedural.
+  // Si des points ont ete repositionnes manuellement, ils appartiennent a
+  // l'ancien repere : on avertit et on les abandonne plutot que de les rendre
+  // silencieusement incoherents (module B.2).
+  if (Object.keys(charPointsManual).length > 0) {
+    for (const k in charPointsManual) delete charPointsManual[k];
+    setStlStatus('⚠ Points repositionnés réinitialisés par l\'inversion nez/queue.', 'busy');
+  }
   geom.flip = !geom.flip;
-  loadSTLFromBuffer(geom.lastBuffer, geom.lastName);
+  if (geom.mode === 'stl' && geom.lastBuffer) loadSTLFromBuffer(geom.lastBuffer, geom.lastName);
+  else { updateParams(); buildLure(); resetHodo(); }
+  updateReferenceLabel();
 });
 document.getElementById('stl-reset').addEventListener('click', () => {
   geom.mode = 'procedural'; geom.stl = null; geom.flip = false;
@@ -3467,6 +3647,7 @@ renderer.domElement.addEventListener('pointerup', (e) => {
       const localP = lureGroup.worldToLocal(hb[0].point.clone());
       charPoints[selectedKey].copy(localP);
       charMarkers[selectedKey].position.copy(localP);
+      charPointsManual[selectedKey] = localP.clone(); // MODULE B.2 — memorise le point manuel
       hodoHistory[selectedKey] = []; // reinitialise la trace de ce point
     }
   }
@@ -4075,7 +4256,12 @@ function updateMassPanelReadouts() {
   const d10 = Math.abs(tv.vcms) > 0.01 ? (10/Math.abs(tv.vcms)).toFixed(1) : '∞';
   M.fallVal.textContent = `${tv.sinks?'Chute':'Remontée'} ${Math.abs(tv.vcms).toFixed(1)} cm/s · 10 cm en ${d10} s`;
   const com = massState.com, car = geomComp.frameCentroid;
-  M.comCoords.innerHTML = `CM (mm) X=${(com.x*1000).toFixed(1)} Y=${(com.y*1000).toFixed(1)} Z=${(com.z*1000).toFixed(1)} · écart carène <b>${(com.distanceTo(car)*1000).toFixed(1)} mm</b>`;
+  // MODULE E.2 — stabilite / chavirage affiche aussi dans le panneau masse
+  const stab = simState.stabilityRatio;
+  const stabTxt = simState.capsized
+    ? `<span style="color:#ff7a6b">⚠ CHAVIRÉ — stabilité ${stab.toFixed(2)} (&lt; 1)</span>`
+    : `stabilité <b style="color:${stab < 1.3 ? '#ff9a4d' : '#8effa0'}">${stab.toFixed(2)}</b>`;
+  M.comCoords.innerHTML = `CM (mm) X=${(com.x*1000).toFixed(1)} Y=${(com.y*1000).toFixed(1)} Z=${(com.z*1000).toFixed(1)} · écart carène <b>${(com.distanceTo(car)*1000).toFixed(1)} mm</b><br>${stabTxt}`;
   drawFallCanvas(tv);
 }
 // petit graphe z(t) au repos (integration simple jusqu'a 5s), MODULE A.4
@@ -4137,11 +4323,29 @@ function updateLureTransform() {
   const euler = new THREE.Euler(pitch, psiDisplay, thetaDisplay, 'YXZ');
   lureGroup.quaternion.setFromEuler(euler);
 
-  // Ligne de peche : point A tire a Vf, relie a l'anneau avant (leger affaissement)
+  // MODULE C.1 — position REELLE du point A (bout de canne) en 3D. Hypotheses
+  // simplificatrices (documentees) : canne fixe verticalement a `rodHeight` au-dessus
+  // de l'eau (surface a y=0), pas de mouvement de l'angler. Le vecteur ligne
+  // L_vec = posA - posAnneau se decompose en 3 composantes :
+  //   - longitudinale  : le long de l'axe de retrieve (+X), la "traction utile"
+  //   - verticale      : rodHeight + profondeur -> retient le leurre vers le HAUT
+  //                      (ligne courte / canne haute -> composante plus grande ->
+  //                       le leurre plonge moins profond ; cf. kBuoy(rodFactor))
+  //   - laterale       : derive due au courant transversal / angle de casting
+  // L'affichage est compresse a l'echelle de la scene (la vraie ligne fait plusieurs
+  // metres) mais l'ANGLE reflete fidelement rodHeight/lineLen/profondeur.
   const ringWorld = charPoints.ringFront.clone().applyQuaternion(lureGroup.quaternion).add(lureGroup.position);
-  const aPos = new THREE.Vector3(ringWorld.x + state.xRel + 1.4 * L, ringWorld.y + 0.5 * L, ringWorld.z * 0.2);
+  const vertDrop = params.rodHeight + Math.max(state.z, 0);           // hauteur canne + profondeur
+  const sinLine = clamp(vertDrop / Math.max(params.lineLen, 0.2), 0, 0.98); // inclinaison de la ligne
+  const cosLine = Math.sqrt(Math.max(1 - sinLine * sinLine, 0));
+  const latRatio = clamp(params.VwZ * 0.25, -0.4, 0.4);              // derive laterale (casting/courant)
+  const dScene = 2.0 * L;                                            // longueur AFFICHEE (compressee)
+  const dir = new THREE.Vector3(cosLine, sinLine, latRatio).normalize();
+  const aPos = ringWorld.clone().addScaledVector(dir, dScene);
   aMarker.position.copy(aPos);
-  const mid = ringWorld.clone().lerp(aPos, 0.5); mid.y -= 0.6 * L * clamp(1 - ui.lineK / 200, 0.15, 1);
+  // decomposition exposee (pour reference/rapport)
+  params.lineLong = cosLine; params.lineVert = sinLine; params.lineLat = latRatio;
+  const mid = ringWorld.clone().lerp(aPos, 0.5); mid.y -= 0.4 * L * clamp(1 - ui.lineK / 200, 0.15, 1);
   const curve = new THREE.QuadraticBezierCurve3(ringWorld, mid, aPos);
   const linePts = curve.getPoints(12);
   fishingLine.geometry.dispose();
@@ -4241,6 +4445,52 @@ function drawSignalWidget() {
   signalCtx.fillStyle = '#ff9a4d'; signalCtx.fillText('theta (roulis)', 6, 22);
 }
 
+/* MODULE A.1 — libelle permanent du repere, reflete l'etat courant de geom.flip. */
+const refLabelEl = document.getElementById('refLabel');
+function updateReferenceLabel() {
+  if (!refLabelEl) return;
+  const flipped = geom.flip;
+  refLabelEl.innerHTML = 'Repère leurre : <b style="color:#ff6b6b">+X = nez</b> (écoulement) · ' +
+    '<b style="color:#8effa0">+Y = dos</b> · <b style="color:#6b9bff">+Z = flanc droit</b>' +
+    (flipped ? ' <span style="color:#ff9a4d">· nez/queue INVERSÉ</span>' : '');
+}
+updateReferenceLabel();
+
+const capsizeBanner = document.getElementById('capsizeBanner');
+
+/* MODULE F.2 — widget de decomposition vectorielle Vf / Vw (vue de dessus).
+ * Montre Vf_vec (axial), Vw_vec (courant) et leur resultante Vf+Vw, avec les
+ * composantes numeriques -> l'addition de vecteurs est explicite, pas deduite. */
+const vecWidget = document.getElementById('vecWidget');
+const vecCtx = vecWidget ? vecWidget.getContext('2d') : null;
+function drawVectorWidget() {
+  if (!vecCtx) return;
+  const W = vecWidget.width, H = vecWidget.height, cx = W / 2, cy = H / 2;
+  vecCtx.clearRect(0, 0, W, H); vecCtx.fillStyle = '#070a0e'; vecCtx.fillRect(0, 0, W, H);
+  vecCtx.strokeStyle = '#1c2733'; vecCtx.lineWidth = 1;
+  vecCtx.beginPath(); vecCtx.moveTo(cx, 0); vecCtx.lineTo(cx, H); vecCtx.moveTo(0, cy); vecCtx.lineTo(W, cy); vecCtx.stroke();
+  // Vf_vec = (Vf,0) ; Vw_vec = (VwX,VwZ) ; resultante = somme. (X = axe retrieve horizontal)
+  const scale = 40; // px par m/s
+  const arrow = (vx, vz, col, lw) => {
+    const ex = cx + vx * scale, ey = cy - vz * scale;
+    vecCtx.strokeStyle = col; vecCtx.fillStyle = col; vecCtx.lineWidth = lw;
+    vecCtx.beginPath(); vecCtx.moveTo(cx, cy); vecCtx.lineTo(ex, ey); vecCtx.stroke();
+    const a = Math.atan2(ey - cy, ex - cx), hl = 6;
+    vecCtx.beginPath(); vecCtx.moveTo(ex, ey);
+    vecCtx.lineTo(ex - hl * Math.cos(a - 0.4), ey - hl * Math.sin(a - 0.4));
+    vecCtx.lineTo(ex - hl * Math.cos(a + 0.4), ey - hl * Math.sin(a + 0.4));
+    vecCtx.closePath(); vecCtx.fill();
+  };
+  const vfx = params.Vf, vwx = params.VwX, vwz = params.VwZ;
+  arrow(vfx, 0, '#3fb6ff', 2);                 // Vf
+  arrow(vwx, vwz, '#8effa0', 2);               // Vw
+  arrow(vfx + vwx, vwz, '#ff9a4d', 2.4);       // resultante Vf+Vw
+  vecCtx.font = '9px monospace';
+  vecCtx.fillStyle = '#3fb6ff'; vecCtx.fillText(`Vf (${vfx.toFixed(2)}, 0)`, 5, 11);
+  vecCtx.fillStyle = '#8effa0'; vecCtx.fillText(`Vw (${vwx.toFixed(2)}, ${vwz.toFixed(2)})`, 5, 22);
+  vecCtx.fillStyle = '#ff9a4d'; vecCtx.fillText(`Σ (${(vfx+vwx).toFixed(2)}, ${vwz.toFixed(2)})  |V_rel|=${relSpeedAbs().toFixed(2)}`, 5, H - 6);
+}
+
 function animate() {
   requestAnimationFrame(animate);
   const dt = Math.min(clock.getDelta(), 0.05);
@@ -4277,11 +4527,15 @@ function animate() {
     comLine.geometry.setFromPoints([massState.com, geomComp.frameCentroid]);
   }
 
-  const VrelAbs = Math.abs(state.u - params.Vw);
+  const VrelAbs = relSpeedAbs();
   const fShed = params.St * VrelAbs / params.L;
   const vfNow = getInstantVf(simTime, params.Vf);
+  const zeq = computeZeq(); // MODULE D.2 — profondeur d'equilibre theorique (modele simplifie)
   timeValEl.textContent = simTime.toFixed(2);
-  regimeValEl.textContent = `V_rel = ${VrelAbs.toFixed(2)} m/s · f_shed = ${fShed.toFixed(2)} Hz · profondeur = ${state.z.toFixed(2)} m · Vf(t) = ${vfNow.toFixed(2)} m/s`;
+  regimeValEl.textContent = `V_rel = ${VrelAbs.toFixed(2)} m/s · f_shed = ${fShed.toFixed(2)} Hz · profondeur = ${state.z.toFixed(3)} m (z_eq≈${zeq.toFixed(3)} m, modèle simpl.) · Vf(t) = ${vfNow.toFixed(2)} m/s`;
+  // MODULE E.2 — bandeau de chavirage
+  if (capsizeBanner) capsizeBanner.style.display = simState.capsized ? 'block' : 'none';
+  drawVectorWidget(); // MODULE F.2 — decomposition vectorielle Vf/Vw
 
   controls.update();
   renderer.render(scene, camera);
