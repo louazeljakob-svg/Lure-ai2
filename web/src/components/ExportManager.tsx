@@ -18,6 +18,7 @@ interface Props {
   physics: PhysicsResult;
   onImport: (file: File) => void;
   onExportSTL: () => void;
+  onExportSTEP: () => void;
   onExportJSON: () => void;
   onSaveSession: () => void;
   /** « Ajouter aux projets » ou « Mettre a jour » selon le projet actif. */
@@ -32,6 +33,7 @@ export function ExportManager({
   physics,
   onImport,
   onExportSTL,
+  onExportSTEP,
   onExportJSON,
   onSaveSession,
   saveLabel,
@@ -81,6 +83,9 @@ export function ExportManager({
 
       <div className="stack">
         <div className="export-dock__actions">
+          <button type="button" className="btn btn--sm btn--dark" onClick={onExportSTEP}>
+            Exporter STEP
+          </button>
           <button type="button" className="btn btn--sm" onClick={onExportJSON}>
             Projet JSON
           </button>
@@ -106,8 +111,8 @@ export function ExportManager({
         />
       </div>
       <p className="control__hint">
-        STL a l echelle 1:1 en millimetres, pose sur le plateau. Tout est genere dans le
-        navigateur : rien n est envoye sur un serveur.
+        STL et STEP a l echelle 1:1 en millimetres, poses sur le plateau, agrafe exclue.
+        Tout est genere dans le navigateur : rien n est envoye sur un serveur.
       </p>
     </div>
   );

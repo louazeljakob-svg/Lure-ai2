@@ -52,12 +52,37 @@ piece qui sera imprimee.
 
 | Panneau | Contenu |
 | --- | --- |
-| Gauche | Longueur, largeur, epaisseur, position du ventre, courbures dorsale et ventrale, finesse du nez, creux de bouche, effilement arriere, profil de section, angle / longueur / largeur de bavette, forme et taille de la queue |
+| Gauche | Longueur, largeur, epaisseur, position du ventre, courbures dorsale et ventrale, finesse du nez, creux de bouche, effilement arriere, profil de section, **branchies et yeux**, angle / longueur / largeur de bavette, forme et taille de la queue |
 | Centre | Viewport 3D (orbite, zoom, pan), grille d'atelier au centimetre, eclairage studio, reperes CG / centre de poussee, vue rayons X, vue flottaison |
-| Droite | Matiere & finition, simulation physique, projets de la session — plus le bloc d'export toujours accessible |
+| Droite | Matiere & finition, **agrafes**, **bibliotheque de livrees**, simulation physique, projets de la session — plus le bloc d'export toujours accessible |
 
 Le maillage est **regenere a chaque mouvement de slider** : aucun modele 3D
 prefabrique n'est charge.
+
+#### Details de tete
+
+Branchies et yeux ne sont pas des pieces rapportees : ils **deplacent les
+sommets du corps lui-meme** dans l'espace des parametres du loft. Le maillage
+reste donc ferme et imprimable. La ligne d'ouie se bombe vers l'arriere a
+mi-flanc comme un vrai opercule ; l'oeil combine une cuvette annulaire et un
+iris bombe (relief positif) ou une calotte entierement bombee (relief negatif).
+Le relief demande est respecte a mieux de 2 % sur le maillage. Ces reglages ne
+s'appliquent pas a la cuiller, qui n'a pas de tete distincte.
+
+#### Bavette
+
+L'angle est mesure **depuis l'axe du corps** : 0 degre place la bavette dans le
+prolongement du nez (plongee maximale), 90 degres la dresse perpendiculairement
+(nage de sub-surface). Elle projette toujours vers l'avant, comme une vraie
+levre de plongee.
+
+#### Agrafes
+
+Une agrafe optionnelle (fil 1,2 mm / 16 mm ou 1,6 mm / 17,5 mm) est generee
+comme un vrai fil plie : une courbe decrit l'axe du fil, un tube de la section
+du fil est balaye le long de cette courbe, et la masse d'acier se deduit de la
+longueur developpee (0,37 g et 0,72 g). Elle entre dans la masse totale et dans
+le centre de gravite, mais **jamais dans les fichiers d'impression**.
 
 ### 3. Simulation physique
 
@@ -81,10 +106,25 @@ donc fidelement chaque reglage.
 Hypotheses : leurre etanche, eau au repos, petits angles. Ce n'est pas de la CFD —
 les valeurs sont des estimations de conception, pas des mesures.
 
+### 3 bis. Livree
+
+Cinq zones colorables (tete, dos, flancs, ventre, queue) avec fondu reglable,
+motifs generes au canvas (rayures, points, ecailles, camouflage deterministe,
+degrade longitudinal), oeil peint et cinq finitions dont un rendu
+**holographique** obtenu par irisation de film mince. Les livrees peuvent etre
+enregistrees dans une bibliotheque qui voyage avec le projet JSON.
+
 ### 4. Export & sauvegarde — 100 % navigateur
 
 - **Exporter STL** : binaire, echelle 1:1 en millimetres, piece posee sur le
   plateau et centree, longueur sur X (convention des trancheurs)
+- **Exporter STEP** (ISO 10303-21, schema AP214) : B-rep facette a topologie
+  complete — chaque triangle devient une ADVANCED_FACE plane, bornee par une
+  EDGE_LOOP dont les aretes sont partagees entre faces voisines. C'est cette
+  topologie partagee qui fait un solide mesurable en CAO plutot qu'une soupe de
+  triangles. La geometrie est regeneree a resolution reduite pour l'occasion
+  (~4 700 faces, ~3 Mo) ; les faces restent planes, ce n'est pas une surface
+  analytique
 - **Deux chemins de remise de fichier**, choisis automatiquement : telechargement
   navigateur natif quand la page tourne en local, capacite `downloads` de l'hote
   quand elle est publiee en artefact (le bac a sable y neutralise les liens

@@ -1,8 +1,16 @@
 /** Panneau droit — matiere d'impression, lestage interne et livree. */
 
-import type { BallastWeight, LureParams, PaintConfig, PatternId } from '../types/lure';
+import { useState } from 'react';
+import type {
+  BallastWeight,
+  ClipId,
+  LureParams,
+  PaintConfig,
+  PatternId,
+  SavedPalette,
+} from '../types/lure';
 import { LEAD_DENSITY } from '../lib/geometry';
-import { FINISHES, MATERIALS, getMaterial } from '../lib/materials';
+import { CLIPS, FINISHES, MATERIALS, getMaterial } from '../lib/materials';
 import { paintPreviewCss } from '../lib/paint';
 import { LIMITS } from '../lib/presets';
 import { ColorField, Fieldset, Segmented, Slider } from './ui';
@@ -10,6 +18,12 @@ import { ColorField, Fieldset, Segmented, Slider } from './ui';
 interface Props {
   params: LureParams;
   onChange: (patch: Partial<LureParams>) => void;
+  /** Masse reelle de l'agrafe choisie, calculee depuis sa geometrie. */
+  clipMass: number;
+  palettes: SavedPalette[];
+  onSavePalette: (name: string) => void;
+  onApplyPalette: (id: string) => void;
+  onDeletePalette: (id: string) => void;
 }
 
 const MAX_BALLASTS = 8;
@@ -75,8 +89,17 @@ const PALETTES: { name: string; paint: Partial<PaintConfig> }[] = [
   },
 ];
 
-export function MaterialPanel({ params, onChange }: Props) {
+export function MaterialPanel({
+  params,
+  onChange,
+  clipMass,
+  palettes,
+  onSavePalette,
+  onApplyPalette,
+  onDeletePalette,
+}: Props) {
   const material = getMaterial(params.material);
+  const [paletteName, setPaletteName] = useState('');
 
   const setPaint = (patch: Partial<PaintConfig>) =>
     onChange({ paint: { ...params.paint, ...patch } });
@@ -220,7 +243,41 @@ export function MaterialPanel({ params, onChange }: Props) {
         </button>
       </Fieldset>
 
-      <Fieldset legend="Livree" hint="Zones colorables du corps et motif de surface.">
+      <Fieldset
+        legend="Clips"
+        hint="Agrafe montee sur l oeillet de tete. Elle n est pas imprimee : elle s ajoute a la masse et deplace le centre de gravite vers l avant."
+      >
+        <Segmented
+          label="Anneau brise"
+          value={params.clip}
+          options={[
+            { value: 'none' as ClipId, label: 'Aucun' },
+            ...CLIPS.map((clip) => ({
+              value: clip.id as ClipId,
+              label: clip.label,
+              title: `Fil ${clip.wire} mm, longueur ${clip.length} mm`,
+            })),
+          ]}
+          onChange={(clip) => onChange({ clip })}
+        />
+        {params.clip === 'none' ? (
+          <p className="control__hint">Aucune agrafe : le leurre est noue directement.</p>
+        ) : (
+          <div className="stat" style={{ border: '1px solid var(--line)' }}>
+            <span className="stat__label">Agrafe montee</span>
+            <div className="stat__value">
+              {clipMass.toFixed(2)}
+              <span className="stat__unit">g</span>
+            </div>
+            <span className="stat__sub">
+              fil {CLIPS.find((c) => c.id === params.clip)?.wire} mm · longueur{' '}
+              {CLIPS.find((c) => c.id === params.clip)?.length} mm
+            </span>
+          </div>
+        )}
+      </Fieldset>
+
+      <Fieldset legend="Livree" hint="Cinq zones colorables, motif de surface et finition.">
         <div className="swatch-row">
           <ColorField
             label="Dos"
@@ -238,6 +295,62 @@ export function MaterialPanel({ params, onChange }: Props) {
             onChange={(belly) => setPaint({ belly })}
           />
         </div>
+
+        <div className="swatch-row" style={{ marginTop: 8 }}>
+          <ColorField
+            label="Tete"
+            value={params.paint.head}
+            onChange={(head) => setPaint({ head })}
+          />
+          <ColorField
+            label="Queue"
+            value={params.paint.tail}
+            onChange={(tail) => setPaint({ tail })}
+          />
+          <ColorField
+            label="Iris"
+            value={params.paint.eyeColor}
+            onChange={(eyeColor) => setPaint({ eyeColor })}
+          />
+        </div>
+
+        <Slider
+          label="Etendue de la tete"
+          value={params.paint.headLength}
+          {...LIMITS.zoneLength}
+          display={
+            params.paint.headLength < 0.01
+              ? 'Aucune'
+              : `${Math.round(params.paint.headLength * 100)} %`
+          }
+          hint="Zone peinte depuis le nez. A zero, la tete suit les couleurs du corps."
+          onChange={(headLength) => setPaint({ headLength })}
+        />
+        <Slider
+          label="Etendue de la queue"
+          value={params.paint.tailLength}
+          {...LIMITS.zoneLength}
+          display={
+            params.paint.tailLength < 0.01
+              ? 'Aucune'
+              : `${Math.round(params.paint.tailLength * 100)} %`
+          }
+          onChange={(tailLength) => setPaint({ tailLength })}
+        />
+        <Slider
+          label="Fondu des zones"
+          value={params.paint.blend}
+          {...LIMITS.paintBlend}
+          display={
+            params.paint.blend < 0.15
+              ? 'Franc'
+              : params.paint.blend > 0.7
+                ? 'Tres fondu'
+                : 'Degrade'
+          }
+          hint="Largeur des transitions entre dos, flancs, ventre, tete et queue."
+          onChange={(blend) => setPaint({ blend })}
+        />
 
         <div className="palette-row">
           {PALETTES.map((palette) => (
@@ -267,6 +380,8 @@ export function MaterialPanel({ params, onChange }: Props) {
               { value: 'none', label: 'Aucun' },
               { value: 'stripes', label: 'Rayures' },
               { value: 'dots', label: 'Points' },
+              { value: 'scales', label: 'Ecailles' },
+              { value: 'camo', label: 'Camouflage' },
               { value: 'gradient', label: 'Degrade' },
             ] as { value: PatternId; label: string }[]}
             onChange={(pattern) => setPaint({ pattern })}
@@ -298,6 +413,62 @@ export function MaterialPanel({ params, onChange }: Props) {
           }))}
           onChange={(finish) => setPaint({ finish })}
         />
+      </Fieldset>
+
+      <Fieldset
+        legend="Bibliotheque de livrees"
+        hint="Enregistrez une livree pour la reappliquer plus tard. Elle part avec le projet dans le fichier JSON."
+      >
+        <form
+          className="export-dock__name"
+          onSubmit={(event) => {
+            event.preventDefault();
+            onSavePalette(paletteName);
+            setPaletteName('');
+          }}
+        >
+          <label className="sr-only" htmlFor="palette-name">
+            Nom de la livree
+          </label>
+          <input
+            id="palette-name"
+            type="text"
+            placeholder="Nom de la livree"
+            value={paletteName}
+            maxLength={40}
+            onChange={(event) => setPaletteName(event.target.value)}
+          />
+          <button type="submit" className="btn">
+            Enregistrer
+          </button>
+        </form>
+
+        {palettes.length === 0 ? (
+          <p className="empty">Aucune livree enregistree pour l instant.</p>
+        ) : (
+          <div className="palette-row">
+            {palettes.map((palette) => (
+              <span key={palette.id} className="palette-chip">
+                <i aria-hidden="true" style={{ background: paintPreviewCss(palette.paint) }} />
+                <button
+                  type="button"
+                  className="palette-chip__apply"
+                  onClick={() => onApplyPalette(palette.id)}
+                >
+                  {palette.name}
+                </button>
+                <button
+                  type="button"
+                  className="palette-chip__remove"
+                  aria-label={`Supprimer la livree ${palette.name}`}
+                  onClick={() => onDeletePalette(palette.id)}
+                >
+                  x
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
       </Fieldset>
     </div>
   );

@@ -86,9 +86,11 @@ export function LureSilhouette({ params, height = 116, title, decorative }: Prop
       const root = profile.section(0.07);
       const ox = profile.xAt(0.045);
       const oy = -root.bottom * 0.75;
+      // La bavette projette VERS L'AVANT (le nez est en x minimal) et vers le
+      // bas : meme convention que la geometrie 3D.
       const corner = (u: number, v: number): Point => ({
-        x: ox + u * Math.cos(angle) + v * Math.sin(angle),
-        y: oy + u * Math.sin(angle) - v * Math.cos(angle),
+        x: ox - u * Math.cos(angle) + v * Math.sin(angle),
+        y: oy + u * Math.sin(angle) + v * Math.cos(angle),
       });
       bibPath = `${toPath([
         corner(0, th / 2),
@@ -96,6 +98,33 @@ export function LureSilhouette({ params, height = 116, title, decorative }: Prop
         corner(bl, -th / 2),
         corner(0, -th / 2),
       ])} Z`;
+    }
+
+    // --- Details de tete ---------------------------------------------------
+    const details = params.shape === 'spoon' ? null : params;
+    let gillPath: string | null = null;
+    if (details?.gills.enabled) {
+      const at = details.gills.position;
+      const section = profile.section(at);
+      const bow = details.gills.size * 0.1 * 0.55;
+      const x = profile.xAt(at);
+      gillPath =
+        `M${fmt(x)} ${fmt(-section.top)}` +
+        ` Q${fmt(x + bow)} ${fmt(-(section.top + section.bottom) / 2)} ${fmt(x)} ${fmt(
+          -section.bottom,
+        )}`;
+    }
+
+    let eye: { cx: number; cy: number; r: number } | null = null;
+    if (details?.eyes.enabled) {
+      const at = details.eyes.position;
+      const section = profile.section(at);
+      // L'oeil est sur le haut du flanc : en vue de profil il remonte d'autant.
+      eye = {
+        cx: profile.xAt(at),
+        cy: -section.top * Math.cos(1.15),
+        r: Math.max((details.eyes.size * 0.1) / 2, 0.05),
+      };
     }
 
     const all = [...top, ...bottom];
@@ -120,6 +149,10 @@ export function LureSilhouette({ params, height = 116, title, decorative }: Prop
       bodyPath,
       tailPath,
       bibPath,
+      gillPath,
+      eye,
+      bodyStart: profile.xAt(0),
+      bodyLength: profile.lengthCm,
       viewBox: `${fmt(minX)} ${fmt(minY)} ${fmt(maxX - minX)} ${fmt(maxY - minY)}`,
       box: { minX, minY, width: maxX - minX, height: maxY - minY },
     };
@@ -130,6 +163,8 @@ export function LureSilhouette({ params, height = 116, title, decorative }: Prop
   const patternId = `pat-${uid}`;
   const clipId = `clip-${uid}`;
   const headId = `head-${uid}`;
+  const zoneHeadId = `zhead-${uid}`;
+  const zoneTailId = `ztail-${uid}`;
   const patternStep = art.box.width / clamp(paint.patternScale, 3, 26);
 
   return (
@@ -151,6 +186,17 @@ export function LureSilhouette({ params, height = 116, title, decorative }: Prop
         <linearGradient id={headId} x1="0" y1="0" x2="1" y2="0">
           <stop offset="0%" stopColor={paint.patternColor} stopOpacity="0.95" />
           <stop offset="100%" stopColor={paint.patternColor} stopOpacity="0" />
+        </linearGradient>
+        {/* Zones longitudinales : meme fondu que la texture 3D. */}
+        <linearGradient id={zoneHeadId} x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stopColor={paint.head} stopOpacity="1" />
+          <stop offset={`${(1 - (0.1 + paint.blend * 0.55)) * 100}%`} stopColor={paint.head} stopOpacity="1" />
+          <stop offset="100%" stopColor={paint.head} stopOpacity="0" />
+        </linearGradient>
+        <linearGradient id={zoneTailId} x1="1" y1="0" x2="0" y2="0">
+          <stop offset="0%" stopColor={paint.tail} stopOpacity="1" />
+          <stop offset={`${(1 - (0.1 + paint.blend * 0.55)) * 100}%`} stopColor={paint.tail} stopOpacity="1" />
+          <stop offset="100%" stopColor={paint.tail} stopOpacity="0" />
         </linearGradient>
         {paint.pattern === 'stripes' ? (
           <pattern
@@ -204,7 +250,7 @@ export function LureSilhouette({ params, height = 116, title, decorative }: Prop
       {art.tailPath ? (
         <path
           d={art.tailPath}
-          fill={paint.flank}
+          fill={paint.tailLength > 0.01 ? paint.tail : paint.flank}
           stroke="#101114"
           strokeWidth={1.2}
           vectorEffect="non-scaling-stroke"
@@ -212,6 +258,26 @@ export function LureSilhouette({ params, height = 116, title, decorative }: Prop
       ) : null}
 
       <path d={art.bodyPath} fill={`url(#${gradientId})`} />
+      {paint.headLength > 0.01 ? (
+        <rect
+          x={art.bodyStart}
+          y={art.box.minY}
+          width={art.bodyLength * paint.headLength}
+          height={art.box.height}
+          fill={`url(#${zoneHeadId})`}
+          clipPath={`url(#${clipId})`}
+        />
+      ) : null}
+      {paint.tailLength > 0.01 ? (
+        <rect
+          x={art.bodyStart + art.bodyLength * (1 - paint.tailLength)}
+          y={art.box.minY}
+          width={art.bodyLength * paint.tailLength}
+          height={art.box.height}
+          fill={`url(#${zoneTailId})`}
+          clipPath={`url(#${clipId})`}
+        />
+      ) : null}
       {paint.pattern === 'stripes' || paint.pattern === 'dots' ? (
         <rect
           x={art.box.minX}
@@ -232,6 +298,16 @@ export function LureSilhouette({ params, height = 116, title, decorative }: Prop
           clipPath={`url(#${clipId})`}
         />
       ) : null}
+      {art.gillPath ? (
+        <path
+          d={art.gillPath}
+          fill="none"
+          stroke="#101114"
+          strokeOpacity="0.55"
+          strokeWidth={1.2}
+          vectorEffect="non-scaling-stroke"
+        />
+      ) : null}
       <path
         d={art.bodyPath}
         fill="none"
@@ -239,6 +315,13 @@ export function LureSilhouette({ params, height = 116, title, decorative }: Prop
         strokeWidth={1.4}
         vectorEffect="non-scaling-stroke"
       />
+      {art.eye ? (
+        <g>
+          <circle cx={art.eye.cx} cy={art.eye.cy} r={art.eye.r} fill="#f7f4ee" />
+          <circle cx={art.eye.cx} cy={art.eye.cy} r={art.eye.r * 0.72} fill={paint.eyeColor} />
+          <circle cx={art.eye.cx} cy={art.eye.cy} r={art.eye.r * 0.34} fill="#101114" />
+        </g>
+      ) : null}
     </svg>
   );
 }

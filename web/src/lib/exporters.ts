@@ -8,9 +8,10 @@
 
 import * as THREE from 'three';
 import { STLExporter } from 'three/examples/jsm/exporters/STLExporter.js';
-import type { LureParams, ProjectFile } from '../types/lure';
-import type { LureGeometry } from './geometry';
-import { sanitizeName, sanitizeParams } from './validation';
+import type { LureParams, ProjectFile, SavedPalette } from '../types/lure';
+import { buildLure, STEP_RESOLUTION, type LureGeometry } from './geometry';
+import { buildStepFile } from './step';
+import { sanitizeName, sanitizeParams, sanitizePalettes } from './validation';
 
 export const slugify = (value: string): string =>
   value
@@ -110,56 +111,106 @@ export function downloadBlob(blob: Blob, filename: string): void {
 }
 
 /**
- * Assemble les pieces dans l'orientation d'impression :
- * longueur sur X, largeur sur Y, hauteur sur Z (convention des trancheurs),
- * piece posee sur le plateau et centree en X / Y. L'echelle passe de
- * centimetres a millimetres, unite implicite du format STL.
+ * Pieces reellement imprimees, mises en position d'impression : longueur sur
+ * X, largeur sur Y, hauteur sur Z (convention des trancheurs), piece posee sur
+ * le plateau et centree en X / Y, a l'echelle du millimetre.
+ *
+ * L'agrafe est volontairement exclue : c'est de la quincaillerie du commerce,
+ * elle pese dans la simulation mais ne s'imprime pas.
+ *
+ * Les geometries retournees sont des copies transformees : STL et STEP
+ * partagent ainsi exactement la meme mise en position.
  */
-function buildExportGroup(geo: LureGeometry): THREE.Group {
-  const group = new THREE.Group();
-  for (const part of [geo.body, geo.bib, geo.tail]) {
-    if (part) group.add(new THREE.Mesh(part));
-  }
-  group.scale.setScalar(10);
-  group.rotation.x = Math.PI / 2;
-  group.updateMatrixWorld(true);
+export function printableParts(geo: LureGeometry): THREE.BufferGeometry[] {
+  const parts = [geo.body, geo.bib, geo.tail].filter(Boolean) as THREE.BufferGeometry[];
+  const place = new THREE.Matrix4()
+    .makeRotationX(Math.PI / 2)
+    .premultiply(new THREE.Matrix4().makeScale(10, 10, 10));
 
-  const box = new THREE.Box3().setFromObject(group);
+  const clones = parts.map((part) => part.clone().applyMatrix4(place));
+
+  const box = new THREE.Box3();
+  for (const clone of clones) {
+    clone.computeBoundingBox();
+    if (clone.boundingBox) box.union(clone.boundingBox);
+  }
   const center = box.getCenter(new THREE.Vector3());
-  group.position.set(-center.x, -center.y, -box.min.z);
-  group.updateMatrixWorld(true);
-  return group;
+  const offset = new THREE.Matrix4().makeTranslation(-center.x, -center.y, -box.min.z);
+  for (const clone of clones) clone.applyMatrix4(offset);
+
+  return clones;
 }
 
 export async function exportSTL(geo: LureGeometry, name: string): Promise<SaveOutcome> {
-  const group = buildExportGroup(geo);
+  const parts = printableParts(geo);
+  const group = new THREE.Group();
+  for (const part of parts) group.add(new THREE.Mesh(part));
+  group.updateMatrixWorld(true);
+
   const data = new STLExporter().parse(group, { binary: true });
   group.clear();
+  for (const part of parts) part.dispose();
+
   const base = slugify(name);
   return offerFile(`${base}.stl`, data, 'model/stl', `${base}.stl.txt`);
 }
 
-export function buildProjectFile(name: string, params: LureParams): ProjectFile {
+/**
+ * Export STEP (AP214). La geometrie est regeneree a une resolution reduite :
+ * chaque facette coute une vingtaine d'entites STEP, un maillage d'affichage
+ * produirait un fichier de plusieurs dizaines de mega-octets.
+ */
+export async function exportSTEP(
+  params: LureParams,
+  name: string,
+): Promise<SaveOutcome & { faces: number }> {
+  const coarse = buildLure(params, STEP_RESOLUTION);
+  try {
+    const parts = printableParts(coarse);
+    const step = buildStepFile(parts, slugify(name));
+    for (const part of parts) part.dispose();
+    const base = slugify(name);
+    const outcome = await offerFile(
+      `${base}.step`,
+      step.text,
+      'application/step',
+      `${base}.step.txt`,
+    );
+    return { ...outcome, faces: step.faces };
+  } finally {
+    coarse.dispose();
+  }
+}
+
+export function buildProjectFile(
+  name: string,
+  params: LureParams,
+  palettes: SavedPalette[] = [],
+): ProjectFile {
   return {
     format: 'sakuma-project',
     version: 1,
     name,
     savedAt: new Date().toISOString(),
     params,
+    palettes,
   };
 }
 
 export async function exportProjectJSON(
   name: string,
   params: LureParams,
+  palettes: SavedPalette[] = [],
 ): Promise<SaveOutcome> {
-  const json = JSON.stringify(buildProjectFile(name, params), null, 2);
+  const json = JSON.stringify(buildProjectFile(name, params, palettes), null, 2);
   return offerFile(`${slugify(name)}.json`, json, 'application/json');
 }
 
 export interface ImportedProject {
   name: string;
   params: LureParams;
+  /** Bibliotheque de livrees embarquee dans le fichier. */
+  palettes: SavedPalette[];
 }
 
 /** Relit un .json precedemment telecharge et restaure l'etat de l'editeur. */
@@ -186,5 +237,6 @@ export async function readProjectFile(file: File): Promise<ImportedProject> {
   return {
     name: sanitizeName(data.name, file.name.replace(/\.json$/i, '')),
     params: sanitizeParams(data.params),
+    palettes: sanitizePalettes(data.palettes),
   };
 }

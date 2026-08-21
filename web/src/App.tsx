@@ -6,12 +6,13 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { LureParams, Project, ShapeId, WaterId } from './types/lure';
+import type { LureParams, PaintConfig, Project, SavedPalette, ShapeId, WaterId } from './types/lure';
 import { buildLure } from './lib/geometry';
 import { computePhysics } from './lib/physics';
 import { clonePreset, getPreset } from './lib/presets';
 import {
   exportProjectJSON,
+  exportSTEP,
   exportSTL,
   readProjectFile,
   type SaveOutcome,
@@ -55,6 +56,7 @@ export default function App() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   // Incremente a chaque remplacement complet des parametres : le viewport recadre.
   const [fitKey, setFitKey] = useState(0);
+  const [palettes, setPalettes] = useState<SavedPalette[]>([]);
   const galleryFileRef = useRef<HTMLInputElement>(null);
 
   // --- Geometrie & physique, regenerees a chaque changement ---------------
@@ -129,7 +131,12 @@ export default function App() {
   );
 
   const handleExportJSON = useCallback(
-    () => runExport(() => exportProjectJSON(name, params), 'Projet JSON'),
+    () => runExport(() => exportProjectJSON(name, params, palettes), 'Projet JSON'),
+    [name, palettes, params, runExport],
+  );
+
+  const handleExportSTEP = useCallback(
+    () => runExport(() => exportSTEP(params, name), 'STEP'),
     [name, params, runExport],
   );
 
@@ -228,9 +235,12 @@ export default function App() {
     (id: string) => {
       const project = projects.find((item) => item.id === id);
       if (!project) return;
-      void runExport(() => exportProjectJSON(project.name, project.params), 'Projet JSON');
+      void runExport(
+        () => exportProjectJSON(project.name, project.params, palettes),
+        'Projet JSON',
+      );
     },
-    [projects, runExport],
+    [palettes, projects, runExport],
   );
 
   const importProject = useCallback(
@@ -242,6 +252,13 @@ export default function App() {
         setActiveId(null);
         setFitKey((n) => n + 1);
         setRoute('editor');
+        if (imported.palettes.length > 0) {
+          // Fusion avec la bibliotheque de la session, sans doublon d'identifiant.
+          setPalettes((current) => {
+            const known = new Set(current.map((palette) => palette.id));
+            return [...current, ...imported.palettes.filter((p) => !known.has(p.id))];
+          });
+        }
         pushToast('ok', `Projet « ${imported.name} » recharge.`);
       } catch (error) {
         pushToast('error', error instanceof Error ? error.message : 'Import impossible.');
@@ -249,6 +266,34 @@ export default function App() {
     },
     [pushToast],
   );
+
+  const savePalette = useCallback(
+    (label: string) => {
+      const paletteName = label.trim().slice(0, 40) || `Livree ${palettes.length + 1}`;
+      const palette: SavedPalette = {
+        id: `pal-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        name: paletteName,
+        paint: { ...params.paint },
+      };
+      setPalettes((current) => [...current, palette]);
+      pushToast('ok', `Livree « ${paletteName} » enregistree.`);
+    },
+    [palettes.length, params.paint, pushToast],
+  );
+
+  const applyPalette = useCallback(
+    (id: string) => {
+      const palette = palettes.find((item) => item.id === id);
+      if (!palette) return;
+      const paint: PaintConfig = { ...palette.paint };
+      setParams((current) => ({ ...current, paint }));
+    },
+    [palettes],
+  );
+
+  const deletePalette = useCallback((id: string) => {
+    setPalettes((current) => current.filter((palette) => palette.id !== id));
+  }, []);
 
   const panelMeta = PANEL_META[panelTab];
 
@@ -418,7 +463,15 @@ export default function App() {
 
               <div role="tabpanel" aria-labelledby={`subtab-${panelTab}`}>
                 {panelTab === 'material' ? (
-                  <MaterialPanel params={params} onChange={updateParams} />
+                  <MaterialPanel
+                    params={params}
+                    onChange={updateParams}
+                    clipMass={physics.clipMass}
+                    palettes={palettes}
+                    onSavePalette={savePalette}
+                    onApplyPalette={applyPalette}
+                    onDeletePalette={deletePalette}
+                  />
                 ) : null}
                 {panelTab === 'physics' ? (
                   <PhysicsSimulator
@@ -449,6 +502,7 @@ export default function App() {
                 physics={physics}
                 onImport={(file) => void importProject(file)}
                 onExportSTL={handleExportSTL}
+                onExportSTEP={handleExportSTEP}
                 onExportJSON={handleExportJSON}
                 onSaveSession={saveToSession}
                 saveLabel={activeId ? 'Mettre a jour' : 'Ajouter'}

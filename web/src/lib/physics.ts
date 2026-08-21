@@ -40,6 +40,8 @@ export interface PhysicsResult {
   bodyMass: number;
   ballastMass: number;
   hardwareMass: number;
+  /** Masse de l'agrafe montee sur l'oeillet de tete. */
+  clipMass: number;
   totalMass: number;
   displacedMass: number;
   /** Masse / poussee. < 1 flotte, = 1 suspend, > 1 coule. */
@@ -160,13 +162,16 @@ export function computePhysics(
 
   const ballastMass = params.ballasts.reduce((sum, b) => sum + Math.max(b.mass, 0), 0);
   const hardwareMass = Math.max(params.hardwareMass, 0);
-  const totalMass = bodyMass + ballastMass + hardwareMass;
+  // L'agrafe est en acier : elle ne deplace presque pas d'eau mais pese au nez.
+  const clipMass = geo.clip?.mass ?? 0;
+  const totalMass = bodyMass + ballastMass + hardwareMass + clipMass;
 
   // Centre de gravite : corps homogene + billes de lest + quincaillerie.
   const points: PointMass[] = [
     { x: cb.x, y: cb.y, mass: bodyMass },
     ...geo.ballasts.map((m) => ({ x: m.position[0], y: m.position[1], mass: m.mass })),
     ...hardwarePoints(params, hardwareMass),
+    ...(clipMass > 0 ? [{ x: profile.xAt(0), y: 0, mass: clipMass }] : []),
   ];
   const cg = { x: 0, y: 0, z: 0 };
   const massSum = points.reduce((sum, p) => sum + p.mass, 0);
@@ -235,6 +240,7 @@ export function computePhysics(
     bodyMass,
     ballastMass,
     hardwareMass,
+    clipMass,
     totalMass,
     displacedMass,
     ratio,

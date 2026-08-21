@@ -1,6 +1,6 @@
 /** Panneau gauche — parametres de forme du corps, de la bavette et de la queue. */
 
-import type { LureParams, ShapeId, TailShape } from '../types/lure';
+import type { DetailConfig, LureParams, ShapeId, TailShape } from '../types/lure';
 import { LIMITS, SHAPE_PRESETS } from '../lib/presets';
 import { Fieldset, Segmented, Slider, Switch } from './ui';
 
@@ -21,7 +21,13 @@ const TAIL_OPTIONS: { value: TailShape; label: string; title: string }[] = [
 const mm = (value: number) => `${value.toFixed(value < 10 ? 1 : 0)} mm`;
 const pct = (value: number) => `${Math.round(value * 100)} %`;
 
+const reliefLabel = (value: number): string =>
+  `${value > 0 ? '+' : ''}${value.toFixed(2)} mm`;
+
 export function ShapeEditor({ params, onChange, onLoadPreset }: Props) {
+  const setDetail = (key: 'gills' | 'eyes', patch: Partial<DetailConfig>) =>
+    onChange({ [key]: { ...params[key], ...patch } });
+
   return (
     <div className="panel__body">
       <Fieldset
@@ -125,6 +131,76 @@ export function ShapeEditor({ params, onChange, onLoadPreset }: Props) {
           onChange={(crossSection) => onChange({ crossSection })}
         />
       </Fieldset>
+
+      {params.shape === 'spoon' ? null : (
+        <Fieldset
+          legend="Details de tete"
+          hint="Branchies et yeux sont graves dans le corps lui-meme : le maillage reste ferme et imprimable, sans piece rapportee."
+        >
+          <Switch
+            label="Branchies"
+            checked={params.gills.enabled}
+            onChange={(enabled) => setDetail('gills', { enabled })}
+          />
+          <Slider
+            label="Position des branchies"
+            value={params.gills.position}
+            {...LIMITS.gillPosition}
+            display={`${Math.round(params.gills.position * 100)} %`}
+            disabled={!params.gills.enabled}
+            hint="Depuis le nez. L opercule se place juste derriere la tete."
+            onChange={(position) => setDetail('gills', { position })}
+          />
+          <Slider
+            label="Taille de l opercule"
+            value={params.gills.size}
+            {...LIMITS.gillSize}
+            display={mm(params.gills.size)}
+            disabled={!params.gills.enabled}
+            onChange={(size) => setDetail('gills', { size })}
+          />
+          <Slider
+            label="Relief des branchies"
+            value={params.gills.relief}
+            {...LIMITS.gillRelief}
+            display={reliefLabel(params.gills.relief)}
+            disabled={!params.gills.enabled}
+            hint="Negatif : sillon grave. Positif : bourrelet saillant."
+            onChange={(relief) => setDetail('gills', { relief })}
+          />
+
+          <Switch
+            label="Yeux"
+            checked={params.eyes.enabled}
+            onChange={(enabled) => setDetail('eyes', { enabled })}
+          />
+          <Slider
+            label="Position des yeux"
+            value={params.eyes.position}
+            {...LIMITS.eyePosition}
+            display={`${Math.round(params.eyes.position * 100)} %`}
+            disabled={!params.eyes.enabled}
+            onChange={(position) => setDetail('eyes', { position })}
+          />
+          <Slider
+            label="Diametre de l oeil"
+            value={params.eyes.size}
+            {...LIMITS.eyeSize}
+            display={mm(params.eyes.size)}
+            disabled={!params.eyes.enabled}
+            onChange={(size) => setDetail('eyes', { size })}
+          />
+          <Slider
+            label="Relief de l oeil"
+            value={params.eyes.relief}
+            {...LIMITS.eyeRelief}
+            display={reliefLabel(params.eyes.relief)}
+            disabled={!params.eyes.enabled}
+            hint="Positif : cuvette creusee et iris bombe. Negatif : oeil entierement bombe."
+            onChange={(relief) => setDetail('eyes', { relief })}
+          />
+        </Fieldset>
+      )}
 
       <Fieldset legend="Bavette" hint="Elle transforme la traction en plongee et en oscillation.">
         <Switch

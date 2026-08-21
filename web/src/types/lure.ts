@@ -23,9 +23,12 @@ export type TailShape = 'taper' | 'round' | 'forked' | 'paddle' | 'fan';
 
 export type MaterialId = 'pla' | 'lwpla' | 'resin' | 'tpu';
 
-export type FinishId = 'matte' | 'satin' | 'gloss' | 'chrome';
+export type FinishId = 'matte' | 'satin' | 'gloss' | 'chrome' | 'holo';
 
-export type PatternId = 'none' | 'stripes' | 'dots' | 'gradient';
+export type PatternId = 'none' | 'stripes' | 'dots' | 'scales' | 'camo' | 'gradient';
+
+/** Anneau brise / agrafe monte sur l'oeillet de tete. */
+export type ClipId = 'none' | 'small' | 'medium';
 
 export type WaterId = 'fresh' | 'salt';
 
@@ -43,11 +46,44 @@ export interface PaintConfig {
   dorsal: string;
   flank: string;
   belly: string;
+  /** Zone de tete, appliquee depuis le nez. */
+  head: string;
+  /** Zone de queue, appliquee depuis l'arriere. */
+  tail: string;
+  /** Longueur de la zone de tete, en fraction de la longueur (0 = desactivee). */
+  headLength: number;
+  /** Longueur de la zone de queue, en fraction de la longueur (0 = desactivee). */
+  tailLength: number;
+  /** Douceur des transitions entre zones : 0 = franc, 1 = fondu large. */
+  blend: number;
+  /** Couleur de l'iris peint. */
+  eyeColor: string;
   pattern: PatternId;
   patternColor: string;
-  /** Densite du motif (nombre de rayures / de points par rangee). */
+  /** Densite du motif (nombre de rayures / d'ecailles par rangee). */
   patternScale: number;
   finish: FinishId;
+}
+
+/** Livree enregistree dans la bibliotheque du projet. */
+export interface SavedPalette {
+  id: string;
+  name: string;
+  paint: PaintConfig;
+}
+
+/**
+ * Detail de tete genere sur le corps lui-meme (branchies, yeux) : il n'y a
+ * pas de piece rapportee, les sommets du maillage sont deplaces localement.
+ */
+export interface DetailConfig {
+  enabled: boolean;
+  /** Position sur l'axe du corps : 0 = nez, 1 = queue. */
+  position: number;
+  /** Taille caracteristique en mm. */
+  size: number;
+  /** Relief en mm : negatif = gravure creuse, positif = bourrelet saillant. */
+  relief: number;
 }
 
 export interface LureParams {
@@ -89,6 +125,16 @@ export interface LureParams {
   /** Facteur d'echelle de la nageoire caudale. */
   tailSize: number;
 
+  // --- Details de tete ---------------------------------------------------
+  /** Ligne d'ouie gravee sur les flancs. Ignore sur la cuiller. */
+  gills: DetailConfig;
+  /** Oeil : cuvette creusee surmontee d'un iris bombe. Ignore sur la cuiller. */
+  eyes: DetailConfig;
+
+  // --- Quincaillerie ------------------------------------------------------
+  /** Agrafe montee sur l'oeillet de tete (visualisation + masse). */
+  clip: ClipId;
+
   // --- Impression & lestage ---------------------------------------------
   material: MaterialId;
   /** Taux de remplissage en % (0 = coque seule, 100 = plein). */
@@ -116,4 +162,6 @@ export interface ProjectFile {
   name: string;
   savedAt: string;
   params: LureParams;
+  /** Bibliotheque de livrees enregistree avec le projet. */
+  palettes?: SavedPalette[];
 }

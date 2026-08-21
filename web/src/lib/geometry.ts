@@ -11,7 +11,8 @@
  */
 
 import * as THREE from 'three';
-import type { BallastWeight, LureParams } from '../types/lure';
+import type { BallastWeight, ClipId, LureParams } from '../types/lure';
+import { getClip, STEEL_DENSITY } from './materials';
 import { clamp, createProfile, MM_TO_CM, type ProfileSampler } from './profile';
 
 /** Densite du plomb, en g/cm3 — sert a dimensionner les lests affiches. */
@@ -19,6 +20,27 @@ export const LEAD_DENSITY = 11.34;
 
 const RADIAL_SEGMENTS = 48;
 const LENGTH_SEGMENTS = 128;
+
+export interface Resolution {
+  lengthSegments: number;
+  radialSegments: number;
+}
+
+/** Resolution d'affichage et d'export STL. */
+export const DISPLAY_RESOLUTION: Resolution = {
+  lengthSegments: LENGTH_SEGMENTS,
+  radialSegments: RADIAL_SEGMENTS,
+};
+
+/**
+ * Resolution reduite pour l'export STEP : chaque facette y coute une
+ * vingtaine d'entites, un maillage d'affichage produirait un fichier de
+ * plusieurs dizaines de mega-octets.
+ */
+export const STEP_RESOLUTION: Resolution = {
+  lengthSegments: 64,
+  radialSegments: 32,
+};
 
 export interface BallastMarker {
   id: string;
@@ -33,6 +55,8 @@ export interface LureGeometry {
   body: THREE.BufferGeometry;
   bib: THREE.BufferGeometry | null;
   tail: THREE.BufferGeometry | null;
+  /** Quincaillerie : affichee et pesee, mais jamais exportee a l'impression. */
+  clip: ClipPart | null;
   ballasts: BallastMarker[];
   /** Encombrement reel en mm (bavette comprise). */
   bounds: { length: number; width: number; height: number };
@@ -42,15 +66,94 @@ export interface LureGeometry {
 const sgnPow = (v: number, e: number): number =>
   (v < 0 ? -1 : 1) * Math.pow(Math.abs(v), e);
 
+/** Angle de l'oeil depuis le dos, en radians : haut du flanc. */
+const EYE_ANGLE = 1.15;
+
+/**
+ * Champ de deplacement des details de tete, exprime dans l'espace des
+ * parametres du loft (station p, angle theta). Les branchies et les yeux ne
+ * sont pas des pieces rapportees : ils deforment le corps lui-meme, ce qui
+ * garantit un maillage ferme et donc imprimable.
+ *
+ * Retourne `null` quand aucun detail n'est actif.
+ */
+function createDetailField(
+  profile: ProfileSampler,
+  params: LureParams,
+): ((p: number, theta: number) => number) | null {
+  // La cuiller n'a pas de tete distincte : aucun detail ne s'y applique.
+  const allowed = params.shape !== 'spoon';
+  const gills = allowed && params.gills.enabled ? params.gills : null;
+  const eyes = allowed && params.eyes.enabled ? params.eyes : null;
+  if (!gills && !eyes) return null;
+
+  const lengthCm = profile.lengthCm;
+
+  // Ouies : sillon en arc, bombe vers l'arriere a mi-flanc comme un opercule.
+  const gillRelief = gills ? gills.relief * MM_TO_CM : 0;
+  const gillHalfWidth = gills ? Math.max(gills.size * MM_TO_CM * 0.35, 0.04) : 1;
+  const gillBow = gills ? (gills.size * MM_TO_CM * 0.55) / lengthCm : 0;
+
+  // Oeil : rayon et amplitude en centimetres.
+  const eyeRelief = eyes ? eyes.relief * MM_TO_CM : 0;
+  const eyeRadius = eyes ? Math.max((eyes.size * MM_TO_CM) / 2, 0.05) : 1;
+
+  return (p: number, theta: number): number => {
+    let displacement = 0;
+
+    if (gills) {
+      const height = Math.cos(theta);
+      const lateral = Math.abs(Math.sin(theta));
+      const line = gills.position + gillBow * (1 - height * height);
+      const along = (p - line) * lengthCm;
+      const falloff = Math.exp(-((along / gillHalfWidth) ** 2));
+      displacement += gillRelief * falloff * Math.pow(lateral, 0.6);
+    }
+
+    if (eyes) {
+      const section = profile.section(p);
+      // Rayon local moyen : convertit un ecart angulaire en distance reelle.
+      const localRadius = Math.max(
+        (section.halfWidth + (section.top - section.bottom) / 2) / 2,
+        0.02,
+      );
+      const along = (p - eyes.position) * lengthCm;
+      for (const center of [EYE_ANGLE, Math.PI * 2 - EYE_ANGLE]) {
+        let delta = Math.abs(theta - center);
+        if (delta > Math.PI) delta = Math.PI * 2 - delta;
+        const distance = Math.hypot(along, delta * localRadius);
+        if (distance >= eyeRadius) continue;
+        const t = distance / eyeRadius;
+        if (eyeRelief >= 0) {
+          // Cuvette annulaire surmontee d'un iris bombe.
+          const socket = -0.9 * (1 - t * t);
+          const iris = t < 0.55 ? 1.7 * (1 - (t / 0.55) ** 2) : 0;
+          displacement += eyeRelief * (socket + iris);
+        } else {
+          // Relief negatif : oeil entierement bombe.
+          displacement += -eyeRelief * (1 - t * t);
+        }
+      }
+    }
+
+    return displacement;
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Corps
 // ---------------------------------------------------------------------------
 
-function buildBody(profile: ProfileSampler, params: LureParams): THREE.BufferGeometry {
-  const nStations = LENGTH_SEGMENTS;
-  const nRadial = RADIAL_SEGMENTS;
+function buildBody(
+  profile: ProfileSampler,
+  params: LureParams,
+  resolution: Resolution,
+): THREE.BufferGeometry {
+  const nStations = resolution.lengthSegments;
+  const nRadial = resolution.radialSegments;
   const cols = nRadial + 1; // colonne dupliquee pour la couture UV
   const exponent = 2 / clamp(params.crossSection, 1.2, 3.6);
+  const detail = createDetailField(profile, params);
 
   const positions: number[] = [];
   const uvs: number[] = [];
@@ -64,11 +167,30 @@ function buildBody(profile: ProfileSampler, params: LureParams): THREE.BufferGeo
     const bottomAbs = -section.bottom;
     degenerate.push(section.halfWidth < 1e-6 && topAbs < 1e-6);
 
+    const centerY = (topAbs - bottomAbs) / 2;
+
     for (let j = 0; j <= nRadial; j++) {
       const theta = (j / nRadial) * Math.PI * 2; // 0 = dos, PI = ventre
       const yUnit = sgnPow(Math.cos(theta), exponent);
       const zUnit = sgnPow(Math.sin(theta), exponent);
-      positions.push(x, yUnit * (yUnit >= 0 ? topAbs : bottomAbs), zUnit * section.halfWidth);
+      let y = yUnit * (yUnit >= 0 ? topAbs : bottomAbs);
+      let z = zUnit * section.halfWidth;
+
+      if (detail) {
+        const displacement = detail(p, theta);
+        if (displacement !== 0) {
+          // Deplacement le long de la normale approchee : la direction
+          // radiale issue du centre de la section.
+          const dy = y - centerY;
+          const radial = Math.hypot(dy, z);
+          if (radial > 1e-6) {
+            y += (dy / radial) * displacement;
+            z += (z / radial) * displacement;
+          }
+        }
+      }
+
+      positions.push(x, y, z);
       uvs.push(p, j / nRadial);
     }
   }
@@ -123,8 +245,12 @@ function buildBib(profile: ProfileSampler, params: LureParams): THREE.BufferGeom
   // largeur parte sur Z et que l'epaisseur soit verticale.
   geometry.translate(0, 0, -thickness / 2);
   geometry.rotateX(-Math.PI / 2);
-  // Inclinaison : 0 deg = bavette dans l'axe du corps, 90 deg = perpendiculaire.
-  geometry.rotateZ(-THREE.MathUtils.degToRad(clamp(params.bibAngle, 5, 89)));
+  // Le contour est bati vers +X, or le nez du leurre est en -X : la bavette
+  // doit donc etre retournee pour projeter VERS L'AVANT, comme une vraie
+  // levre de plongee, et non balayer vers l'arriere sous le ventre.
+  // Angle mesure depuis l'axe du corps : 0 deg = bavette dans l'axe
+  // (plongee maximale), 90 deg = perpendiculaire (nage de sub-surface).
+  geometry.rotateZ(Math.PI + THREE.MathUtils.degToRad(clamp(params.bibAngle, 5, 89)));
 
   const anchor = profile.section(0.07);
   geometry.translate(profile.xAt(0.045), anchor.bottom * 0.75, 0);
@@ -185,6 +311,73 @@ function buildTailFin(profile: ProfileSampler, params: LureParams): THREE.Buffer
 }
 
 // ---------------------------------------------------------------------------
+// Agrafe (anneau brise)
+// ---------------------------------------------------------------------------
+
+export interface ClipPart {
+  geometry: THREE.BufferGeometry;
+  /** Masse d'acier, deduite de la longueur de fil reellement developpee. */
+  mass: number;
+}
+
+/**
+ * Agrafe generee comme un vrai fil plie : une courbe de Catmull-Rom decrit
+ * l'axe du fil (crochet, branche, boucle, branche, crochet) et un tube de la
+ * section du fil est balaye le long de cette courbe. La masse en decoule
+ * directement, au lieu d'etre saisie en dur.
+ */
+function buildClip(profile: ProfileSampler, id: ClipId): ClipPart | null {
+  const spec = getClip(id);
+  if (!spec) return null;
+
+  const total = spec.length * MM_TO_CM;
+  const wireRadius = (spec.wire * MM_TO_CM) / 2;
+  const loopRadius = total * 0.165;
+  const loopCenter = total - loopRadius;
+  const legX = loopRadius * 0.62;
+
+  const at = (x: number, y: number) => new THREE.Vector3(x, y, 0);
+  const points: THREE.Vector3[] = [
+    // Crochet inferieur gauche, recourbe vers l'exterieur.
+    at(-legX * 1.35, total * 0.115),
+    at(-legX * 1.55, total * 0.05),
+    at(-legX * 1.0, total * 0.015),
+    at(-legX * 0.72, total * 0.085),
+    // Branche gauche, legerement galbee.
+    at(-legX * 0.98, total * 0.3),
+    at(-legX * 0.82, loopCenter - loopRadius * 0.6),
+  ];
+  // Boucle : 250 degres, du bas-gauche au bas-droit en passant par le haut.
+  for (let i = 0; i <= 28; i++) {
+    const angle = THREE.MathUtils.degToRad(215 - (i / 28) * 250);
+    points.push(
+      at(Math.cos(angle) * loopRadius, loopCenter + Math.sin(angle) * loopRadius),
+    );
+  }
+  // Branche droite, miroir de la gauche.
+  points.push(
+    at(legX * 0.82, loopCenter - loopRadius * 0.6),
+    at(legX * 0.98, total * 0.3),
+    at(legX * 0.72, total * 0.085),
+    at(legX * 1.0, total * 0.015),
+    at(legX * 1.55, total * 0.05),
+    at(legX * 1.35, total * 0.115),
+  );
+
+  const curve = new THREE.CatmullRomCurve3(points, false, 'catmullrom', 0.4);
+  const geometry = new THREE.TubeGeometry(curve, 190, wireRadius, 8, false);
+
+  // L'agrafe pend a l'oeillet de tete, dans le plan vertical : l'axe local Y
+  // (des crochets vers la boucle) part donc vers l'avant du leurre.
+  geometry.rotateZ(Math.PI / 2);
+  geometry.translate(profile.xAt(0), profile.section(0.04).top * 0.1, 0);
+
+  const wireLength = curve.getLength();
+  const mass = wireLength * Math.PI * wireRadius * wireRadius * STEEL_DENSITY;
+  return { geometry, mass };
+}
+
+// ---------------------------------------------------------------------------
 // Lests internes
 // ---------------------------------------------------------------------------
 
@@ -215,11 +408,15 @@ export function ballastMarkers(
 // Assemblage
 // ---------------------------------------------------------------------------
 
-export function buildLure(params: LureParams): LureGeometry {
+export function buildLure(
+  params: LureParams,
+  resolution: Resolution = DISPLAY_RESOLUTION,
+): LureGeometry {
   const profile = createProfile(params);
-  const body = buildBody(profile, params);
+  const body = buildBody(profile, params, resolution);
   const bib = params.hasBib ? buildBib(profile, params) : null;
   const tail = profile.hasFin ? buildTailFin(profile, params) : null;
+  const clip = buildClip(profile, params.clip);
 
   const box = new THREE.Box3();
   body.computeBoundingBox();
@@ -235,6 +432,7 @@ export function buildLure(params: LureParams): LureGeometry {
     body,
     bib,
     tail,
+    clip,
     ballasts: ballastMarkers(profile, params.ballasts),
     bounds: {
       length: size.x * 10,
@@ -245,6 +443,7 @@ export function buildLure(params: LureParams): LureGeometry {
       body.dispose();
       bib?.dispose();
       tail?.dispose();
+      clip?.geometry.dispose();
     },
   };
 }

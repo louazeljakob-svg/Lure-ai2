@@ -1,6 +1,6 @@
 /** Materiaux d'impression et leurs densites reelles (g/cm3). */
 
-import type { FinishId, MaterialId, WaterId } from '../types/lure';
+import type { ClipId, FinishId, MaterialId, WaterId } from '../types/lure';
 
 export interface PrintMaterial {
   id: MaterialId;
@@ -75,9 +75,36 @@ export const WATER_LABEL: Record<WaterId, string> = {
 };
 
 /** Rendu PBR associe a chaque finition. */
-export const FINISHES: Record<FinishId, { label: string; roughness: number; metalness: number }> = {
-  matte: { label: 'Mat', roughness: 0.9, metalness: 0.02 },
-  satin: { label: 'Satine', roughness: 0.5, metalness: 0.08 },
-  gloss: { label: 'Brillant (vernis)', roughness: 0.12, metalness: 0.1 },
-  chrome: { label: 'Metallise', roughness: 0.14, metalness: 0.95 },
+export const FINISHES: Record<
+  FinishId,
+  { label: string; roughness: number; metalness: number; iridescence: number }
+> = {
+  matte: { label: 'Mat', roughness: 0.9, metalness: 0.02, iridescence: 0 },
+  satin: { label: 'Satine', roughness: 0.5, metalness: 0.08, iridescence: 0 },
+  gloss: { label: 'Brillant', roughness: 0.12, metalness: 0.1, iridescence: 0 },
+  chrome: { label: 'Metallise', roughness: 0.14, metalness: 0.95, iridescence: 0 },
+  // Irisation physique de three.js : le film mince decale la teinte selon
+  // l'angle de vue, ce qui simule un film holographique.
+  holo: { label: 'Holographique', roughness: 0.18, metalness: 0.6, iridescence: 1 },
 };
+
+/** Densite de l'acier a ressort des agrafes, en g/cm3. */
+export const STEEL_DENSITY = 7.85;
+
+export interface ClipSpec {
+  id: Exclude<ClipId, 'none'>;
+  label: string;
+  /** Diametre du fil, en mm. */
+  wire: number;
+  /** Longueur hors-tout de l'agrafe, en mm. */
+  length: number;
+}
+
+/** Agrafes disponibles, aux cotes du modele du commerce. */
+export const CLIPS: ClipSpec[] = [
+  { id: 'small', label: 'Petit', wire: 1.2, length: 16 },
+  { id: 'medium', label: 'Moyen', wire: 1.6, length: 17.5 },
+];
+
+export const getClip = (id: ClipId): ClipSpec | null =>
+  CLIPS.find((clip) => clip.id === id) ?? null;

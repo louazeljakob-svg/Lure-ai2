@@ -3,15 +3,20 @@
  *
  * La texture est peinte dans un <canvas> a la volee : U suit la longueur du
  * leurre (0 = nez, 1 = queue) et V fait le tour de la section (0 = dos,
- * 0.5 = ventre). Les zones dos / flanc / ventre sont donc des bandes
- * horizontales, et les motifs se superposent par-dessus.
+ * 0.5 = ventre). Les zones dos / flancs / ventre sont donc des bandes
+ * horizontales, la tete et la queue des bandes verticales, et les motifs se
+ * superposent par-dessus.
  */
 
 import * as THREE from 'three';
-import type { PaintConfig } from '../types/lure';
+import type { LureParams, PaintConfig } from '../types/lure';
+import { clamp, createProfile } from './profile';
 
 const WIDTH = 1024;
 const HEIGHT = 256;
+
+/** Angle de l'oeil depuis le dos, en radians (identique a la geometrie). */
+const EYE_ANGLE = 1.15;
 
 const hexToRgba = (hex: string, alpha: number): string => {
   const clean = /^#[0-9a-fA-F]{6}$/.test(hex) ? hex : '#ffffff';
@@ -21,11 +26,20 @@ const hexToRgba = (hex: string, alpha: number): string => {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 };
 
+/** Generateur pseudo-aleatoire deterministe : le camouflage ne scintille pas. */
+function seededRandom(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 /** Attenuation du motif vers le ventre (V = 0.5) pour garder un ventre clair. */
-const fadeToBelly = (
-  ctx: CanvasRenderingContext2D,
-  color: string,
-): CanvasGradient => {
+const fadeToBelly = (ctx: CanvasRenderingContext2D, color: string): CanvasGradient => {
   const gradient = ctx.createLinearGradient(0, 0, 0, HEIGHT);
   gradient.addColorStop(0, hexToRgba(color, 0.95));
   gradient.addColorStop(0.28, hexToRgba(color, 0.75));
@@ -36,8 +50,61 @@ const fadeToBelly = (
   return gradient;
 };
 
+// ---------------------------------------------------------------------------
+// Zones
+// ---------------------------------------------------------------------------
+
+/**
+ * Degrade vertical dos / flancs / ventre. `blend` elargit les transitions :
+ * a 0 les zones sont franches, a 1 elles se fondent l'une dans l'autre.
+ */
+function paintZones(ctx: CanvasRenderingContext2D, paint: PaintConfig): void {
+  const w = 0.015 + clamp(paint.blend, 0, 1) * 0.085;
+  const gradient = ctx.createLinearGradient(0, 0, 0, HEIGHT);
+  const stops: [number, string][] = [
+    [0, paint.dorsal],
+    [0.18 - w, paint.dorsal],
+    [0.18 + w, paint.flank],
+    [0.4 - w, paint.flank],
+    [0.4 + w, paint.belly],
+    [0.6 - w, paint.belly],
+    [0.6 + w, paint.flank],
+    [0.82 - w, paint.flank],
+    [0.82 + w, paint.dorsal],
+    [1, paint.dorsal],
+  ];
+  for (const [offset, color] of stops) gradient.addColorStop(clamp(offset, 0, 1), color);
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, WIDTH, HEIGHT);
+}
+
+/** Zone longitudinale (tete depuis le nez, queue depuis l'arriere). */
+function paintEndZone(
+  ctx: CanvasRenderingContext2D,
+  color: string,
+  length: number,
+  blend: number,
+  fromTail: boolean,
+): void {
+  if (length <= 0.005) return;
+  const span = WIDTH * length;
+  const fade = 0.1 + clamp(blend, 0, 1) * 0.55;
+  const x0 = fromTail ? WIDTH : 0;
+  const x1 = fromTail ? WIDTH - span : span;
+  const gradient = ctx.createLinearGradient(x0, 0, x1, 0);
+  gradient.addColorStop(0, hexToRgba(color, 1));
+  gradient.addColorStop(1 - fade, hexToRgba(color, 1));
+  gradient.addColorStop(1, hexToRgba(color, 0));
+  ctx.fillStyle = gradient;
+  ctx.fillRect(Math.min(x0, x1), 0, span, HEIGHT);
+}
+
+// ---------------------------------------------------------------------------
+// Motifs
+// ---------------------------------------------------------------------------
+
 function paintStripes(ctx: CanvasRenderingContext2D, paint: PaintConfig): void {
-  const count = Math.round(Math.min(Math.max(paint.patternScale, 3), 26));
+  const count = Math.round(clamp(paint.patternScale, 3, 26));
   const spacing = WIDTH / count;
   const width = spacing * 0.34;
   const slant = spacing * 0.22;
@@ -55,7 +122,7 @@ function paintStripes(ctx: CanvasRenderingContext2D, paint: PaintConfig): void {
 }
 
 function paintDots(ctx: CanvasRenderingContext2D, paint: PaintConfig): void {
-  const scale = Math.min(Math.max(paint.patternScale, 3), 26);
+  const scale = clamp(paint.patternScale, 3, 26);
   const cols = Math.round(scale * 1.6);
   // Nombre de rangees pair : le motif reste continu a la couture V = 0 / 1.
   const rows = Math.max(4, Math.round(scale * 0.6) * 2);
@@ -66,17 +133,58 @@ function paintDots(ctx: CanvasRenderingContext2D, paint: PaintConfig): void {
   for (let row = 0; row < rows; row++) {
     for (let col = 0; col < cols; col++) {
       const x = col * sx + (row % 2 ? sx * 0.5 : 0) + sx * 0.5;
-      const y = row * sy + sy * 0.5;
       ctx.beginPath();
-      ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.arc(x, row * sy + sy * 0.5, radius, 0, Math.PI * 2);
       ctx.fill();
     }
   }
 }
 
+/** Ecailles : rangees d'arcs decales d'une demi-maille, comme un vrai poisson. */
+function paintScales(ctx: CanvasRenderingContext2D, paint: PaintConfig): void {
+  const scale = clamp(paint.patternScale, 3, 26);
+  const cols = Math.round(scale * 1.5);
+  const rows = Math.max(6, Math.round(scale * 0.8) * 2);
+  const sx = WIDTH / cols;
+  const sy = HEIGHT / rows;
+  const radius = Math.max(sx, sy) * 0.62;
+  ctx.strokeStyle = fadeToBelly(ctx, paint.patternColor);
+  ctx.lineWidth = Math.max(1.2, radius * 0.11);
+  for (let row = 0; row <= rows; row++) {
+    for (let col = -1; col <= cols; col++) {
+      const x = col * sx + (row % 2 ? sx * 0.5 : 0);
+      ctx.beginPath();
+      ctx.arc(x, row * sy - radius * 0.45, radius, Math.PI * 0.22, Math.PI * 0.78);
+      ctx.stroke();
+    }
+  }
+}
+
+/** Camouflage : taches irregulieres, deterministes pour un rendu stable. */
+function paintCamo(ctx: CanvasRenderingContext2D, paint: PaintConfig): void {
+  const scale = clamp(paint.patternScale, 3, 26);
+  const blobs = Math.round(scale * 3.5);
+  const random = seededRandom(Math.round(scale * 977) + 1);
+  ctx.fillStyle = fadeToBelly(ctx, paint.patternColor);
+  for (let i = 0; i < blobs; i++) {
+    const cx = random() * WIDTH;
+    // Concentre les taches sur le dos et les flancs.
+    const cy = (random() < 0.5 ? random() * 0.34 : 0.66 + random() * 0.34) * HEIGHT;
+    const rx = (0.4 + random() * 1.1) * (WIDTH / scale) * 0.5;
+    const ry = (0.4 + random() * 1.0) * (HEIGHT / scale) * 0.9;
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate((random() - 0.5) * 0.9);
+    ctx.beginPath();
+    ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
 function paintGradient(ctx: CanvasRenderingContext2D, paint: PaintConfig): void {
   // Degrade longitudinal : tete coloree qui se fond dans le corps.
-  const reach = 0.18 + (paint.patternScale / 26) * 0.42;
+  const reach = 0.18 + (clamp(paint.patternScale, 3, 26) / 26) * 0.42;
   const gradient = ctx.createLinearGradient(0, 0, WIDTH * reach, 0);
   gradient.addColorStop(0, hexToRgba(paint.patternColor, 1));
   gradient.addColorStop(0.55, hexToRgba(paint.patternColor, 0.85));
@@ -85,28 +193,65 @@ function paintGradient(ctx: CanvasRenderingContext2D, paint: PaintConfig): void 
   ctx.fillRect(0, 0, WIDTH * reach, HEIGHT);
 }
 
-export function createPaintTexture(paint: PaintConfig): THREE.CanvasTexture {
+// ---------------------------------------------------------------------------
+// Oeil peint
+// ---------------------------------------------------------------------------
+
+function paintEyes(ctx: CanvasRenderingContext2D, params: LureParams): void {
+  if (params.shape === 'spoon' || !params.eyes.enabled) return;
+  const profile = createProfile(params);
+  const section = profile.section(params.eyes.position);
+  const circumference = Math.max(
+    Math.PI * (section.halfWidth + (section.top - section.bottom) / 2),
+    0.1,
+  );
+  const radius = Math.max((params.eyes.size * 0.1) / 2, 0.05);
+  // Un disque sur le corps devient une ellipse en UV : les deux axes n'ont
+  // pas la meme echelle.
+  const rx = (radius / profile.lengthCm) * WIDTH;
+  const ry = (radius / circumference) * HEIGHT;
+  const cx = params.eyes.position * WIDTH;
+
+  for (const angle of [EYE_ANGLE, Math.PI * 2 - EYE_ANGLE]) {
+    const cy = (angle / (Math.PI * 2)) * HEIGHT;
+    const ring = (factor: number, color: string) => {
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, rx * factor, ry * factor, 0, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
+    };
+    ring(0.95, '#f7f4ee');
+    ring(0.72, params.paint.eyeColor);
+    ring(0.34, '#101114');
+    // Reflet.
+    ctx.beginPath();
+    ctx.ellipse(cx - rx * 0.22, cy - ry * 0.24, rx * 0.14, ry * 0.14, 0, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    ctx.fill();
+  }
+}
+
+// ---------------------------------------------------------------------------
+
+export function createPaintTexture(params: LureParams): THREE.CanvasTexture {
+  const { paint } = params;
   const canvas = document.createElement('canvas');
   canvas.width = WIDTH;
   canvas.height = HEIGHT;
   const ctx = canvas.getContext('2d');
 
   if (ctx) {
-    const base = ctx.createLinearGradient(0, 0, 0, HEIGHT);
-    base.addColorStop(0, paint.dorsal);
-    base.addColorStop(0.16, paint.dorsal);
-    base.addColorStop(0.32, paint.flank);
-    base.addColorStop(0.46, paint.belly);
-    base.addColorStop(0.54, paint.belly);
-    base.addColorStop(0.68, paint.flank);
-    base.addColorStop(0.84, paint.dorsal);
-    base.addColorStop(1, paint.dorsal);
-    ctx.fillStyle = base;
-    ctx.fillRect(0, 0, WIDTH, HEIGHT);
+    paintZones(ctx, paint);
+    paintEndZone(ctx, paint.head, paint.headLength, paint.blend, false);
+    paintEndZone(ctx, paint.tail, paint.tailLength, paint.blend, true);
 
     if (paint.pattern === 'stripes') paintStripes(ctx, paint);
     else if (paint.pattern === 'dots') paintDots(ctx, paint);
+    else if (paint.pattern === 'scales') paintScales(ctx, paint);
+    else if (paint.pattern === 'camo') paintCamo(ctx, paint);
     else if (paint.pattern === 'gradient') paintGradient(ctx, paint);
+
+    paintEyes(ctx, params);
   }
 
   const texture = new THREE.CanvasTexture(canvas);

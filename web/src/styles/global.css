@@ -875,6 +875,30 @@ select:hover {
   width: 16px;
   height: 16px;
   border: 1px solid rgba(0, 0, 0, 0.15);
+  flex: 0 0 auto;
+}
+
+/* Pastille enregistree : appliquer d'un cote, supprimer de l'autre. */
+.palette-chip__apply,
+.palette-chip__remove {
+  border: 0;
+  background: none;
+  padding: 2px 0;
+  font: inherit;
+  font-weight: 600;
+  color: inherit;
+  cursor: pointer;
+}
+
+.palette-chip__remove {
+  padding: 2px 4px;
+  color: var(--ink-3);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.palette-chip__remove:hover {
+  color: var(--red);
 }
 
 /* --- Lests -------------------------------------------------------------- */
@@ -1340,7 +1364,7 @@ select:hover {
 
 .export-dock__actions {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
 }
 

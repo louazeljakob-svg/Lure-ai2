@@ -83,17 +83,22 @@ function LureModel({
   params: LureParams;
   xray: boolean;
 }) {
-  const texture = useMemo(() => createPaintTexture(params.paint), [params.paint]);
+  const texture = useMemo(() => createPaintTexture(params), [params]);
   useEffect(() => () => texture.dispose(), [texture]);
   const finish = FINISHES[params.paint.finish];
 
   return (
     <group>
       <mesh geometry={geo.body} castShadow={false}>
-        <meshStandardMaterial
+        <meshPhysicalMaterial
           map={texture}
           roughness={finish.roughness}
           metalness={finish.metalness}
+          // Film mince : la teinte se decale avec l'angle de vue, ce qui rend
+          // la finition holographique sans texture d'environnement.
+          iridescence={finish.iridescence}
+          iridescenceIOR={1.35}
+          iridescenceThicknessRange={[120, 520]}
           transparent={xray}
           opacity={xray ? 0.28 : 1}
           depthWrite={!xray}
@@ -103,14 +108,22 @@ function LureModel({
 
       {geo.tail ? (
         <mesh geometry={geo.tail}>
-          <meshStandardMaterial
-            color={params.paint.flank}
+          <meshPhysicalMaterial
+            color={params.paint.tailLength > 0.01 ? params.paint.tail : params.paint.flank}
             roughness={Math.min(finish.roughness + 0.1, 1)}
             metalness={finish.metalness}
+            iridescence={finish.iridescence}
+            iridescenceIOR={1.35}
             transparent={xray}
             opacity={xray ? 0.3 : 1}
             side={THREE.DoubleSide}
           />
+        </mesh>
+      ) : null}
+
+      {geo.clip ? (
+        <mesh geometry={geo.clip.geometry}>
+          <meshStandardMaterial color="#c9b675" roughness={0.28} metalness={0.95} />
         </mesh>
       ) : null}
 

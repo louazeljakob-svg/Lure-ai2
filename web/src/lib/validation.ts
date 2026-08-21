@@ -8,10 +8,13 @@
 
 import type {
   BallastWeight,
+  ClipId,
+  DetailConfig,
   FinishId,
   LureParams,
   MaterialId,
   PatternId,
+  SavedPalette,
   ShapeId,
   TailShape,
 } from '../types/lure';
@@ -28,8 +31,9 @@ const SHAPES: ShapeId[] = [
 ];
 const TAILS: TailShape[] = ['taper', 'round', 'forked', 'paddle', 'fan'];
 const MATERIALS: MaterialId[] = ['pla', 'lwpla', 'resin', 'tpu'];
-const FINISHES: FinishId[] = ['matte', 'satin', 'gloss', 'chrome'];
-const PATTERNS: PatternId[] = ['none', 'stripes', 'dots', 'gradient'];
+const FINISHES: FinishId[] = ['matte', 'satin', 'gloss', 'chrome', 'holo'];
+const PATTERNS: PatternId[] = ['none', 'stripes', 'dots', 'scales', 'camo', 'gradient'];
+const CLIP_IDS: ClipId[] = ['none', 'small', 'medium'];
 
 const num = (value: unknown, range: Range, fallback: number): number => {
   const n = typeof value === 'number' ? value : Number(value);
@@ -62,6 +66,20 @@ function sanitizeBallasts(value: unknown, fallback: BallastWeight[]): BallastWei
   });
 }
 
+function sanitizeDetail(
+  value: unknown,
+  fallback: DetailConfig,
+  ranges: { position: Range; size: Range; relief: Range },
+): DetailConfig {
+  const raw = (value ?? {}) as Partial<DetailConfig>;
+  return {
+    enabled: bool(raw.enabled, fallback.enabled),
+    position: num(raw.position, ranges.position, fallback.position),
+    size: num(raw.size, ranges.size, fallback.size),
+    relief: num(raw.relief, ranges.relief, fallback.relief),
+  };
+}
+
 /** Ramene n'importe quelle entree a un jeu de parametres exploitable. */
 export function sanitizeParams(input: unknown): LureParams {
   const raw = (input ?? {}) as Partial<LureParams>;
@@ -87,6 +105,17 @@ export function sanitizeParams(input: unknown): LureParams {
     bibWidth: num(raw.bibWidth, LIMITS.bibWidth, base.bibWidth),
     tailShape: pick(raw.tailShape, TAILS, base.tailShape),
     tailSize: num(raw.tailSize, LIMITS.tailSize, base.tailSize),
+    gills: sanitizeDetail(raw.gills, base.gills, {
+      position: LIMITS.gillPosition,
+      size: LIMITS.gillSize,
+      relief: LIMITS.gillRelief,
+    }),
+    eyes: sanitizeDetail(raw.eyes, base.eyes, {
+      position: LIMITS.eyePosition,
+      size: LIMITS.eyeSize,
+      relief: LIMITS.eyeRelief,
+    }),
+    clip: pick(raw.clip, CLIP_IDS, base.clip),
     material: pick(raw.material, MATERIALS, base.material),
     infill: num(raw.infill, LIMITS.infill, base.infill),
     hardwareMass: num(raw.hardwareMass, LIMITS.hardwareMass, base.hardwareMass),
@@ -95,12 +124,35 @@ export function sanitizeParams(input: unknown): LureParams {
       dorsal: color(paint.dorsal, base.paint.dorsal),
       flank: color(paint.flank, base.paint.flank),
       belly: color(paint.belly, base.paint.belly),
+      head: color(paint.head, base.paint.head),
+      tail: color(paint.tail, base.paint.tail),
+      headLength: num(paint.headLength, LIMITS.zoneLength, base.paint.headLength),
+      tailLength: num(paint.tailLength, LIMITS.zoneLength, base.paint.tailLength),
+      blend: num(paint.blend, LIMITS.paintBlend, base.paint.blend),
+      eyeColor: color(paint.eyeColor, base.paint.eyeColor),
       pattern: pick(paint.pattern, PATTERNS, base.paint.pattern),
       patternColor: color(paint.patternColor, base.paint.patternColor),
       patternScale: num(paint.patternScale, LIMITS.patternScale, base.paint.patternScale),
       finish: pick(paint.finish, FINISHES, base.paint.finish),
     },
   };
+}
+
+/** Bibliotheque de livrees embarquee dans un projet importe. */
+export function sanitizePalettes(value: unknown): SavedPalette[] {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 40).map((raw, index) => {
+    const item = (raw ?? {}) as Partial<SavedPalette>;
+    const params = sanitizeParams({ paint: item.paint });
+    return {
+      id:
+        typeof item.id === 'string' && item.id.length > 0 && item.id.length <= 64
+          ? item.id
+          : `palette-${index}-${Math.random().toString(36).slice(2, 8)}`,
+      name: sanitizeName(item.name, `Livree ${index + 1}`),
+      paint: params.paint,
+    };
+  });
 }
 
 /** Nom de projet nettoye (jamais vide, jamais demesure). */
