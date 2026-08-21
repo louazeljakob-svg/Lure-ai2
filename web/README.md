@@ -1,4 +1,4 @@
-# 🎣 LUREFORGE — editeur de leurres de peche imprimables en 3D
+# 🎣 SAKUMA — editeur de leurres de peche imprimables en 3D
 
 Application web qui permet de dessiner un leurre imprimable **sans aucune competence
 CAO** : on part d'une forme de base, on la modele au slider, on la leste, et la
@@ -19,6 +19,23 @@ npm run dev        # http://localhost:5173
 
 Autres scripts : `npm run build` (bundle de production), `npm run preview`,
 `npm run typecheck`.
+
+### Fichier HTML unique
+
+```bash
+npm run build:single
+```
+
+Produit deux fichiers dans `dist-single/` :
+
+| Fichier | Usage |
+| --- | --- |
+| `sakuma.html` | Page complete et autonome (~1,2 Mo) : React, Three.js et toute l'application sont integres. Ouvrable par double-clic, sans serveur ni installation. |
+| `sakuma-artifact.html` | Contenu seul, pour une publication en artefact claude.ai (l'hote fournit l'enveloppe du document). |
+
+Aucune requete reseau hors Google Fonts, qui disposent d'une pile de repli.
+Le bundle est emis en ASCII pur (`esbuild.charset`), de sorte que les accents
+s'affichent correctement sans dependre d'une declaration de charset de l'hote.
 
 ---
 
@@ -68,6 +85,11 @@ les valeurs sont des estimations de conception, pas des mesures.
 
 - **Exporter STL** : binaire, echelle 1:1 en millimetres, piece posee sur le
   plateau et centree, longueur sur X (convention des trancheurs)
+- **Deux chemins de remise de fichier**, choisis automatiquement : telechargement
+  navigateur natif quand la page tourne en local, capacite `downloads` de l'hote
+  quand elle est publiee en artefact (le bac a sable y neutralise les liens
+  `download`). La liste d'extensions de l'hote ne couvrant pas `.stl`, le STL y
+  est repropose en `.stl.txt` avec la consigne de renommage
 - **Sauvegarder le projet (JSON)** : tous les parametres serialises
 - **Recharger un projet** : input file classique ; tout fichier importe est
   revalide champ par champ avant d'atteindre le generateur
@@ -123,6 +145,9 @@ web/src/
 │   └── hooks.ts                 # prefers-reduced-motion, media queries
 ├── types/lure.ts
 └── styles/global.css            # identite rouge Sakuma / blanc / noir
+
+web/tools/
+└── build-single.mjs             # assemblage du fichier HTML autonome
 ```
 
 ---

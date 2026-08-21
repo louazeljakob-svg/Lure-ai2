@@ -1,5 +1,5 @@
 /**
- * Modele de donnees de LUREFORGE.
+ * Modele de donnees de SAKUMA.
  *
  * Unites :
  *   - toutes les longueurs saisies par l'utilisateur sont en MILLIMETRES
@@ -111,7 +111,7 @@ export interface Project {
 
 /** Format du fichier .json telecharge / reimporte. */
 export interface ProjectFile {
-  format: 'lureforge-project';
+  format: 'sakuma-project' | 'lureforge-project';
   version: 1;
   name: string;
   savedAt: string;

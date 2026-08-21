@@ -7,7 +7,6 @@
 import { useRef } from 'react';
 import type { LureParams } from '../types/lure';
 import type { LureGeometry } from '../lib/geometry';
-import { exportProjectJSON, exportSTL } from '../lib/exporters';
 import { getMaterial } from '../lib/materials';
 import type { PhysicsResult } from '../lib/physics';
 
@@ -18,6 +17,8 @@ interface Props {
   geo: LureGeometry;
   physics: PhysicsResult;
   onImport: (file: File) => void;
+  onExportSTL: () => void;
+  onExportJSON: () => void;
   onSaveSession: () => void;
   /** « Ajouter aux projets » ou « Mettre a jour » selon le projet actif. */
   saveLabel: string;
@@ -30,6 +31,8 @@ export function ExportManager({
   geo,
   physics,
   onImport,
+  onExportSTL,
+  onExportJSON,
   onSaveSession,
   saveLabel,
 }: Props) {
@@ -71,18 +74,14 @@ export function ExportManager({
           aria-label="Nom du projet"
           onChange={(event) => onNameChange(event.target.value)}
         />
-        <button
-          type="button"
-          className="btn btn--primary"
-          onClick={() => exportSTL(geo, name)}
-        >
+        <button type="button" className="btn btn--primary" onClick={onExportSTL}>
           Exporter STL
         </button>
       </div>
 
       <div className="stack">
         <div className="export-dock__actions">
-          <button type="button" className="btn btn--sm" onClick={() => exportProjectJSON(name, params)}>
+          <button type="button" className="btn btn--sm" onClick={onExportJSON}>
             Projet JSON
           </button>
           <button type="button" className="btn btn--sm" onClick={onSaveSession}>

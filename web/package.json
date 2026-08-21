@@ -1,14 +1,15 @@
 {
-  "name": "lureforge",
+  "name": "sakuma",
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "LUREFORGE — editeur de leurres de peche imprimables en 3D",
+  "description": "SAKUMA — editeur de leurres de peche imprimables en 3D",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build:single": "npm run build && node tools/build-single.mjs"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.8",

@@ -18,10 +18,10 @@ optimise et améliore des leurres de pêche.
 
 ---
 
-## 🖥️ Interface web — LUREFORGE (React + Three.js)
+## 🖥️ Interface web — SAKUMA (React + Three.js)
 
 En complement de l'application Python, le dossier [`web/`](web/) contient
-**LUREFORGE**, un editeur de leurres 3D dans le navigateur : galerie de sept formes
+**SAKUMA**, un editeur de leurres 3D dans le navigateur : galerie de sept formes
 parametriques, modelage au slider avec regeneration temps reel du maillage,
 lestage interne, simulation de flottabilite / assiette / action, et export STL
 imprimable — sans serveur ni compte.
@@ -29,6 +29,10 @@ imprimable — sans serveur ni compte.
 ```bash
 cd web && npm install && npm run dev
 ```
+
+Un build en **fichier HTML unique** (React, Three.js et l'application entiere
+integres, ouvrable par double-clic sans serveur) est disponible via
+`npm run build:single`.
 
 Documentation detaillee : [`web/README.md`](web/README.md).
 

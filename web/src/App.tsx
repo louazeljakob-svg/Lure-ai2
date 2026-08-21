@@ -1,5 +1,5 @@
 /**
- * LUREFORGE — editeur de leurres de peche imprimables en 3D.
+ * SAKUMA — editeur de leurres de peche imprimables en 3D.
  *
  * Etat entierement en memoire : aucun backend, aucune base, aucun compte.
  * La persistance passe par les fichiers JSON que l utilisateur telecharge.
@@ -10,7 +10,12 @@ import type { LureParams, Project, ShapeId, WaterId } from './types/lure';
 import { buildLure } from './lib/geometry';
 import { computePhysics } from './lib/physics';
 import { clonePreset, getPreset } from './lib/presets';
-import { exportProjectJSON, exportSTL, readProjectFile } from './lib/exporters';
+import {
+  exportProjectJSON,
+  exportSTL,
+  readProjectFile,
+  type SaveOutcome,
+} from './lib/exporters';
 import { ExportManager } from './components/ExportManager';
 import { LureSilhouette } from './components/LureSilhouette';
 import { MaterialPanel } from './components/MaterialPanel';
@@ -89,6 +94,43 @@ export default function App() {
       setPane('shape');
     },
     [loadPreset],
+  );
+
+  // --- Export de fichiers --------------------------------------------------
+  const runExport = useCallback(
+    async (task: () => Promise<SaveOutcome>, label: string) => {
+      try {
+        const outcome = await task();
+        if (outcome.cancelled) {
+          pushToast('info', 'Enregistrement annule.');
+          return;
+        }
+        if (outcome.renamedTo) {
+          pushToast(
+            'ok',
+            `${label} remis sous « ${outcome.renamedTo} » : retirez le « .txt » final pour l ouvrir dans votre trancheur.`,
+          );
+          return;
+        }
+        pushToast('ok', `${label} genere.`);
+      } catch (error) {
+        pushToast(
+          'error',
+          `Export impossible : ${error instanceof Error ? error.message : 'erreur inconnue'}.`,
+        );
+      }
+    },
+    [pushToast],
+  );
+
+  const handleExportSTL = useCallback(
+    () => runExport(() => exportSTL(geo, name), 'STL'),
+    [geo, name, runExport],
+  );
+
+  const handleExportJSON = useCallback(
+    () => runExport(() => exportProjectJSON(name, params), 'Projet JSON'),
+    [name, params, runExport],
   );
 
   // --- Projets en session --------------------------------------------------
@@ -185,9 +227,10 @@ export default function App() {
   const exportProject = useCallback(
     (id: string) => {
       const project = projects.find((item) => item.id === id);
-      if (project) exportProjectJSON(project.name, project.params);
+      if (!project) return;
+      void runExport(() => exportProjectJSON(project.name, project.params), 'Projet JSON');
     },
-    [projects],
+    [projects, runExport],
   );
 
   const importProject = useCallback(
@@ -220,13 +263,13 @@ export default function App() {
           type="button"
           className="brand"
           onClick={() => setRoute('gallery')}
-          aria-label="LUREFORGE — retour a la galerie"
+          aria-label="SAKUMA — retour a la galerie"
         >
           <span className="brand__mark" aria-hidden="true">
-            LF
+            SK
           </span>
           <span>
-            <span className="brand__name">LUREFORGE</span>
+            <span className="brand__name">SAKUMA</span>
             <span className="brand__sub">Editeur de leurres 3D</span>
           </span>
         </button>
@@ -271,7 +314,7 @@ export default function App() {
               <button
                 type="button"
                 className="btn btn--primary btn--sm"
-                onClick={() => exportSTL(geo, name)}
+                onClick={handleExportSTL}
               >
                 Exporter STL
               </button>
@@ -405,6 +448,8 @@ export default function App() {
                 geo={geo}
                 physics={physics}
                 onImport={(file) => void importProject(file)}
+                onExportSTL={handleExportSTL}
+                onExportJSON={handleExportJSON}
                 onSaveSession={saveToSession}
                 saveLabel={activeId ? 'Mettre a jour' : 'Ajouter'}
               />

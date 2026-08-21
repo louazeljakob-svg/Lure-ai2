@@ -21,6 +21,80 @@ export const slugify = (value: string): string =>
     .toLowerCase()
     .slice(0, 48) || 'leurre';
 
+/**
+ * Deux environnements, deux chemins de remise de fichier :
+ *
+ * - page ouverte en local (double-clic sur le .html, serveur de dev) :
+ *   telechargement navigateur natif via un Blob et un lien `download` ;
+ * - page publiee comme artefact claude.ai : le bac a sable neutralise les
+ *   liens `download`, il faut passer par la capacite « downloads » de
+ *   l'hote, qui demande confirmation au visiteur.
+ *
+ * `offerFile` choisit automatiquement le bon chemin.
+ */
+
+interface DownloadsCapability {
+  save: (request: { filename: string; data: Blob }) => Promise<unknown>;
+}
+
+/** Resout la capacite d'enregistrement de l'hote, ou `null` hors artefact. */
+async function hostDownloads(): Promise<DownloadsCapability | null> {
+  try {
+    const host = (window as unknown as { claude?: { use?: (name: string) => Promise<unknown> } })
+      .claude;
+    // Optional chaining volontaire : le meme bundle tourne hors artefact,
+    // ou `window.claude` n'existe pas du tout.
+    if (typeof host?.use !== 'function') return null;
+    const namespace = await host.use('downloads');
+    return (namespace as DownloadsCapability | null) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export interface SaveOutcome {
+  /** Nom finalement propose si l'extension d'origine a ete refusee. */
+  renamedTo?: string;
+  /** Vrai si le visiteur a refuse l'enregistrement. */
+  cancelled?: boolean;
+}
+
+async function offerFile(
+  filename: string,
+  data: BlobPart,
+  mime: string,
+  fallbackFilename?: string,
+): Promise<SaveOutcome> {
+  // Toujours encapsule dans un Blob : contrairement a un ArrayBuffer, il est
+  // copie et non transfere, donc reutilisable si une seconde tentative
+  // s'avere necessaire.
+  const blob = new Blob([data], { type: mime });
+
+  const downloads = await hostDownloads();
+  if (!downloads) {
+    downloadBlob(blob, filename);
+    return {};
+  }
+
+  try {
+    await downloads.save({ filename, data: blob });
+    return {};
+  } catch (error) {
+    const code = (error as { code?: string } | null)?.code;
+    if (code === 'declined') return { cancelled: true };
+    if (
+      fallbackFilename &&
+      (code === 'rejected_extension' || code === 'extension_not_enabled')
+    ) {
+      // L'hote n'accepte qu'une liste d'extensions : on repropose le meme
+      // fichier sous une extension autorisee, a renommer apres coup.
+      await downloads.save({ filename: fallbackFilename, data: blob });
+      return { renamedTo: fallbackFilename };
+    }
+    throw error;
+  }
+}
+
 /** Declenche un telechargement navigateur natif. */
 export function downloadBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
@@ -57,16 +131,17 @@ function buildExportGroup(geo: LureGeometry): THREE.Group {
   return group;
 }
 
-export function exportSTL(geo: LureGeometry, name: string): void {
+export async function exportSTL(geo: LureGeometry, name: string): Promise<SaveOutcome> {
   const group = buildExportGroup(geo);
   const data = new STLExporter().parse(group, { binary: true });
-  downloadBlob(new Blob([data], { type: 'model/stl' }), `${slugify(name)}.stl`);
   group.clear();
+  const base = slugify(name);
+  return offerFile(`${base}.stl`, data, 'model/stl', `${base}.stl.txt`);
 }
 
 export function buildProjectFile(name: string, params: LureParams): ProjectFile {
   return {
-    format: 'lureforge-project',
+    format: 'sakuma-project',
     version: 1,
     name,
     savedAt: new Date().toISOString(),
@@ -74,9 +149,12 @@ export function buildProjectFile(name: string, params: LureParams): ProjectFile 
   };
 }
 
-export function exportProjectJSON(name: string, params: LureParams): void {
+export async function exportProjectJSON(
+  name: string,
+  params: LureParams,
+): Promise<SaveOutcome> {
   const json = JSON.stringify(buildProjectFile(name, params), null, 2);
-  downloadBlob(new Blob([json], { type: 'application/json' }), `${slugify(name)}.json`);
+  return offerFile(`${slugify(name)}.json`, json, 'application/json');
 }
 
 export interface ImportedProject {
@@ -87,7 +165,7 @@ export interface ImportedProject {
 /** Relit un .json precedemment telecharge et restaure l'etat de l'editeur. */
 export async function readProjectFile(file: File): Promise<ImportedProject> {
   if (file.size > 2_000_000) {
-    throw new Error('Fichier trop volumineux pour etre un projet LUREFORGE.');
+    throw new Error('Fichier trop volumineux pour etre un projet SAKUMA.');
   }
   let parsed: unknown;
   try {
@@ -100,8 +178,9 @@ export async function readProjectFile(file: File): Promise<ImportedProject> {
   }
 
   const data = parsed as Partial<ProjectFile>;
-  if (data.format !== 'lureforge-project') {
-    throw new Error('Ce fichier n a pas ete produit par LUREFORGE.');
+  // 'lureforge-project' : nom de format de la premiere version, encore accepte.
+  if (data.format !== 'sakuma-project' && data.format !== 'lureforge-project') {
+    throw new Error('Ce fichier n a pas ete produit par SAKUMA.');
   }
 
   return {
