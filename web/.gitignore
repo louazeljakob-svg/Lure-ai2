@@ -1,0 +1,9 @@
+node_modules/
+dist/
+*.local
+*.tsbuildinfo
+.DS_Store
+
+# Le .gitignore Python de la racine exclut « lib/ » : on le neutralise ici,
+# web/src/lib contient le coeur metier de l application.
+!src/lib/

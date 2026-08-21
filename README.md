@@ -18,6 +18,22 @@ optimise et améliore des leurres de pêche.
 
 ---
 
+## 🖥️ Interface web — LUREFORGE (React + Three.js)
+
+En complement de l'application Python, le dossier [`web/`](web/) contient
+**LUREFORGE**, un editeur de leurres 3D dans le navigateur : galerie de sept formes
+parametriques, modelage au slider avec regeneration temps reel du maillage,
+lestage interne, simulation de flottabilite / assiette / action, et export STL
+imprimable — sans serveur ni compte.
+
+```bash
+cd web && npm install && npm run dev
+```
+
+Documentation detaillee : [`web/README.md`](web/README.md).
+
+---
+
 ## 🧱 Architecture
 
 ```
