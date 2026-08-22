@@ -11,6 +11,10 @@ import type {
   BallastShape,
   BallastWeight,
   BillMode,
+  BillProfile,
+  FabricationConfig,
+  PinAnchor,
+  SculptPoint,
   ClipId,
   DetailConfig,
   EyeStyle,
@@ -49,6 +53,7 @@ const SOCKETS: SocketMethod[] = ['bore', 'channel'];
 const BILL_MODES: BillMode[] = ['printed', 'polycarbonate'];
 const EYE_STYLES: EyeStyle[] = ['realistic', 'globular', 'holographic', 'custom'];
 const BALLAST_SHAPES: BallastShape[] = ['sphere', 'cylinder'];
+const BILL_PROFILES: BillProfile[] = ['rounded', 'rect', 'diamond'];
 
 const num = (value: unknown, range: Range, fallback: number): number => {
   const n = typeof value === 'number' ? value : Number(value);
@@ -96,20 +101,66 @@ function sanitizeDetail(
   };
 }
 
+function sanitizeAnchors(value: unknown, fallback: PinAnchor[]): PinAnchor[] {
+  if (!Array.isArray(value)) return fallback.map((anchor) => ({ ...anchor }));
+  return value.slice(0, 12).map((raw, index) => {
+    const item = (raw ?? {}) as Partial<PinAnchor>;
+    return {
+      id:
+        typeof item.id === 'string' && item.id.length > 0 && item.id.length <= 64
+          ? item.id
+          : `ancrage-${index}-${Math.random().toString(36).slice(2, 8)}`,
+      position: num(item.position, LIMITS.anchorPosition, 0.5),
+      height: num(item.height, LIMITS.anchorHeight, 0),
+      axisAngle: num(item.axisAngle, LIMITS.anchorAngle, 0),
+      depth: num(item.depth, LIMITS.anchorDepth, 0),
+      pin: pick(item.pin, PIN_IDS, 'auto'),
+      method: pick(item.method, SOCKETS, 'bore'),
+    };
+  });
+}
+
 function sanitizeAssembly(value: unknown, fallback: AssemblyConfig): AssemblyConfig {
   const raw = (value ?? {}) as Partial<AssemblyConfig>;
   return {
     enabled: bool(raw.enabled, fallback.enabled),
     planeAngle: num(raw.planeAngle, LIMITS.planeAngle, fallback.planeAngle),
-    tenonCount: Math.round(num(raw.tenonCount, LIMITS.tenonCount, fallback.tenonCount)),
-    tenonDiameter: num(raw.tenonDiameter, LIMITS.tenonDiameter, fallback.tenonDiameter),
-    tenonClearance: num(raw.tenonClearance, LIMITS.tenonClearance, fallback.tenonClearance),
     socketMethod: pick(raw.socketMethod, SOCKETS, fallback.socketMethod),
-    boreClearance: num(raw.boreClearance, LIMITS.boreClearance, fallback.boreClearance),
-    channelOffset: num(raw.channelOffset, LIMITS.channelOffset, fallback.channelOffset),
     pin: pick(raw.pin, PIN_IDS, fallback.pin),
     roughWater: bool(raw.roughWater, fallback.roughWater),
+    anchors: sanitizeAnchors(raw.anchors, fallback.anchors),
   };
+}
+
+function sanitizeFabrication(
+  value: unknown,
+  fallback: FabricationConfig,
+): FabricationConfig {
+  const raw = (value ?? {}) as Partial<FabricationConfig>;
+  return {
+    boreClearance: num(raw.boreClearance, LIMITS.boreClearance, fallback.boreClearance),
+    channelOffset: num(raw.channelOffset, LIMITS.channelOffset, fallback.channelOffset),
+    sweepExtra: num(raw.sweepExtra, LIMITS.sweepExtra, fallback.sweepExtra),
+    tenonFit: num(raw.tenonFit, LIMITS.tenonFit, fallback.tenonFit),
+    billFit: num(raw.billFit, LIMITS.billFit, fallback.billFit),
+  };
+}
+
+function sanitizeSculpt(value: unknown, fallback: SculptPoint[]): SculptPoint[] {
+  if (!Array.isArray(value)) return fallback.map((point) => ({ ...point }));
+  return value.slice(0, 120).map((raw, index) => {
+    const item = (raw ?? {}) as Partial<SculptPoint>;
+    return {
+      id:
+        typeof item.id === 'string' && item.id.length > 0 && item.id.length <= 64
+          ? item.id
+          : `cage-${index}`,
+      position: num(item.position, LIMITS.anchorPosition, 0.5),
+      angle: num(item.angle, { min: 0, max: 360, step: 1 }, 0),
+      amount: num(item.amount, LIMITS.sculptAmount, 0),
+      radius: num(item.radius, LIMITS.sculptRadius, 0.12),
+    };
+  });
 }
 
 /** Ramene n'importe quelle entree a un jeu de parametres exploitable. */
@@ -134,6 +185,10 @@ export function sanitizeParams(input: unknown): LureParams {
     hasBib: bool(raw.hasBib, base.hasBib),
     billMode: pick(raw.billMode, BILL_MODES, base.billMode),
     billThickness: num(raw.billThickness, LIMITS.billThickness, base.billThickness),
+    billOffset: num(raw.billOffset, LIMITS.billOffset, base.billOffset),
+    billFillet: num(raw.billFillet, LIMITS.billFillet, base.billFillet),
+    billProfile: pick(raw.billProfile, BILL_PROFILES, base.billProfile),
+    billTwist: num(raw.billTwist, LIMITS.billTwist, base.billTwist),
     bibAngle: num(raw.bibAngle, LIMITS.bibAngle, base.bibAngle),
     bibLength: num(raw.bibLength, LIMITS.bibLength, base.bibLength),
     bibWidth: num(raw.bibWidth, LIMITS.bibWidth, base.bibWidth),
@@ -152,6 +207,8 @@ export function sanitizeParams(input: unknown): LureParams {
     eyeStyle: pick(raw.eyeStyle, EYE_STYLES, base.eyeStyle),
     clip: pick(raw.clip, CLIP_IDS, base.clip),
     assembly: sanitizeAssembly(raw.assembly, base.assembly),
+    fabrication: sanitizeFabrication(raw.fabrication, base.fabrication),
+    sculpt: sanitizeSculpt(raw.sculpt, base.sculpt),
     material: pick(raw.material, MATERIALS, base.material),
     infill: num(raw.infill, LIMITS.infill, base.infill),
     hardwareMass: num(raw.hardwareMass, LIMITS.hardwareMass, base.hardwareMass),

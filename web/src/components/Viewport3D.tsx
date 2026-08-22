@@ -10,11 +10,15 @@
 import { Canvas, useThree } from '@react-three/fiber';
 import { ContactShadows, Grid, OrbitControls } from '@react-three/drei';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import type { ReferenceImage } from '../lib/reference';
+import { ReferencePlanes } from './ReferencePlanes';
 import * as THREE from 'three';
 import type { LureParams } from '../types/lure';
 import type { LureGeometry } from '../lib/geometry';
-import { buildAssembly } from '../lib/assembly';
+import { buildAssembly, worldToAnchor, type AssemblyResult } from '../lib/assembly';
+import { createSurfaceSampler } from '../lib/geometry';
 import { createProfile } from '../lib/profile';
+import type { ThreeEvent } from '@react-three/fiber';
 import { FINISHES } from '../lib/materials';
 import { createPaintTexture } from '../lib/paint';
 import { useReducedMotion } from '../lib/hooks';
@@ -80,10 +84,16 @@ function LureModel({
   geo,
   params,
   xray,
+  interactive,
+  onPointerDown,
+  onPointerMove,
 }: {
   geo: LureGeometry;
   params: LureParams;
   xray: boolean;
+  interactive?: boolean;
+  onPointerDown?: (event: ThreeEvent<PointerEvent>) => void;
+  onPointerMove?: (event: ThreeEvent<PointerEvent>) => void;
 }) {
   const texture = useMemo(() => createPaintTexture(params), [params]);
   useEffect(() => () => texture.dispose(), [texture]);
@@ -91,7 +101,12 @@ function LureModel({
 
   return (
     <group>
-      <mesh geometry={geo.body} castShadow={false}>
+      <mesh
+        geometry={geo.body}
+        castShadow={false}
+        onPointerDown={interactive ? onPointerDown : undefined}
+        onPointerMove={interactive ? onPointerMove : undefined}
+      >
         <meshPhysicalMaterial
           map={texture}
           roughness={finish.roughness}
@@ -242,18 +257,15 @@ function WaterPlane({ y, radius }: { y: number | null; radius: number }) {
  * Vue eclatee : les deux coques s'ecartent de part et d'autre du plan de
  * joint, ce qui rend visibles les goujons, le logement et la goupille.
  */
-function ExplodedAssembly({ params, spread }: { params: LureParams; spread: number }) {
-  const assembly = useMemo(() => buildAssembly(createProfile(params), params), [params]);
-  useEffect(
-    () => () => {
-      assembly.male.dispose();
-      assembly.female.dispose();
-      assembly.tenons?.dispose();
-      assembly.pin.geometry.dispose();
-    },
-    [assembly],
-  );
-
+function ExplodedAssembly({
+  assembly,
+  params,
+  spread,
+}: {
+  assembly: AssemblyResult;
+  params: LureParams;
+  spread: number;
+}) {
   const offset = assembly.splitNormal.clone().multiplyScalar(spread);
   const finish = FINISHES[params.paint.finish];
 
@@ -286,9 +298,143 @@ function ExplodedAssembly({ params, spread }: { params: LureParams; spread: numb
         </mesh>
       </group>
 
-      <mesh geometry={assembly.pin.geometry}>
-        <meshStandardMaterial color="#c9ccd1" roughness={0.25} metalness={0.95} />
-      </mesh>
+      {assembly.pins.map((pin, index) => (
+        <mesh key={index} geometry={pin.geometry}>
+          <meshStandardMaterial color="#c9ccd1" roughness={0.25} metalness={0.95} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+/**
+ * Portees de goupille en surbrillance : sans cet apercu, le logement reste
+ * invisible puisqu'il est creuse dans le plan de joint, face cachee.
+ */
+function SocketPreview({ assembly }: { assembly: AssemblyResult }) {
+  if (!assembly.socketPreview) return null;
+  return (
+    <mesh geometry={assembly.socketPreview} renderOrder={15}>
+      <meshBasicMaterial
+        color="#e30613"
+        transparent
+        opacity={0.42}
+        depthTest={false}
+        side={THREE.DoubleSide}
+      />
+    </mesh>
+  );
+}
+
+/** Poignees d'ancrage : selection, deplacement, signalement des invalides. */
+function AnchorHandles({
+  assembly,
+  radius,
+  selected,
+  onSelect,
+  onDragStart,
+}: {
+  assembly: AssemblyResult;
+  radius: number;
+  selected: string | null;
+  onSelect: (id: string) => void;
+  onDragStart: (id: string) => void;
+}) {
+  const size = Math.max(radius * 0.07, 0.1);
+  return (
+    <group renderOrder={25}>
+      {assembly.sockets.map((socket) => (
+        <mesh
+          key={socket.anchorId}
+          position={socket.world}
+          renderOrder={25}
+          onPointerDown={(event: ThreeEvent<PointerEvent>) => {
+            event.stopPropagation();
+            onSelect(socket.anchorId);
+            onDragStart(socket.anchorId);
+          }}
+        >
+          <sphereGeometry args={[socket.anchorId === selected ? size * 1.4 : size, 20, 14]} />
+          <meshBasicMaterial
+            color={!socket.valid ? '#e30613' : socket.anchorId === selected ? '#111315' : '#1b5e9c'}
+            depthTest={false}
+          />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+/**
+ * Poignees de la cage de sculpture : un glisser vertical tire ou repousse
+ * localement la peau, par-dessus la forme pilotee par les sliders.
+ */
+function CageHandles({
+  params,
+  radius,
+  selected,
+  onSelect,
+  onDrag,
+}: {
+  params: LureParams;
+  radius: number;
+  selected: string | null;
+  onSelect: (id: string | null) => void;
+  onDrag: (id: string, deltaMm: number) => void;
+}) {
+  const dragging = useRef<string | null>(null);
+  const points = useMemo(() => {
+    const surface = createSurfaceSampler(createProfile(params), params);
+    return params.sculpt.map((point) => ({
+      point,
+      world: surface(point.position, THREE.MathUtils.degToRad(point.angle)),
+    }));
+  }, [params]);
+
+  useEffect(() => {
+    const move = (event: PointerEvent) => {
+      const id = dragging.current;
+      // Vers le haut = matiere qui ressort : 0,04 mm par pixel.
+      if (id) onDrag(id, -event.movementY * 0.04);
+    };
+    const up = () => {
+      dragging.current = null;
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    return () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+    };
+  }, [onDrag]);
+
+  const size = Math.max(radius * 0.045, 0.07);
+  return (
+    <group renderOrder={30}>
+      {points.map(({ point, world }) => (
+        <mesh
+          key={point.id}
+          position={world}
+          renderOrder={30}
+          onPointerDown={(event: ThreeEvent<PointerEvent>) => {
+            event.stopPropagation();
+            dragging.current = point.id;
+            onSelect(point.id);
+          }}
+        >
+          <sphereGeometry args={[point.id === selected ? size * 1.5 : size, 16, 12]} />
+          <meshBasicMaterial
+            color={
+              point.id === selected
+                ? '#e30613'
+                : Math.abs(point.amount) > 0.05
+                  ? '#17794a'
+                  : '#101114'
+            }
+            depthTest={false}
+          />
+        </mesh>
+      ))}
     </group>
   );
 }
@@ -299,9 +445,42 @@ export interface Viewport3DProps {
   physics: PhysicsResult;
   /** Incremente a chaque chargement de gabarit ou de projet : recadre la vue. */
   fitKey: number;
+  /** Mode « placement de goupille » : un clic sur le corps pose un ancrage. */
+  placing: boolean;
+  selectedAnchor: string | null;
+  onPlaceAnchor: (position: number, height: number) => void;
+  onMoveAnchor: (id: string, position: number, height: number) => void;
+  onSelectAnchor: (id: string | null) => void;
+  /** Images de reference calees dans les plans du modele. */
+  references: ReferenceImage[];
+  /** Reference en cours de calibration : son plan devient cliquable. */
+  calibratingId: string | null;
+  onPickCalibration: (id: string, u: number, v: number) => void;
+  /** Cage de sculpture : poignees affichees et deplacables. */
+  sculpting: boolean;
+  selectedSculpt: string | null;
+  onSelectSculpt: (id: string | null) => void;
+  onDragSculpt: (id: string, deltaMm: number) => void;
 }
 
-export function Viewport3D({ geo, params, physics, fitKey }: Viewport3DProps) {
+export function Viewport3D({
+  geo,
+  params,
+  physics,
+  fitKey,
+  placing,
+  selectedAnchor,
+  onPlaceAnchor,
+  onMoveAnchor,
+  onSelectAnchor,
+  references,
+  calibratingId,
+  onPickCalibration,
+  sculpting,
+  selectedSculpt,
+  onSelectSculpt,
+  onDragSculpt,
+}: Viewport3DProps) {
   const reducedMotion = useReducedMotion();
   const [view, setView] = useState<ViewId>('iso');
   const [fitSignal, setFitSignal] = useState(0);
@@ -309,10 +488,41 @@ export function Viewport3D({ geo, params, physics, fitKey }: Viewport3DProps) {
   const [xray, setXray] = useState(false);
   const [floatView, setFloatView] = useState(false);
   const [exploded, setExploded] = useState(false);
+  const [showSockets, setShowSockets] = useState(true);
+  const dragging = useRef<string | null>(null);
 
   const radius =
     Math.hypot(geo.bounds.length, geo.bounds.height, geo.bounds.width) / 20 || 5;
   const groundY = -geo.bounds.height / 20 - 0.9;
+  // L'assemblage n'est calcule que lorsqu'il sert : vue eclatee, apercu des
+  // portees ou placement d'ancrages.
+  const needsAssembly = params.assembly.enabled && (exploded || showSockets || placing);
+  const assembly = useMemo(
+    () => (needsAssembly ? buildAssembly(createProfile(params), params) : null),
+    [needsAssembly, params],
+  );
+  useEffect(
+    () => () => {
+      if (!assembly) return;
+      assembly.male.dispose();
+      assembly.female.dispose();
+      assembly.tenons?.dispose();
+      assembly.socketPreview?.dispose();
+      for (const pin of assembly.pins) pin.geometry.dispose();
+    },
+    [assembly],
+  );
+
+  const handleSurfacePointer = (event: ThreeEvent<PointerEvent>, place: boolean) => {
+    if (!placing) return;
+    const id = dragging.current;
+    if (!place && !id) return;
+    event.stopPropagation();
+    const { position, height } = worldToAnchor(createProfile(params), params, event.point);
+    if (id) onMoveAnchor(id, position, height);
+    else if (place) onPlaceAnchor(position, height);
+  };
+
   const waterY = useMemo(
     () => (floatView ? waterlineY(params, physics.ratio) : null),
     [floatView, params, physics.ratio],
@@ -337,12 +547,52 @@ export function Viewport3D({ geo, params, physics, fitKey }: Viewport3DProps) {
           <directionalLight position={[-7, 4, -6]} intensity={0.8} color="#dce6f2" />
           <pointLight position={[0, -5, 6]} intensity={0.5} />
 
-          <group rotation={[0, 0, tilt]}>
-            {exploded && params.assembly.enabled ? (
-              <ExplodedAssembly params={params} spread={radius * 0.55} />
+          <ReferencePlanes
+            references={references}
+            radius={radius}
+            calibratingId={calibratingId}
+            onPick={onPickCalibration}
+          />
+
+          <group
+            rotation={[0, 0, tilt]}
+            onPointerUp={() => {
+              dragging.current = null;
+            }}
+          >
+            {exploded && assembly ? (
+              <ExplodedAssembly assembly={assembly} params={params} spread={radius * 0.55} />
             ) : (
-              <LureModel geo={geo} params={params} xray={xray} />
+              <LureModel
+                geo={geo}
+                params={params}
+                xray={xray}
+                interactive={placing}
+                onPointerDown={(event) => handleSurfacePointer(event, true)}
+                onPointerMove={(event) => handleSurfacePointer(event, false)}
+              />
             )}
+            {assembly && showSockets ? <SocketPreview assembly={assembly} /> : null}
+            {sculpting ? (
+              <CageHandles
+                params={params}
+                radius={radius}
+                selected={selectedSculpt}
+                onSelect={onSelectSculpt}
+                onDrag={onDragSculpt}
+              />
+            ) : null}
+            {assembly && placing ? (
+              <AnchorHandles
+                assembly={assembly}
+                radius={radius}
+                selected={selectedAnchor}
+                onSelect={onSelectAnchor}
+                onDragStart={(id) => {
+                  dragging.current = id;
+                }}
+              />
+            ) : null}
             <Ballasts geo={geo} visible={showMarkers || xray} overlay={showMarkers && !xray} />
             <BalanceMarkers physics={physics} radius={radius} visible={showMarkers} />
           </group>
@@ -443,6 +693,15 @@ export function Viewport3D({ geo, params, physics, fitKey }: Viewport3DProps) {
           onClick={() => setExploded((value) => !value)}
         >
           Eclate
+        </button>
+        <button
+          type="button"
+          className="toolbtn"
+          aria-pressed={showSockets}
+          disabled={!params.assembly.enabled}
+          onClick={() => setShowSockets((value) => !value)}
+        >
+          Portees
         </button>
       </div>
 

@@ -93,7 +93,8 @@ export function createDetailField(
   const allowed = params.shape !== 'spoon';
   const gills = allowed && params.gills.enabled ? params.gills : null;
   const eyes = allowed && params.eyes.enabled ? params.eyes : null;
-  if (!gills && !eyes) return null;
+  const sculpt = params.sculpt.filter((point) => Math.abs(point.amount) > 1e-4);
+  if (!gills && !eyes && sculpt.length === 0) return null;
 
   const lengthCm = profile.lengthCm;
 
@@ -108,6 +109,17 @@ export function createDetailField(
 
   return (p: number, theta: number): number => {
     let displacement = 0;
+
+    // Cage de sculpture : chaque point tire ou repousse la peau autour de lui,
+    // avec une retombee douce, par-dessus la forme des sliders.
+    for (const point of sculpt) {
+      const along = (p - point.position) / Math.max(point.radius, 0.02);
+      let delta = Math.abs(theta - THREE.MathUtils.degToRad(point.angle));
+      if (delta > Math.PI) delta = Math.PI * 2 - delta;
+      const around = delta / Math.max(point.radius * 6, 0.1);
+      const weight = Math.exp(-(along * along + around * around) * 2);
+      if (weight > 1e-3) displacement += point.amount * MM_TO_CM * weight;
+    }
 
     if (gills) {
       const height = Math.cos(theta);
@@ -245,7 +257,9 @@ export function buildBib(
   part: ShellPart = 'full',
 ): THREE.BufferGeometry {
   const outline = bibShape(profile, params, false);
-  const thickness = clamp(params.thickness * MM_TO_CM * 0.1, 0.1, 0.28);
+  // L'epaisseur est desormais un reglage a part entiere, plus une fraction
+  // de l'epaisseur du corps.
+  const thickness = clamp(params.billThickness * MM_TO_CM, 0.05, 0.6);
 
   // La largeur de la bavette devient laterale apres bascule : c'est donc le
   // CONTOUR qu'il faut trancher dans le plan de joint, pas l'epaisseur.
@@ -259,10 +273,27 @@ export function buildBib(
     bevelEnabled: false,
     curveSegments: 24,
   });
+  geometry.translate(0, 0, -thickness / 2);
+
+  // Vrille : la section tourne progressivement autour de l'axe de la bavette.
+  const twist = THREE.MathUtils.degToRad(params.billTwist);
+  if (Math.abs(twist) > 1e-4) {
+    const position = geometry.getAttribute('position') as THREE.BufferAttribute;
+    const span = Math.max(outline.length, 1e-6);
+    for (let i = 0; i < position.count; i++) {
+      const x = position.getX(i);
+      const angle = twist * clamp(x / span, 0, 1);
+      const cos = Math.cos(angle);
+      const sin = Math.sin(angle);
+      const y = position.getY(i);
+      const z = position.getZ(i);
+      position.setXYZ(i, x, y * cos - z * sin, y * sin + z * cos);
+    }
+    position.needsUpdate = true;
+  }
 
   // Le contour est dessine dans le plan XY : on le bascule pour que la
   // largeur parte sur Z et que l'epaisseur soit verticale.
-  geometry.translate(0, 0, -thickness / 2);
   geometry.rotateX(-Math.PI / 2);
   // Le contour est bati vers +X, or le nez du leurre est en -X : la bavette
   // doit donc etre retournee pour projeter VERS L'AVANT, comme une vraie
@@ -271,8 +302,11 @@ export function buildBib(
   // (plongee maximale), 90 deg = perpendiculaire (nage de sub-surface).
   geometry.rotateZ(Math.PI + THREE.MathUtils.degToRad(clamp(params.bibAngle, 5, 89)));
 
-  const anchor = profile.section(0.07);
-  geometry.translate(profile.xAt(0.045), anchor.bottom * 0.75, 0);
+  // Recul reglable depuis la pointe du nez.
+  const offset = clamp(params.billOffset * MM_TO_CM, 0, profile.lengthCm * 0.3);
+  const anchorP = clamp(offset / Math.max(profile.lengthCm, 1e-6) + 0.03, 0.03, 0.4);
+  const anchor = profile.section(anchorP);
+  geometry.translate(profile.xAt(0) + offset, anchor.bottom * 0.75, 0);
   geometry.computeVertexNormals();
   return geometry;
 }
@@ -457,8 +491,9 @@ export function createSurfaceSampler(
 ): SurfaceSampler {
   const exponent = 2 / clamp(params.crossSection, 1.2, 3.6);
   const detail = createDetailField(profile, params);
-  const out = new THREE.Vector3();
 
+  // Un vecteur neuf a chaque appel : un objet partage se ferait ecraser des
+  // que l'appelant compare deux points, ce qui donne des bugs silencieux.
   return (p: number, theta: number): THREE.Vector3 => {
     const section = profile.section(p);
     const topAbs = section.top;
@@ -480,7 +515,7 @@ export function createSurfaceSampler(
         }
       }
     }
-    return out.set(profile.xAt(p), y, z);
+    return new THREE.Vector3(profile.xAt(p), y, z);
   };
 }
 

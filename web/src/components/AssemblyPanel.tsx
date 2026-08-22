@@ -1,9 +1,16 @@
 /** Panneau Assemblage : deux coques, goujons, logement de goupille, agrafes. */
 
-import type { AssemblyConfig, ClipId, LureParams, PinId } from '../types/lure';
+import type {
+  AssemblyConfig,
+  ClipId,
+  FabricationConfig,
+  LureParams,
+  PinAnchor,
+  PinId,
+} from '../types/lure';
 import { CLIPS } from '../lib/materials';
 import { PINS, autoPin } from '../lib/hardware';
-import { resolvePin, tenonRadius } from '../lib/assembly';
+import { anchorPin, resolvePin, type SocketPlan } from '../lib/assembly';
 import { LIMITS } from '../lib/presets';
 import { Fieldset, Segmented, Slider, Switch } from './ui';
 
@@ -12,17 +19,52 @@ interface Props {
   onChange: (patch: Partial<LureParams>) => void;
   clipMass: number;
   pinMass: number;
+  /** Portees calculees, pour signaler les ancrages invalides. */
+  sockets: SocketPlan[];
+  placing: boolean;
+  onPlacingChange: (placing: boolean) => void;
+  selectedAnchor: string | null;
+  onSelectAnchor: (id: string | null) => void;
+  onAddAnchor: () => void;
+  onUpdateAnchor: (id: string, patch: Partial<PinAnchor>) => void;
+  onRemoveAnchor: (id: string) => void;
 }
 
 const mm = (value: number) => `${value.toFixed(value < 10 ? 2 : 1)} mm`;
 
-export function AssemblyPanel({ params, onChange, clipMass, pinMass }: Props) {
-  const { assembly } = params;
+/** Libelle parlant pour la direction de sortie du fil. */
+const directionLabel = (angle: number): string => {
+  const normalized = ((angle % 360) + 360) % 360;
+  if (normalized < 45 || normalized >= 315) return 'Vers le nez';
+  if (normalized < 135) return 'Vers le ventre';
+  if (normalized < 225) return 'Vers la queue';
+  return 'Vers le dos';
+};
+
+export function AssemblyPanel({
+  params,
+  onChange,
+  clipMass,
+  pinMass,
+  sockets,
+  placing,
+  onPlacingChange,
+  selectedAnchor,
+  onSelectAnchor,
+  onAddAnchor,
+  onUpdateAnchor,
+  onRemoveAnchor,
+}: Props) {
+  const { assembly, fabrication } = params;
+  const anchors = assembly.anchors;
   const spec = resolvePin(params);
   const automatic = autoPin(params.length, assembly.roughWater);
 
   const setAssembly = (patch: Partial<AssemblyConfig>) =>
     onChange({ assembly: { ...assembly, ...patch } });
+
+  const setFabrication = (patch: Partial<FabricationConfig>) =>
+    onChange({ fabrication: { ...fabrication, ...patch } });
 
   return (
     <div className="panel__body">
@@ -53,41 +95,184 @@ export function AssemblyPanel({ params, onChange, clipMass, pinMass }: Props) {
       </Fieldset>
 
       <Fieldset
-        legend="Goujons d alignement"
-        hint="Imprimes sur la coque male, ils entrent dans des logements creuses dans la femelle. Leur diametre suit la largeur du corps s il est laisse sur Auto."
+        legend="Points d ancrage"
+        hint="Activez le placement puis cliquez sur le corps dans la vue 3D. Chaque point engendre son goujon sur la coque male et son alesage en vis-a-vis sur la femelle."
+      >
+        <Switch
+          label="Placement de goupille"
+          checked={placing}
+          onChange={onPlacingChange}
+          hint="Cliquez sur la surface pour poser un point, glissez une poignee pour la deplacer."
+        />
+
+        {anchors.length === 0 ? (
+          <p className="empty">Aucun ancrage : le corps se referme sans quincaillerie.</p>
+        ) : null}
+
+        {anchors.map((anchor, index) => {
+          const plan = sockets.find((socket) => socket.anchorId === anchor.id);
+          const selected = anchor.id === selectedAnchor;
+          return (
+            <div
+              className={plan && !plan.valid ? 'ballast ballast--invalid' : 'ballast'}
+              key={anchor.id}
+              style={selected ? { borderLeftColor: 'var(--red)' } : undefined}
+            >
+              <div className="ballast__head">
+                <button
+                  type="button"
+                  className="ballast__name"
+                  style={{ background: 'none', border: 0, cursor: 'pointer', padding: 0 }}
+                  onClick={() => onSelectAnchor(selected ? null : anchor.id)}
+                >
+                  Ancrage {index + 1}
+                </button>
+                <span className="ballast__spec">
+                  {anchorPin(params, anchor).label}
+                  {plan ? ` · goujon ${(plan.tenonRadius * 20).toFixed(1)} mm` : ''}
+                </span>
+                <button
+                  type="button"
+                  className="btn btn--sm btn--ghost btn--danger"
+                  onClick={() => onRemoveAnchor(anchor.id)}
+                >
+                  Retirer
+                </button>
+              </div>
+
+              {plan && !plan.valid ? (
+                <p className="control__hint" style={{ color: 'var(--red)' }}>
+                  {plan.problem}
+                </p>
+              ) : null}
+
+              {selected ? (
+                <>
+                  <Slider
+                    label="Position"
+                    value={anchor.position}
+                    {...LIMITS.anchorPosition}
+                    display={`${Math.round(anchor.position * 100)} %`}
+                    onChange={(position) => onUpdateAnchor(anchor.id, { position })}
+                  />
+                  <Slider
+                    label="Hauteur"
+                    value={anchor.height}
+                    {...LIMITS.anchorHeight}
+                    display={
+                      anchor.height < -0.3 ? 'Ventre' : anchor.height > 0.3 ? 'Dos' : 'Axe'
+                    }
+                    onChange={(height) => onUpdateAnchor(anchor.id, { height })}
+                  />
+                  <Slider
+                    label="Direction de sortie"
+                    value={anchor.axisAngle}
+                    {...LIMITS.anchorAngle}
+                    display={directionLabel(anchor.axisAngle)}
+                    hint="0 deg vers le nez, 90 vers le ventre, 180 vers la queue."
+                    onChange={(axisAngle) => onUpdateAnchor(anchor.id, { axisAngle })}
+                  />
+                  <Slider
+                    label="Profondeur d ancrage"
+                    value={anchor.depth}
+                    {...LIMITS.anchorDepth}
+                    display={anchor.depth > 0 ? mm(anchor.depth) : 'Auto'}
+                    hint="Hauteur du goujon. Auto : deux fois son rayon."
+                    onChange={(depth) => onUpdateAnchor(anchor.id, { depth })}
+                  />
+                  <Segmented
+                    label="Goupille"
+                    value={anchor.pin}
+                    wrap
+                    options={[
+                      { value: 'auto' as PinId | 'auto', label: 'Auto' },
+                      ...PINS.map((pin) => ({ value: pin.id as PinId | 'auto', label: pin.label })),
+                    ]}
+                    onChange={(pin) => onUpdateAnchor(anchor.id, { pin })}
+                  />
+                  <Segmented
+                    label="Logement"
+                    value={anchor.method}
+                    options={[
+                      { value: 'bore' as const, label: 'Alesage' },
+                      { value: 'channel' as const, label: 'Canal' },
+                    ]}
+                    onChange={(method) => onUpdateAnchor(anchor.id, { method })}
+                  />
+                </>
+              ) : (
+                <p className="control__hint">
+                  Position {Math.round(anchor.position * 100)} % ·{' '}
+                  {directionLabel(anchor.axisAngle)} · {anchor.method === 'bore' ? 'alesage' : 'canal'}
+                  {' — '}
+                  <button
+                    type="button"
+                    className="palette-chip__apply"
+                    onClick={() => onSelectAnchor(anchor.id)}
+                  >
+                    regler
+                  </button>
+                </p>
+              )}
+            </div>
+          );
+        })}
+
+        <button type="button" className="btn btn--block" onClick={onAddAnchor}>
+          + Ajouter un ancrage
+        </button>
+      </Fieldset>
+
+      <Fieldset
+        legend="Parametres de fabrication"
+        hint="Les jeux se mesurent sur votre imprimante. Ajustez-les ici une fois vos valeurs validees."
       >
         <Slider
-          label="Nombre de goujons"
-          value={assembly.tenonCount}
-          {...LIMITS.tenonCount}
-          display={`${assembly.tenonCount}`}
-          disabled={!assembly.enabled}
-          onChange={(tenonCount) => setAssembly({ tenonCount })}
+          label="Jeu goupille / alesage"
+          value={fabrication.boreClearance}
+          {...LIMITS.boreClearance}
+          display={mm(fabrication.boreClearance)}
+          hint="Methode A : alesage = cercle de la goupille + ce jeu."
+          onChange={(boreClearance) => setFabrication({ boreClearance })}
         />
         <Slider
-          label="Diametre"
-          value={assembly.tenonDiameter}
-          {...LIMITS.tenonDiameter}
-          display={
-            assembly.tenonDiameter > 0
-              ? mm(assembly.tenonDiameter)
-              : `Auto · ${mm(tenonRadius(params) * 20)}`
-          }
-          disabled={!assembly.enabled}
-          onChange={(tenonDiameter) => setAssembly({ tenonDiameter })}
+          label="Offset de silhouette"
+          value={fabrication.channelOffset}
+          {...LIMITS.channelOffset}
+          display={mm(fabrication.channelOffset)}
+          hint="Methode B : decalage du trace du fil avant balayage."
+          onChange={(channelOffset) => setFabrication({ channelOffset })}
         />
         <Slider
-          label="Jeu d emboitement"
-          value={assembly.tenonClearance}
-          {...LIMITS.tenonClearance}
-          display={mm(assembly.tenonClearance)}
-          disabled={!assembly.enabled}
-          hint="Ajoute au rayon du logement femelle. 0,15 mm convient a la plupart des imprimantes FDM."
-          onChange={(tenonClearance) => setAssembly({ tenonClearance })}
+          label="Supplement de profil balaye"
+          value={fabrication.sweepExtra}
+          {...LIMITS.sweepExtra}
+          display={mm(fabrication.sweepExtra)}
+          hint="Methode B : diametre du profil = cable de la goupille + ce supplement."
+          onChange={(sweepExtra) => setFabrication({ sweepExtra })}
+        />
+        <Slider
+          label="Jeu goujon / alesage femelle"
+          value={fabrication.tenonFit}
+          {...LIMITS.tenonFit}
+          display={mm(fabrication.tenonFit)}
+          hint="Emboitement des deux coques. Valeur de depart provisoire, a mesurer."
+          onChange={(tenonFit) => setFabrication({ tenonFit })}
+        />
+        <Slider
+          label="Jeu d insertion de bavette"
+          value={fabrication.billFit}
+          {...LIMITS.billFit}
+          display={mm(fabrication.billFit)}
+          hint="S ajoute a l epaisseur du polycarbonate pour dimensionner la fente."
+          onChange={(billFit) => setFabrication({ billFit })}
         />
       </Fieldset>
 
-      <Fieldset legend="Goupille en 8" hint="Petite boucle prise dans le corps, grande boucle sortie au nez.">
+      <Fieldset
+        legend="Goupille par defaut"
+        hint="Appliquee aux ancrages laisses sur Auto."
+      >
         <Segmented
           label="Taille"
           value={assembly.pin}
@@ -113,7 +298,7 @@ export function AssemblyPanel({ params, onChange, clipMass, pinMass }: Props) {
           <div className="stat__value">{spec.label}</div>
           <span className="stat__sub">
             fil {spec.wire} mm · longueur {spec.length} mm · boucle {spec.loopWidth} mm ·{' '}
-            {pinMass.toFixed(3)} g
+            {pinMass.toFixed(3)} g au total
           </span>
         </div>
         {assembly.pin === 'auto' ? (
@@ -126,42 +311,6 @@ export function AssemblyPanel({ params, onChange, clipMass, pinMass }: Props) {
             Choix force. La regle proportionnelle aurait retenu{' '}
             {PINS.find((p) => p.id === automatic)?.label}.
           </p>
-        )}
-      </Fieldset>
-
-      <Fieldset
-        legend="Logement de goupille"
-        hint="Creuse dans le plan de joint, moitie dans chaque coque."
-      >
-        <Segmented
-          label="Methode"
-          value={assembly.socketMethod}
-          options={[
-            { value: 'bore' as const, label: 'Alesage', title: 'Trou cylindrique simple' },
-            { value: 'channel' as const, label: 'Canal', title: 'Suit la silhouette reelle du fil' },
-          ]}
-          onChange={(socketMethod) => setAssembly({ socketMethod })}
-        />
-        {assembly.socketMethod === 'bore' ? (
-          <Slider
-            label="Jeu diametral"
-            value={assembly.boreClearance}
-            {...LIMITS.boreClearance}
-            display={mm(assembly.boreClearance)}
-            disabled={!assembly.enabled}
-            hint={`Alesage = cercle de la goupille + ce jeu, soit ${(spec.loopWidth + assembly.boreClearance).toFixed(2)} mm.`}
-            onChange={(boreClearance) => setAssembly({ boreClearance })}
-          />
-        ) : (
-          <Slider
-            label="Offset du canal"
-            value={assembly.channelOffset}
-            {...LIMITS.channelOffset}
-            display={mm(assembly.channelOffset)}
-            disabled={!assembly.enabled}
-            hint="Jeu radial autour du fil. Le canal suit le trace de la boucle et laisse la matiere interieure en place : c est elle qui retient la goupille."
-            onChange={(channelOffset) => setAssembly({ channelOffset })}
-          />
         )}
       </Fieldset>
 

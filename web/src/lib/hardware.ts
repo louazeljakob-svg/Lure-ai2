@@ -135,7 +135,12 @@ export interface PinPart {
  * l'axe du fil. `origin` place le centre de la petite boucle dans le repere
  * du leurre, `planeAngle` oriente le plan de joint.
  */
-export function buildPin(spec: PinSpec, origin: THREE.Vector3, planeAngle: number): PinPart {
+export function buildPin(
+  spec: PinSpec,
+  origin: THREE.Vector3,
+  planeAngle: number,
+  axisAngle = 0,
+): PinPart {
   const path = pinPath(spec);
   const curve = new THREE.CatmullRomCurve3(
     path.points.map((p) => new THREE.Vector3(p.x, p.y, 0)),
@@ -150,8 +155,9 @@ export function buildPin(spec: PinSpec, origin: THREE.Vector3, planeAngle: numbe
     8,
     false,
   );
-  // Le fil vit dans le plan de joint : on fait tourner le plan XY autour de
-  // l'axe du leurre pour suivre l'orientation choisie.
+  // La grande boucle sort dans la direction demandee, puis le plan du fil
+  // bascule pour epouser le plan de joint.
+  geometry.rotateZ(THREE.MathUtils.degToRad(axisAngle));
   geometry.rotateX(planeAngle);
   geometry.translate(origin.x, origin.y, origin.z);
 

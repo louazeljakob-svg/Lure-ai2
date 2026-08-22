@@ -23,7 +23,8 @@ optimise et améliore des leurres de pêche.
 En complement de l'application Python, le dossier [`web/`](web/) contient
 **SAKUMA**, un editeur de leurres 3D dans le navigateur : onze formes
 parametriques (dont quatre relevees sur des references reelles), composition
-libre de chaque element, assemblage en deux coques avec goujons et goupille en 8,
+libre de chaque element, placement manuel des goupilles avec goujons et alesages
+generes automatiquement, cage de sculpture, images de reference calibrees,
 branchies et yeux graves dans le corps, lestage inox, bavette imprimee ou
 polycarbonate, simulation de flottabilite / assiette / action, et exports STL,
 STEP, DXF et SVG — sans serveur ni compte.

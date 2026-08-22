@@ -1457,10 +1457,13 @@ select:hover {
   border: 0;
   border-bottom: 3px solid transparent;
   background: none;
-  padding: 11px 6px;
-  font-size: 11px;
+  /* Cinq onglets dans une colonne etroite : typographie resserree. */
+  padding: 10px 2px;
+  font-size: 9.5px;
   font-weight: 700;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.02em;
+  min-width: 0;
+  overflow-wrap: anywhere;
   text-transform: uppercase;
   color: var(--ink-3);
   cursor: pointer;

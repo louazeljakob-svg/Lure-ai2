@@ -38,6 +38,66 @@ export type EyeStyle = 'realistic' | 'globular' | 'holographic' | 'custom';
 /** Forme des lests internes. */
 export type BallastShape = 'sphere' | 'cylinder';
 
+/** Profil de coupe de la bavette. */
+export type BillProfile = 'rounded' | 'rect' | 'diamond';
+
+/**
+ * Point d'ancrage d'une goupille, place par l'utilisateur sur le modele.
+ *
+ * La position est stockee en coordonnees parametriques du corps, pas en
+ * (x, y, z) bruts : un ancrage suit ainsi la forme quand on la retaille au
+ * slider, ce qui est tout l'interet d'un editeur parametrique.
+ */
+export interface PinAnchor {
+  id: string;
+  /** Position sur l'axe du corps : 0 = nez, 1 = queue. */
+  position: number;
+  /** Hauteur dans le plan de joint : -1 = ventre, 0 = axe, 1 = dos. */
+  height: number;
+  /** Direction de sortie du fil, en degres : 0 = vers le nez, 180 = vers la queue. */
+  axisAngle: number;
+  /** Profondeur d'ancrage (hauteur du goujon) en mm ; 0 = proportionnel. */
+  depth: number;
+  pin: PinId | 'auto';
+  method: SocketMethod;
+}
+
+/**
+ * Point de la cage de sculpture.
+ *
+ * Chaque point tire ou repousse localement la peau du corps, par-dessus la
+ * forme pilotee par les sliders : de quoi rattraper un galbe que les
+ * parametres seuls ne savent pas decrire, sans quitter le parametrique.
+ */
+export interface SculptPoint {
+  id: string;
+  /** Position sur l'axe : 0 = nez, 1 = queue. */
+  position: number;
+  /** Angle autour de la section, en degres : 0 = dos, 180 = ventre. */
+  angle: number;
+  /** Deplacement radial, en mm. Positif = vers l'exterieur. */
+  amount: number;
+  /** Rayon d'influence, en fraction de la longueur. */
+  radius: number;
+}
+
+/**
+ * Jeux de fabrication, tous exposes dans l'interface : ce sont des valeurs
+ * qui se mesurent sur l'imprimante et se reajustent, jamais des constantes.
+ */
+export interface FabricationConfig {
+  /** Methode A : jeu diametral entre l'alesage et le cercle de la goupille, en mm. */
+  boreClearance: number;
+  /** Methode B : offset de la silhouette du fil, en mm. */
+  channelOffset: number;
+  /** Methode B : supplement de diametre du profil balaye, en mm. */
+  sweepExtra: number;
+  /** Jeu d'emboitement du goujon male dans l'alesage femelle, en mm. */
+  tenonFit: number;
+  /** Jeu d'insertion de la bavette rapportee, en mm. */
+  billFit: number;
+}
+
 /** Forme de la queue. `taper` et `round` sont portees par le corps lui-meme, */
 /** les autres ajoutent une nageoire caudale plate generee par extrusion.     */
 export type TailShape = 'taper' | 'round' | 'forked' | 'paddle' | 'fan';
@@ -76,21 +136,17 @@ export interface AssemblyConfig {
   enabled: boolean;
   /** Orientation du plan de joint : 0 = vertical (gauche/droite), 90 = horizontal. */
   planeAngle: number;
-  /** Nombre de goujons d'alignement imprimes sur la coque male. */
-  tenonCount: number;
-  /** Diametre des goujons en mm ; 0 = proportionnel a la largeur du corps. */
-  tenonDiameter: number;
-  /** Jeu d'emboitement des goujons dans la coque femelle, en mm. */
-  tenonClearance: number;
+  /** Methode de logement appliquee aux nouveaux ancrages. */
   socketMethod: SocketMethod;
-  /** Methode A : jeu diametral entre l'alesage et le cercle de la goupille, en mm. */
-  boreClearance: number;
-  /** Methode B : offset de la silhouette du fil, en mm. */
-  channelOffset: number;
-  /** Taille de goupille, ou selection automatique proportionnelle. */
+  /** Taille de goupille par defaut, ou selection automatique proportionnelle. */
   pin: PinId | 'auto';
   /** Regle de robustesse : force la plus grosse goupille. */
   roughWater: boolean;
+  /**
+   * Points d'ancrage places par l'utilisateur. Chacun engendre son goujon sur
+   * la coque male et son alesage en vis-a-vis sur la femelle.
+   */
+  anchors: PinAnchor[];
 }
 
 export interface PaintConfig {
@@ -166,8 +222,16 @@ export interface LureParams {
   hasBib: boolean;
   /** Imprimee avec le corps, ou decoupee dans du polycarbonate. */
   billMode: BillMode;
-  /** Epaisseur du polycarbonate, en mm (mode decoupe). */
+  /** Epaisseur de la bavette, en mm, independante de sa longueur et sa largeur. */
   billThickness: number;
+  /** Recul du point d'ancrage depuis la pointe du nez, en mm. */
+  billOffset: number;
+  /** Rayon de conge sur les aretes de la bavette, en mm. */
+  billFillet: number;
+  /** Profil de coupe. */
+  billProfile: BillProfile;
+  /** Vrille de la bavette sur son propre axe, en degres. */
+  billTwist: number;
   /** Angle de la bavette par rapport a l'axe du corps, en degres. */
   bibAngle: number;
   /** Longueur de la bavette en mm. */
@@ -193,6 +257,10 @@ export interface LureParams {
   clip: ClipId;
   /** Assemblage male / femelle, goujons et logement de goupille. */
   assembly: AssemblyConfig;
+  /** Jeux de fabrication, mesures sur l'imprimante et reglables. */
+  fabrication: FabricationConfig;
+  /** Cage de sculpture : deformations locales par-dessus les sliders. */
+  sculpt: SculptPoint[];
 
   // --- Impression & lestage ---------------------------------------------
   material: MaterialId;

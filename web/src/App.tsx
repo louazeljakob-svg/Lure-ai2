@@ -6,7 +6,24 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { LureParams, PaintConfig, Project, SavedPalette, ShapeId, WaterId } from './types/lure';
+import type {
+  LureParams,
+  PaintConfig,
+  PinAnchor,
+  Project,
+  SavedPalette,
+  SculptPoint,
+  ShapeId,
+  WaterId,
+} from './types/lure';
+import { socketPlans } from './lib/assembly';
+import { createProfile } from './lib/profile';
+import {
+  applyCalibration,
+  readReferenceImage,
+  type ReferenceImage,
+} from './lib/reference';
+import { ReferencePanel } from './components/ReferencePanel';
 import { buildLure } from './lib/geometry';
 import { computePhysics } from './lib/physics';
 import { clonePreset, getPreset } from './lib/presets';
@@ -31,7 +48,7 @@ import { ShapeGallery } from './components/ShapeGallery';
 import { Viewport3D } from './components/Viewport3D';
 
 type Route = 'gallery' | 'editor';
-type PanelTab = 'material' | 'assembly' | 'physics' | 'projects';
+type PanelTab = 'material' | 'assembly' | 'reference' | 'physics' | 'projects';
 type Pane = 'shape' | 'panel';
 
 interface Toast {
@@ -42,7 +59,8 @@ interface Toast {
 
 const PANEL_META: Record<PanelTab, { title: string; subtitle: string; tab: string }> = {
   material: { title: 'Matiere & finition', subtitle: 'Impression, lestage, livree', tab: 'Matiere' },
-  assembly: { title: 'Assemblage', subtitle: 'Coques, goujons, goupille', tab: 'Assemblage' },
+  assembly: { title: 'Assemblage', subtitle: 'Ancrages, goujons, goupilles', tab: 'Assemblage' },
+  reference: { title: 'Reference', subtitle: 'Images calees a l echelle', tab: 'Reference' },
   physics: { title: 'Simulation', subtitle: 'Flottabilite, assiette, action', tab: 'Physique' },
   projects: { title: 'Projets', subtitle: 'Creations de la session', tab: 'Projets' },
 };
@@ -62,12 +80,22 @@ export default function App() {
   // Incremente a chaque remplacement complet des parametres : le viewport recadre.
   const [fitKey, setFitKey] = useState(0);
   const [palettes, setPalettes] = useState<SavedPalette[]>([]);
+  const [placing, setPlacing] = useState(false);
+  const [selectedAnchor, setSelectedAnchor] = useState<string | null>(null);
+  const [references, setReferences] = useState<ReferenceImage[]>([]);
+  const [calibratingId, setCalibratingId] = useState<string | null>(null);
+  const [picks, setPicks] = useState<{ u: number; v: number }[]>([]);
+  const [sculpting, setSculpting] = useState(false);
+  const [selectedSculpt, setSelectedSculpt] = useState<string | null>(null);
   const galleryFileRef = useRef<HTMLInputElement>(null);
 
   // --- Geometrie & physique, regenerees a chaque changement ---------------
   const geo = useMemo(() => buildLure(params), [params]);
   useEffect(() => () => geo.dispose(), [geo]);
   const physics = useMemo(() => computePhysics(params, geo, water), [params, geo, water]);
+  // Portees calculees a resolution reduite : l'interface doit signaler un
+  // ancrage invalide des la frappe, sans reconstruire tout le maillage.
+  const sockets = useMemo(() => socketPlans(createProfile(params), params), [params]);
 
   // Un changement d'ecran repart du haut : sinon on arrive au milieu du panneau.
   useEffect(() => {
@@ -102,6 +130,154 @@ export default function App() {
     },
     [loadPreset],
   );
+
+  // --- Ancrages de goupille ------------------------------------------------
+  const setAnchors = useCallback(
+    (next: (anchors: PinAnchor[]) => PinAnchor[]) => {
+      setParams((current) => ({
+        ...current,
+        assembly: { ...current.assembly, anchors: next(current.assembly.anchors) },
+      }));
+    },
+    [],
+  );
+
+  const addAnchor = useCallback(
+    (position = 0.5, height = 0) => {
+      const anchor: PinAnchor = {
+        id: `anc-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        position,
+        height,
+        // Un ancrage pres du nez sort vers l avant, pres de la queue vers
+        // l arriere, ailleurs vers le ventre : le cas le plus courant.
+        axisAngle: position < 0.2 ? 0 : position > 0.8 ? 180 : 90,
+        depth: 0,
+        pin: 'auto',
+        method: params.assembly.socketMethod,
+      };
+      setAnchors((anchors) => [...anchors, anchor]);
+      setSelectedAnchor(anchor.id);
+    },
+    [params.assembly.socketMethod, setAnchors],
+  );
+
+  const updateAnchor = useCallback(
+    (id: string, patch: Partial<PinAnchor>) => {
+      setAnchors((anchors) =>
+        anchors.map((anchor) => (anchor.id === id ? { ...anchor, ...patch } : anchor)),
+      );
+    },
+    [setAnchors],
+  );
+
+  const removeAnchor = useCallback(
+    (id: string) => {
+      setAnchors((anchors) => anchors.filter((anchor) => anchor.id !== id));
+      setSelectedAnchor((current) => (current === id ? null : current));
+    },
+    [setAnchors],
+  );
+
+  // --- Images de reference ---------------------------------------------------
+  const importReference = useCallback(
+    async (file: File) => {
+      try {
+        const image = await readReferenceImage(file);
+        setReferences((current) => [...current, image]);
+        pushToast('ok', `Reference « ${image.name} » chargee. Calibrez-la pour la mettre a l echelle.`);
+      } catch (error) {
+        pushToast('error', error instanceof Error ? error.message : 'Import impossible.');
+      }
+    },
+    [pushToast],
+  );
+
+  const updateReference = useCallback((id: string, patch: Partial<ReferenceImage>) => {
+    setReferences((current) =>
+      current.map((image) => (image.id === id ? { ...image, ...patch } : image)),
+    );
+  }, []);
+
+  const removeReference = useCallback((id: string) => {
+    setReferences((current) => current.filter((image) => image.id !== id));
+    setCalibratingId((current) => (current === id ? null : current));
+  }, []);
+
+  const pickCalibration = useCallback((_id: string, u: number, v: number) => {
+    setPicks((current) => (current.length >= 2 ? [{ u, v }] : [...current, { u, v }]));
+  }, []);
+
+  const applyCalibrationDistance = useCallback(
+    (millimetres: number) => {
+      if (!calibratingId || picks.length < 2 || !(millimetres > 0)) return;
+      setReferences((current) =>
+        current.map((image) =>
+          image.id === calibratingId
+            ? applyCalibration(image, {
+                ax: picks[0].u,
+                ay: picks[0].v,
+                bx: picks[1].u,
+                by: picks[1].v,
+                mm: millimetres,
+              })
+            : image,
+        ),
+      );
+      setCalibratingId(null);
+      setPicks([]);
+      pushToast('ok', `Reference mise a l echelle sur ${millimetres} mm.`);
+    },
+    [calibratingId, picks, pushToast],
+  );
+
+  // --- Cage de sculpture -----------------------------------------------------
+  const buildCage = useCallback(() => {
+    // Grille reguliere : cinq stations le long du corps, quatre directions.
+    const points: SculptPoint[] = [];
+    const stations = [0.2, 0.35, 0.5, 0.65, 0.8];
+    const angles = [0, 90, 180, 270];
+    for (const position of stations) {
+      for (const angle of angles) {
+        points.push({
+          id: `cage-${position}-${angle}`,
+          position,
+          angle,
+          amount: 0,
+          radius: 0.12,
+        });
+      }
+    }
+    setParams((current) => ({ ...current, sculpt: points }));
+    setSculpting(true);
+  }, []);
+
+  const clearCage = useCallback(() => {
+    setParams((current) => ({ ...current, sculpt: [] }));
+    setSelectedSculpt(null);
+  }, []);
+
+  const updateSculpt = useCallback(
+    (id: string, patch: { amount?: number; radius?: number }) => {
+      setParams((current) => ({
+        ...current,
+        sculpt: current.sculpt.map((point) =>
+          point.id === id ? { ...point, ...patch } : point,
+        ),
+      }));
+    },
+    [],
+  );
+
+  const dragSculpt = useCallback((id: string, deltaMm: number) => {
+    setParams((current) => ({
+      ...current,
+      sculpt: current.sculpt.map((point) =>
+        point.id === id
+          ? { ...point, amount: Math.min(Math.max(point.amount + deltaMm, -8), 8) }
+          : point,
+      ),
+    }));
+  }, []);
 
   // --- Export de fichiers --------------------------------------------------
   const runExport = useCallback(
@@ -452,10 +628,33 @@ export default function App() {
                 params={params}
                 onChange={updateParams}
                 onLoadPreset={loadPreset}
+                sculpting={sculpting}
+                onSculptingChange={setSculpting}
+                selectedSculpt={selectedSculpt}
+                onBuildCage={buildCage}
+                onClearCage={clearCage}
+                onUpdateSculpt={updateSculpt}
               />
             </section>
 
-            <Viewport3D geo={geo} params={params} physics={physics} fitKey={fitKey} />
+            <Viewport3D
+              geo={geo}
+              params={params}
+              physics={physics}
+              fitKey={fitKey}
+              placing={placing}
+              selectedAnchor={selectedAnchor}
+              onPlaceAnchor={addAnchor}
+              onMoveAnchor={(id, position, height) => updateAnchor(id, { position, height })}
+              onSelectAnchor={setSelectedAnchor}
+              references={references}
+              calibratingId={calibratingId}
+              onPickCalibration={pickCalibration}
+              sculpting={sculpting}
+              selectedSculpt={selectedSculpt}
+              onSelectSculpt={setSelectedSculpt}
+              onDragSculpt={dragSculpt}
+            />
 
             <section className="panel panel--side" aria-label="Matiere, simulation et projets">
               <div className="panel__head">
@@ -497,6 +696,29 @@ export default function App() {
                     onChange={updateParams}
                     clipMass={physics.clipMass}
                     pinMass={physics.pinMass}
+                    sockets={sockets}
+                    placing={placing}
+                    onPlacingChange={setPlacing}
+                    selectedAnchor={selectedAnchor}
+                    onSelectAnchor={setSelectedAnchor}
+                    onAddAnchor={() => addAnchor()}
+                    onUpdateAnchor={updateAnchor}
+                    onRemoveAnchor={removeAnchor}
+                  />
+                ) : null}
+                {panelTab === 'reference' ? (
+                  <ReferencePanel
+                    references={references}
+                    onImport={(file) => void importReference(file)}
+                    onUpdate={updateReference}
+                    onRemove={removeReference}
+                    calibratingId={calibratingId}
+                    picks={picks}
+                    onStartCalibration={(id) => {
+                      setCalibratingId(id);
+                      setPicks([]);
+                    }}
+                    onApplyCalibration={applyCalibrationDistance}
                   />
                 ) : null}
                 {panelTab === 'physics' ? (

@@ -111,6 +111,26 @@ Le plan de joint contient toujours l'axe longitudinal, ce qui garantit que chaqu
 section est coupee en deux arcs — donc que les deux coques se referment. Son
 orientation se regle de 0 degre (joint gauche / droite) a 90 degres (dos / ventre).
 
+#### Points d'ancrage places a la main
+
+Le placement des goupilles est manuel : on active le mode depuis le panneau
+Assemblage, on clique sur le corps dans la vue 3D (lancer de rayon sur le
+maillage), et chaque point engendre **automatiquement** son goujon sur la coque
+male, son alesage en vis-a-vis exact sur la femelle, sa portee et sa rainure de
+sortie. Les poignees se deplacent au glisser, se reglent finement au slider et
+se suppriment. Nombre de points libre : nez, ventre, queue, ou davantage.
+
+La position est stockee en coordonnees **parametriques** (position le long de
+l'axe, hauteur dans le plan de joint), pas en (x, y, z) bruts : un ancrage suit
+donc la forme quand on la retaille au slider.
+
+Chaque ancrage porte sa propre taille de goupille, sa methode de logement, sa
+direction de sortie et sa profondeur. Une portee qui deborderait de la coque ou
+en chevaucherait une autre est **signalee en rouge** dans la vue et dans le
+panneau, et n'est pas creusee : mieux vaut une coque pleine et fermee qu'une
+coque trouee. Les portees elles-memes sont rendues en surbrillance, sans quoi
+elles resteraient invisibles puisqu'elles sont creusees dans le plan de joint.
+
 #### Goupille en 8 et logement
 
 Catalogue de cinq tailles reelles (fil 0,6 a 2 mm), avec **selection
@@ -126,12 +146,49 @@ Deux methodes de logement, creusees dans le plan de joint, moitie par coque :
 | **Alesage** | Trou cylindrique simple, jeu diametral reglable sur le cercle de la goupille (0,05 mm par defaut : boucle de 6,00 mm -> alesage de 6,05 mm). |
 | **Canal** | Le creusement suit la silhouette reelle du fil et laisse en place la matiere interieure a la boucle — c'est elle qui retient la goupille. Offset radial reglable, 0,25 mm par defaut. |
 
+#### Parametres de fabrication
+
+Tous les jeux sont exposes dans l'interface, aucun n'est code en dur : jeu
+goupille / alesage (methode A), offset de silhouette et supplement de profil
+balaye (methode B), jeu d'emboitement goujon male / alesage femelle, jeu
+d'insertion de la bavette. Ce sont des valeurs qui se mesurent sur une machine
+et se reajustent.
+
 #### Bavette imprimee ou polycarbonate
 
 En mode **polycarbonate**, le corps recoit une fente d'insertion taillee dans le
 plan de joint a l'angle de la bavette, et le gabarit plat s'exporte en DXF ou SVG
 aux cotes reelles. Le meme contour sert a la piece imprimee, au gabarit et a la
 fente : aucune derive possible entre les trois.
+
+#### Controles de bavette
+
+Position depuis le nez, epaisseur propre, profil de coupe (arrondi, droit,
+losange), conge des aretes et vrille sur l'axe propre, en plus de l'angle, de
+la longueur et de la largeur. Tout se repercute en temps reel sur la piece
+imprimee, sur le gabarit de decoupe et sur la fente d'insertion.
+
+#### Cage de sculpture
+
+Une grille de points de controle superposee au corps. Un glisser vertical sur
+une poignee tire ou creuse la peau localement, avec une retombee douce, par
+dessus la forme pilotee par les sliders : de quoi rattraper un galbe de ventre
+ou une transition tete / corps que les parametres seuls ne decrivent pas. Les
+deplacements restent des nombres dans le projet, donc parametriques et
+serialises comme le reste.
+
+#### Images de reference
+
+Import d'une photo ou d'un croquis cote, projete sur le plan profil, dessus ou
+face, avec decalage, rotation, miroir horizontal et vertical, transparence
+reglable et verrouillage du ratio. La **calibration par distance reelle**
+recale l'echelle : on pointe deux reperes sur l'image et on saisit la distance
+qui les separe en millimetres. Plusieurs references peuvent etre actives sur
+des plans differents pour caler la forme sous plusieurs angles, et les
+ancrages se posent ensuite en s'alignant dessus. Hors calibration, le plan
+image est ignore par le lancer de rayon : le placement vise le leurre, pas
+l'image. Les images vivent en memoire du navigateur et ne partent pas dans le
+fichier de projet.
 
 #### Agrafes
 

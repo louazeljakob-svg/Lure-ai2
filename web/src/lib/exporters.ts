@@ -55,7 +55,8 @@ function collectParts(
 
   const profile = createProfile(params);
   const assembly = buildAssembly(profile, params, coarse ? ASSEMBLY_STEP : ASSEMBLY_DISPLAY);
-  owned.push(assembly.male, assembly.female, assembly.pin.geometry);
+  owned.push(assembly.male, assembly.female, ...assembly.pins.map((pin) => pin.geometry));
+  if (assembly.socketPreview) owned.push(assembly.socketPreview);
   if (assembly.tenons) owned.push(assembly.tenons);
 
   if (kind === 'male') {

@@ -1,6 +1,14 @@
 /** Panneau gauche — parametres de forme du corps, de la bavette et de la queue. */
 
-import type { BillMode, DetailConfig, EyeStyle, LureParams, ShapeId, TailShape } from '../types/lure';
+import type {
+  BillMode,
+  BillProfile,
+  DetailConfig,
+  EyeStyle,
+  LureParams,
+  ShapeId,
+  TailShape,
+} from '../types/lure';
 import { LIMITS, SHAPE_PRESETS } from '../lib/presets';
 import { Fieldset, Segmented, Slider, Switch } from './ui';
 
@@ -8,6 +16,12 @@ interface Props {
   params: LureParams;
   onChange: (patch: Partial<LureParams>) => void;
   onLoadPreset: (shape: ShapeId) => void;
+  sculpting: boolean;
+  onSculptingChange: (active: boolean) => void;
+  selectedSculpt: string | null;
+  onBuildCage: () => void;
+  onClearCage: () => void;
+  onUpdateSculpt: (id: string, patch: { amount?: number; radius?: number }) => void;
 }
 
 const TAIL_OPTIONS: { value: TailShape; label: string; title: string }[] = [
@@ -35,7 +49,18 @@ const EYE_STYLES: { value: EyeStyle; label: string; relief: number | null; hint:
   { value: 'custom', label: 'Libre', relief: null, hint: 'Aucun reglage impose : le relief reste celui que vous fixez.' },
 ];
 
-export function ShapeEditor({ params, onChange, onLoadPreset }: Props) {
+export function ShapeEditor({
+  params,
+  onChange,
+  onLoadPreset,
+  sculpting,
+  onSculptingChange,
+  selectedSculpt,
+  onBuildCage,
+  onClearCage,
+  onUpdateSculpt,
+}: Props) {
+  const active = params.sculpt.find((point) => point.id === selectedSculpt) ?? null;
   const setDetail = (key: 'gills' | 'eyes', patch: Partial<DetailConfig>) =>
     onChange({ [key]: { ...params[key], ...patch } });
 
@@ -255,22 +280,63 @@ export function ShapeEditor({ params, onChange, onLoadPreset }: Props) {
           onChange={(billMode) => onChange({ billMode })}
         />
         {params.billMode === 'polycarbonate' ? (
-          <>
-            <p className="control__hint">
-              Le corps recoit une fente d insertion et le gabarit plat s exporte en DXF ou
-              SVG depuis le bloc d export. La fente s arrete a quelques dixiemes de la peau :
-              on l ouvre a la lime au montage, comme sur une bavette du commerce.
-            </p>
-            <Slider
-              label="Epaisseur du polycarbonate"
-              value={params.billThickness}
-              {...LIMITS.billThickness}
-              display={mm(params.billThickness)}
-              disabled={!params.hasBib}
-              onChange={(billThickness) => onChange({ billThickness })}
-            />
-          </>
+          <p className="control__hint">
+            Le corps recoit une fente d insertion dimensionnee sur cette epaisseur, et le
+            gabarit plat s exporte en DXF ou SVG depuis le bloc d export. La fente s arrete a
+            quelques dixiemes de la peau : on l ouvre a la lime au montage, comme sur une
+            bavette du commerce.
+          </p>
         ) : null}
+        <Slider
+          label="Epaisseur"
+          value={params.billThickness}
+          {...LIMITS.billThickness}
+          display={mm(params.billThickness)}
+          disabled={!params.hasBib}
+          hint="Independante de la longueur et de la largeur."
+          onChange={(billThickness) => onChange({ billThickness })}
+        />
+        <Slider
+          label="Position depuis le nez"
+          value={params.billOffset}
+          {...LIMITS.billOffset}
+          display={mm(params.billOffset)}
+          disabled={!params.hasBib}
+          hint="Recul du point d ancrage. La fente d insertion suit."
+          onChange={(billOffset) => onChange({ billOffset })}
+        />
+        <Segmented
+          label="Profil de coupe"
+          value={params.billProfile}
+          options={[
+            { value: 'rounded' as BillProfile, label: 'Arrondi' },
+            { value: 'rect' as BillProfile, label: 'Droit' },
+            { value: 'diamond' as BillProfile, label: 'Losange' },
+          ]}
+          onChange={(billProfile) => onChange({ billProfile })}
+        />
+        <Slider
+          label="Conge des aretes"
+          value={params.billFillet}
+          {...LIMITS.billFillet}
+          display={params.billFillet < 0.05 ? 'Vif' : mm(params.billFillet)}
+          disabled={!params.hasBib || params.billProfile === 'rounded'}
+          hint={
+            params.billProfile === 'rounded'
+              ? 'Le profil arrondi est deja continu : le conge ne s applique qu aux profils a angles.'
+              : 'Adoucit les angles du contour, gabarit de decoupe compris.'
+          }
+          onChange={(billFillet) => onChange({ billFillet })}
+        />
+        <Slider
+          label="Vrille"
+          value={params.billTwist}
+          {...LIMITS.billTwist}
+          display={`${params.billTwist > 0 ? '+' : ''}${params.billTwist.toFixed(0)} deg`}
+          disabled={!params.hasBib}
+          hint="Torsion sur l axe propre de la bavette, en plus de son inclinaison."
+          onChange={(billTwist) => onChange({ billTwist })}
+        />
         <Slider
           label="Angle"
           value={params.bibAngle}
@@ -296,6 +362,58 @@ export function ShapeEditor({ params, onChange, onLoadPreset }: Props) {
           disabled={!params.hasBib}
           onChange={(bibWidth) => onChange({ bibWidth })}
         />
+      </Fieldset>
+
+      <Fieldset
+        legend="Cage de sculpture"
+        hint="Une grille de points superposee au corps. Glissez une poignee vers le haut ou vers le bas dans la vue 3D pour tirer ou creuser la peau localement, par-dessus la forme des sliders."
+      >
+        <Switch
+          label="Afficher la cage"
+          checked={sculpting}
+          onChange={onSculptingChange}
+        />
+        <div className="export-dock__actions">
+          <button type="button" className="btn btn--sm" onClick={onBuildCage}>
+            {params.sculpt.length > 0 ? 'Regenerer' : 'Creer la cage'}
+          </button>
+          <button
+            type="button"
+            className="btn btn--sm btn--ghost btn--danger"
+            onClick={onClearCage}
+            disabled={params.sculpt.length === 0}
+          >
+            Effacer
+          </button>
+        </div>
+        {params.sculpt.length === 0 ? (
+          <p className="control__hint">
+            Aucune cage : la forme suit uniquement les parametres.
+          </p>
+        ) : (
+          <p className="control__hint">
+            {params.sculpt.length} points ·{' '}
+            {params.sculpt.filter((point) => Math.abs(point.amount) > 0.05).length} deplaces.
+          </p>
+        )}
+        {active ? (
+          <>
+            <Slider
+              label="Deplacement"
+              value={active.amount}
+              {...LIMITS.sculptAmount}
+              display={`${active.amount > 0 ? '+' : ''}${active.amount.toFixed(2)} mm`}
+              onChange={(amount) => onUpdateSculpt(active.id, { amount })}
+            />
+            <Slider
+              label="Rayon d influence"
+              value={active.radius}
+              {...LIMITS.sculptRadius}
+              display={`${Math.round(active.radius * 100)} % de la longueur`}
+              onChange={(radius) => onUpdateSculpt(active.id, { radius })}
+            />
+          </>
+        ) : null}
       </Fieldset>
 
       <Fieldset legend="Queue">
