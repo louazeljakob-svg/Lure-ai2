@@ -9,6 +9,12 @@
  */
 
 export type ShapeId =
+  // Formes relevees sur des references reelles.
+  | 'stickbait165'
+  | 'irresistible'
+  | 'ryoshi'
+  | 'model25'
+  // Formes generiques.
   | 'minnow'
   | 'popper'
   | 'crankbait'
@@ -16,6 +22,21 @@ export type ShapeId =
   | 'spoon'
   | 'swimbait'
   | 'topwater';
+
+/** Tailles du catalogue de goupilles en 8. */
+export type PinId = 'xs06' | 'xs10' | 's' | 'm' | 'l';
+
+/** Methode de creusement du logement de goupille. */
+export type SocketMethod = 'bore' | 'channel';
+
+/** Mode de fabrication de la bavette. */
+export type BillMode = 'printed' | 'polycarbonate';
+
+/** Style d'oeil de la bibliotheque. */
+export type EyeStyle = 'realistic' | 'globular' | 'holographic' | 'custom';
+
+/** Forme des lests internes. */
+export type BallastShape = 'sphere' | 'cylinder';
 
 /** Forme de la queue. `taper` et `round` sont portees par le corps lui-meme, */
 /** les autres ajoutent une nageoire caudale plate generee par extrusion.     */
@@ -40,6 +61,36 @@ export interface BallastWeight {
   height: number;
   /** Masse en grammes. */
   mass: number;
+  /** Bille ou cylindre : a masse egale, le cylindre loge dans une section plus fine. */
+  shape: BallastShape;
+}
+
+/**
+ * Assemblage en deux coques imprimables.
+ *
+ * Le plan de joint contient toujours l'axe longitudinal du leurre : c'est
+ * cette contrainte qui garantit que chaque section est coupee en deux et
+ * donc que les deux coques se referment proprement.
+ */
+export interface AssemblyConfig {
+  enabled: boolean;
+  /** Orientation du plan de joint : 0 = vertical (gauche/droite), 90 = horizontal. */
+  planeAngle: number;
+  /** Nombre de goujons d'alignement imprimes sur la coque male. */
+  tenonCount: number;
+  /** Diametre des goujons en mm ; 0 = proportionnel a la largeur du corps. */
+  tenonDiameter: number;
+  /** Jeu d'emboitement des goujons dans la coque femelle, en mm. */
+  tenonClearance: number;
+  socketMethod: SocketMethod;
+  /** Methode A : jeu diametral entre l'alesage et le cercle de la goupille, en mm. */
+  boreClearance: number;
+  /** Methode B : offset de la silhouette du fil, en mm. */
+  channelOffset: number;
+  /** Taille de goupille, ou selection automatique proportionnelle. */
+  pin: PinId | 'auto';
+  /** Regle de robustesse : force la plus grosse goupille. */
+  roughWater: boolean;
 }
 
 export interface PaintConfig {
@@ -113,6 +164,10 @@ export interface LureParams {
 
   // --- Bavette -----------------------------------------------------------
   hasBib: boolean;
+  /** Imprimee avec le corps, ou decoupee dans du polycarbonate. */
+  billMode: BillMode;
+  /** Epaisseur du polycarbonate, en mm (mode decoupe). */
+  billThickness: number;
   /** Angle de la bavette par rapport a l'axe du corps, en degres. */
   bibAngle: number;
   /** Longueur de la bavette en mm. */
@@ -130,10 +185,14 @@ export interface LureParams {
   gills: DetailConfig;
   /** Oeil : cuvette creusee surmontee d'un iris bombe. Ignore sur la cuiller. */
   eyes: DetailConfig;
+  /** Style d'oeil de la bibliotheque. */
+  eyeStyle: EyeStyle;
 
   // --- Quincaillerie ------------------------------------------------------
   /** Agrafe montee sur l'oeillet de tete (visualisation + masse). */
   clip: ClipId;
+  /** Assemblage male / femelle, goujons et logement de goupille. */
+  assembly: AssemblyConfig;
 
   // --- Impression & lestage ---------------------------------------------
   material: MaterialId;
@@ -141,6 +200,8 @@ export interface LureParams {
   infill: number;
   /** Masse de la quincaillerie (hameçons, anneaux brises) en g. */
   hardwareMass: number;
+  /** Densite des lests internes, en g/cm3 (inox ~7,9 ; plomb 11,34). */
+  ballastDensity: number;
   ballasts: BallastWeight[];
 
   // --- Finition ----------------------------------------------------------

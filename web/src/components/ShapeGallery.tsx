@@ -36,31 +36,33 @@ export function ShapeGallery({
           <span className="hero__kicker">Atelier de conception 3D</span>
           <h1>Dessinez le leurre, la physique suit.</h1>
           <p>
-            Choisissez une forme de base, modelez-la au slider, lestez-la, puis lisez
-            immediatement si elle flotte, suspend ou coule — et comment elle nagera. Quand le
-            dessin vous convient, exportez le STL et lancez l impression.
+            Chaque forme est un point de depart, jamais une contrainte : corps, bavette,
+            yeux, branchies, goupille, plan d assemblage et livree restent modifiables
+            independamment, et se melangent librement d une forme a l autre. Modelez au
+            slider, lestez, lisez si le leurre flotte, suspend ou coule — puis exportez les
+            deux coques a imprimer.
           </p>
         </div>
         <div className="hero__steps">
           <div className="hero__step">
             <span>1</span>
             <p>
-              <strong>Choisir une forme</strong> parmi les sept gabarits ci-dessous. Tout est
-              parametrique : rien n est fige.
+              <strong>Partir d une forme</strong> — quatre relevees sur des references
+              reelles, sept generiques. Tout reste parametrique.
             </p>
           </div>
           <div className="hero__step">
             <span>2</span>
             <p>
-              <strong>Modeler et lester</strong> pendant que le volume, le centre de gravite et
-              l assiette se recalculent en direct.
+              <strong>Composer</strong> : corps, details de tete, quincaillerie et assemblage
+              en deux coques, pendant que la physique se recalcule en direct.
             </p>
           </div>
           <div className="hero__step">
             <span>3</span>
             <p>
-              <strong>Exporter</strong> le STL a l echelle 1:1 et le projet JSON, directement
-              dans vos telechargements.
+              <strong>Exporter</strong> les coques male et femelle en STL et STEP, le gabarit
+              de bavette en DXF ou SVG, le projet en JSON.
             </p>
           </div>
         </div>
@@ -69,7 +71,9 @@ export function ShapeGallery({
       <div className="section-head">
         <h2>Formes de base</h2>
         <span className="section-head__rule" />
-        <span className="section-head__hint">{SHAPE_PRESETS.length} gabarits parametriques</span>
+        <span className="section-head__hint">
+          {SHAPE_PRESETS.length} gabarits parametriques
+        </span>
       </div>
 
       <div className="shape-grid">

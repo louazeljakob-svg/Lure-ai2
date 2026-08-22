@@ -1,6 +1,6 @@
 /** Panneau gauche — parametres de forme du corps, de la bavette et de la queue. */
 
-import type { DetailConfig, LureParams, ShapeId, TailShape } from '../types/lure';
+import type { BillMode, DetailConfig, EyeStyle, LureParams, ShapeId, TailShape } from '../types/lure';
 import { LIMITS, SHAPE_PRESETS } from '../lib/presets';
 import { Fieldset, Segmented, Slider, Switch } from './ui';
 
@@ -23,6 +23,17 @@ const pct = (value: number) => `${Math.round(value * 100)} %`;
 
 const reliefLabel = (value: number): string =>
   `${value > 0 ? '+' : ''}${value.toFixed(2)} mm`;
+
+/**
+ * Bibliotheque d'yeux : chaque style est un point de depart qui pilote le
+ * relief et la maniere dont l'iris est peint. Tout reste ensuite ajustable.
+ */
+const EYE_STYLES: { value: EyeStyle; label: string; relief: number | null; hint: string }[] = [
+  { value: 'realistic', label: 'Realiste', relief: 0.6, hint: 'Cuvette annulaire et iris legerement bombe.' },
+  { value: 'globular', label: 'Globuleux', relief: -0.9, hint: 'Calotte pleine en saillie, tres visible de profil.' },
+  { value: 'holographic', label: 'Holographique', relief: 0.5, hint: 'Iris en anneaux concentriques, facon pastille holo.' },
+  { value: 'custom', label: 'Libre', relief: null, hint: 'Aucun reglage impose : le relief reste celui que vous fixez.' },
+];
 
 export function ShapeEditor({ params, onChange, onLoadPreset }: Props) {
   const setDetail = (key: 'gills' | 'eyes', patch: Partial<DetailConfig>) =>
@@ -190,6 +201,28 @@ export function ShapeEditor({ params, onChange, onLoadPreset }: Props) {
             disabled={!params.eyes.enabled}
             onChange={(size) => setDetail('eyes', { size })}
           />
+          <Segmented
+            label="Style d oeil"
+            value={params.eyeStyle}
+            wrap
+            options={EYE_STYLES.map((style) => ({
+              value: style.value,
+              label: style.label,
+              title: style.hint,
+            }))}
+            onChange={(eyeStyle) => {
+              const style = EYE_STYLES.find((item) => item.value === eyeStyle);
+              onChange({
+                eyeStyle,
+                ...(style?.relief !== null && style
+                  ? { eyes: { ...params.eyes, relief: style.relief } }
+                  : {}),
+              });
+            }}
+          />
+          <p className="control__hint">
+            {EYE_STYLES.find((style) => style.value === params.eyeStyle)?.hint}
+          </p>
           <Slider
             label="Relief de l oeil"
             value={params.eyes.relief}
@@ -208,6 +241,36 @@ export function ShapeEditor({ params, onChange, onLoadPreset }: Props) {
           checked={params.hasBib}
           onChange={(hasBib) => onChange({ hasBib })}
         />
+        <Segmented
+          label="Fabrication"
+          value={params.billMode}
+          options={[
+            { value: 'printed' as BillMode, label: 'Imprimee', title: 'Integree au corps' },
+            {
+              value: 'polycarbonate' as BillMode,
+              label: 'Polycarbonate',
+              title: 'Decoupee a plat, inseree dans une fente',
+            },
+          ]}
+          onChange={(billMode) => onChange({ billMode })}
+        />
+        {params.billMode === 'polycarbonate' ? (
+          <>
+            <p className="control__hint">
+              Le corps recoit une fente d insertion et le gabarit plat s exporte en DXF ou
+              SVG depuis le bloc d export. La fente s arrete a quelques dixiemes de la peau :
+              on l ouvre a la lime au montage, comme sur une bavette du commerce.
+            </p>
+            <Slider
+              label="Epaisseur du polycarbonate"
+              value={params.billThickness}
+              {...LIMITS.billThickness}
+              display={mm(params.billThickness)}
+              disabled={!params.hasBib}
+              onChange={(billThickness) => onChange({ billThickness })}
+            />
+          </>
+        ) : null}
         <Slider
           label="Angle"
           value={params.bibAngle}

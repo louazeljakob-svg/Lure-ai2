@@ -21,11 +21,12 @@ optimise et améliore des leurres de pêche.
 ## 🖥️ Interface web — SAKUMA (React + Three.js)
 
 En complement de l'application Python, le dossier [`web/`](web/) contient
-**SAKUMA**, un editeur de leurres 3D dans le navigateur : galerie de sept formes
-parametriques, modelage au slider avec regeneration temps reel du maillage,
-branchies et yeux graves dans le corps, lestage interne, agrafes, livrees
-personnalisables, simulation de flottabilite / assiette / action, et export
-STL + STEP imprimables — sans serveur ni compte.
+**SAKUMA**, un editeur de leurres 3D dans le navigateur : onze formes
+parametriques (dont quatre relevees sur des references reelles), composition
+libre de chaque element, assemblage en deux coques avec goujons et goupille en 8,
+branchies et yeux graves dans le corps, lestage inox, bavette imprimee ou
+polycarbonate, simulation de flottabilite / assiette / action, et exports STL,
+STEP, DXF et SVG — sans serveur ni compte.
 
 ```bash
 cd web && npm install && npm run dev

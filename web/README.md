@@ -58,10 +58,16 @@ s'affichent correctement sans dependre d'une declaration de charset de l'hote.
 
 ### 1. Galerie de formes
 
-Sept gabarits **entierement parametriques** — Minnow, Popper, Crankbait, Jerkbait,
-Spoon, Swimbait, Topwater. Chaque vignette est une silhouette SVG generee par le
-meme code de profil que le modele 3D : la miniature correspond donc toujours a la
-piece qui sera imprimee.
+Onze gabarits **entierement parametriques** : quatre profils releves sur des
+references reelles — Stickbait 165, Irresistible, Ryoshi, Modele 1 (2.5 po) — et
+sept generiques — Minnow, Popper, Crankbait, Jerkbait, Spoon, Swimbait, Topwater.
+
+Chaque forme est un **point de depart, jamais une contrainte** : corps, bavette,
+details de tete, quincaillerie, plan d'assemblage et livree se reglent
+independamment et se melangent librement d'une forme a l'autre.
+
+Chaque vignette est une silhouette SVG generee par le meme code de profil que le
+modele 3D : la miniature correspond donc toujours a la piece qui sera imprimee.
 
 ### 2. Editeur en trois panneaux
 
@@ -90,6 +96,42 @@ L'angle est mesure **depuis l'axe du corps** : 0 degre place la bavette dans le
 prolongement du nez (plongee maximale), 90 degres la dresse perpendiculairement
 (nage de sub-surface). Elle projette toujours vers l'avant, comme une vraie
 levre de plongee.
+
+#### Assemblage en deux coques
+
+Le corps se genere en deux demi-coques imprimables, avec goujons d'alignement sur
+la male et logements correspondants dans la femelle. **Aucun booleen CSG n'est
+utilise** : les coques sont construites directement dans la parametrisation du
+loft. Le choix est mesure, pas dogmatique — sur ce maillage, un booleen laisse
+952 aretes non appariees sur 10 643, ce qui interdit un solide STEP et fragilise
+le STL ; la construction directe en laisse **zero**, sur les onze formes, les deux
+coques et toutes les variantes testees.
+
+Le plan de joint contient toujours l'axe longitudinal, ce qui garantit que chaque
+section est coupee en deux arcs — donc que les deux coques se referment. Son
+orientation se regle de 0 degre (joint gauche / droite) a 90 degres (dos / ventre).
+
+#### Goupille en 8 et logement
+
+Catalogue de cinq tailles reelles (fil 0,6 a 2 mm), avec **selection
+proportionnelle** a la longueur du leurre : 40-65 mm en XS 0,6, 65-90 mm en
+XS 1,0, 90-140 mm en S, 140-180 mm en M, au-dela en L. La regle de robustesse
+prime : un leurre destine aux eaux sales passe en L quelle que soit sa longueur,
+parce que c'est la traction qui dimensionne. Le choix reste forcable a la main.
+
+Deux methodes de logement, creusees dans le plan de joint, moitie par coque :
+
+| Methode | Principe |
+| --- | --- |
+| **Alesage** | Trou cylindrique simple, jeu diametral reglable sur le cercle de la goupille (0,05 mm par defaut : boucle de 6,00 mm -> alesage de 6,05 mm). |
+| **Canal** | Le creusement suit la silhouette reelle du fil et laisse en place la matiere interieure a la boucle — c'est elle qui retient la goupille. Offset radial reglable, 0,25 mm par defaut. |
+
+#### Bavette imprimee ou polycarbonate
+
+En mode **polycarbonate**, le corps recoit une fente d'insertion taillee dans le
+plan de joint a l'angle de la bavette, et le gabarit plat s'exporte en DXF ou SVG
+aux cotes reelles. Le meme contour sert a la piece imprimee, au gabarit et a la
+fente : aucune derive possible entre les trois.
 
 #### Agrafes
 
@@ -133,6 +175,9 @@ enregistrees dans une bibliotheque qui voyage avec le projet JSON.
 
 - **Exporter STL** : binaire, echelle 1:1 en millimetres, piece posee sur le
   plateau et centree, longueur sur X (convention des trancheurs)
+- **Trois pieces au choix** : assemble, coque male (goujons compris) ou coque
+  femelle. La bavette et la caudale, plaques minces qui vivent dans le plan de
+  joint, sont tranchees dans ce plan pour se repartir entre les deux coques
 - **Exporter STEP** (ISO 10303-21, schema AP214) : B-rep facette a topologie
   complete — chaque triangle devient une ADVANCED_FACE plane, bornee par une
   EDGE_LOOP dont les aretes sont partagees entre faces voisines. C'est cette
@@ -220,6 +265,9 @@ Les sept gabarits sont calibres pour tomber sur des valeurs realistes :
 | Spoon | 72 x 8 x 26 | 6,6 cm3 | 10,2 g | Coule (1,54) | roulante |
 | Swimbait | 135 x 46 x 24 | 59,2 cm3 | 60,0 g | Suspend (1,01) | large |
 | Topwater | 104 x 21 x 18 | 19,7 cm3 | 16,7 g | Flotte (0,85) | large |
+
+Les onze gabarits sortent sans erreur ni avertissement de coherence, et leurs
+deux coques sont fermees : **zero arete non appariee** sur chacune.
 
 Un leurre imprime est tres flottant : c'est le lest de plomb interne qui fait le
 reglage, exactement comme en fabrication artisanale.

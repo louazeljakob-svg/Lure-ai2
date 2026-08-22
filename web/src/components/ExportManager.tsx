@@ -4,8 +4,10 @@
  * Aucun serveur, aucun compte, aucune donnee ne quitte la machine.
  */
 
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import type { LureParams } from '../types/lure';
+import type { ExportKind } from '../lib/exporters';
+import { Segmented } from './ui';
 import type { LureGeometry } from '../lib/geometry';
 import { getMaterial } from '../lib/materials';
 import type { PhysicsResult } from '../lib/physics';
@@ -17,9 +19,10 @@ interface Props {
   geo: LureGeometry;
   physics: PhysicsResult;
   onImport: (file: File) => void;
-  onExportSTL: () => void;
-  onExportSTEP: () => void;
+  onExportSTL: (kind: ExportKind) => void;
+  onExportSTEP: (kind: ExportKind) => void;
   onExportJSON: () => void;
+  onExportBill: (format: 'dxf' | 'svg') => void;
   onSaveSession: () => void;
   /** « Ajouter aux projets » ou « Mettre a jour » selon le projet actif. */
   saveLabel: string;
@@ -35,11 +38,15 @@ export function ExportManager({
   onExportSTL,
   onExportSTEP,
   onExportJSON,
+  onExportBill,
   onSaveSession,
   saveLabel,
 }: Props) {
   const fileRef = useRef<HTMLInputElement>(null);
   const material = getMaterial(params.material);
+  const [kind, setKind] = useState<ExportKind>('assembly');
+  const split = params.assembly.enabled;
+  const piece: ExportKind = split ? kind : 'assembly';
 
   return (
     <div className="export-dock">
@@ -64,6 +71,19 @@ export function ExportManager({
         </div>
       </div>
 
+      {split ? (
+        <Segmented
+          label="Piece a exporter"
+          value={piece}
+          options={[
+            { value: 'assembly' as ExportKind, label: 'Assemble' },
+            { value: 'male' as ExportKind, label: 'Male' },
+            { value: 'female' as ExportKind, label: 'Femelle' },
+          ]}
+          onChange={setKind}
+        />
+      ) : null}
+
       <div className="export-dock__name">
         <label className="sr-only" htmlFor="project-name">
           Nom du projet
@@ -76,14 +96,18 @@ export function ExportManager({
           aria-label="Nom du projet"
           onChange={(event) => onNameChange(event.target.value)}
         />
-        <button type="button" className="btn btn--primary" onClick={onExportSTL}>
+        <button type="button" className="btn btn--primary" onClick={() => onExportSTL(piece)}>
           Exporter STL
         </button>
       </div>
 
       <div className="stack">
         <div className="export-dock__actions">
-          <button type="button" className="btn btn--sm btn--dark" onClick={onExportSTEP}>
+          <button
+            type="button"
+            className="btn btn--sm btn--dark"
+            onClick={() => onExportSTEP(piece)}
+          >
             Exporter STEP
           </button>
           <button type="button" className="btn btn--sm" onClick={onExportJSON}>
@@ -96,6 +120,16 @@ export function ExportManager({
             Recharger
           </button>
         </div>
+        {params.hasBib && params.billMode === 'polycarbonate' ? (
+          <div className="export-dock__actions">
+            <button type="button" className="btn btn--sm" onClick={() => onExportBill('dxf')}>
+              Gabarit DXF
+            </button>
+            <button type="button" className="btn btn--sm" onClick={() => onExportBill('svg')}>
+              Gabarit SVG
+            </button>
+          </div>
+        ) : null}
         <input
           ref={fileRef}
           type="file"
@@ -111,8 +145,9 @@ export function ExportManager({
         />
       </div>
       <p className="control__hint">
-        STL et STEP a l echelle 1:1 en millimetres, poses sur le plateau, agrafe exclue.
-        Tout est genere dans le navigateur : rien n est envoye sur un serveur.
+        STL et STEP a l echelle 1:1 en millimetres, poses sur le plateau. Quincaillerie
+        exclue des fichiers imprimes. Tout est genere dans le navigateur : rien n est
+        envoye sur un serveur.
       </p>
     </div>
   );

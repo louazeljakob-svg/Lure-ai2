@@ -7,9 +7,15 @@
  */
 
 import type {
+  AssemblyConfig,
+  BallastShape,
   BallastWeight,
+  BillMode,
   ClipId,
   DetailConfig,
+  EyeStyle,
+  PinId,
+  SocketMethod,
   FinishId,
   LureParams,
   MaterialId,
@@ -21,6 +27,10 @@ import type {
 import { clonePreset, LIMITS, type Range } from './presets';
 
 const SHAPES: ShapeId[] = [
+  'stickbait165',
+  'irresistible',
+  'ryoshi',
+  'model25',
   'minnow',
   'popper',
   'crankbait',
@@ -34,6 +44,11 @@ const MATERIALS: MaterialId[] = ['pla', 'lwpla', 'resin', 'tpu'];
 const FINISHES: FinishId[] = ['matte', 'satin', 'gloss', 'chrome', 'holo'];
 const PATTERNS: PatternId[] = ['none', 'stripes', 'dots', 'scales', 'camo', 'gradient'];
 const CLIP_IDS: ClipId[] = ['none', 'small', 'medium'];
+const PIN_IDS: (PinId | 'auto')[] = ['auto', 'xs06', 'xs10', 's', 'm', 'l'];
+const SOCKETS: SocketMethod[] = ['bore', 'channel'];
+const BILL_MODES: BillMode[] = ['printed', 'polycarbonate'];
+const EYE_STYLES: EyeStyle[] = ['realistic', 'globular', 'holographic', 'custom'];
+const BALLAST_SHAPES: BallastShape[] = ['sphere', 'cylinder'];
 
 const num = (value: unknown, range: Range, fallback: number): number => {
   const n = typeof value === 'number' ? value : Number(value);
@@ -62,6 +77,7 @@ function sanitizeBallasts(value: unknown, fallback: BallastWeight[]): BallastWei
       position: num(item.position, LIMITS.ballastPosition, 0.5),
       height: num(item.height, LIMITS.ballastHeight, -0.7),
       mass: num(item.mass, LIMITS.ballastMass, 1),
+      shape: pick(item.shape, BALLAST_SHAPES, 'sphere'),
     };
   });
 }
@@ -77,6 +93,22 @@ function sanitizeDetail(
     position: num(raw.position, ranges.position, fallback.position),
     size: num(raw.size, ranges.size, fallback.size),
     relief: num(raw.relief, ranges.relief, fallback.relief),
+  };
+}
+
+function sanitizeAssembly(value: unknown, fallback: AssemblyConfig): AssemblyConfig {
+  const raw = (value ?? {}) as Partial<AssemblyConfig>;
+  return {
+    enabled: bool(raw.enabled, fallback.enabled),
+    planeAngle: num(raw.planeAngle, LIMITS.planeAngle, fallback.planeAngle),
+    tenonCount: Math.round(num(raw.tenonCount, LIMITS.tenonCount, fallback.tenonCount)),
+    tenonDiameter: num(raw.tenonDiameter, LIMITS.tenonDiameter, fallback.tenonDiameter),
+    tenonClearance: num(raw.tenonClearance, LIMITS.tenonClearance, fallback.tenonClearance),
+    socketMethod: pick(raw.socketMethod, SOCKETS, fallback.socketMethod),
+    boreClearance: num(raw.boreClearance, LIMITS.boreClearance, fallback.boreClearance),
+    channelOffset: num(raw.channelOffset, LIMITS.channelOffset, fallback.channelOffset),
+    pin: pick(raw.pin, PIN_IDS, fallback.pin),
+    roughWater: bool(raw.roughWater, fallback.roughWater),
   };
 }
 
@@ -100,6 +132,8 @@ export function sanitizeParams(input: unknown): LureParams {
     crossSection: num(raw.crossSection, LIMITS.crossSection, base.crossSection),
     mouthCup: num(raw.mouthCup, LIMITS.mouthCup, base.mouthCup),
     hasBib: bool(raw.hasBib, base.hasBib),
+    billMode: pick(raw.billMode, BILL_MODES, base.billMode),
+    billThickness: num(raw.billThickness, LIMITS.billThickness, base.billThickness),
     bibAngle: num(raw.bibAngle, LIMITS.bibAngle, base.bibAngle),
     bibLength: num(raw.bibLength, LIMITS.bibLength, base.bibLength),
     bibWidth: num(raw.bibWidth, LIMITS.bibWidth, base.bibWidth),
@@ -115,10 +149,13 @@ export function sanitizeParams(input: unknown): LureParams {
       size: LIMITS.eyeSize,
       relief: LIMITS.eyeRelief,
     }),
+    eyeStyle: pick(raw.eyeStyle, EYE_STYLES, base.eyeStyle),
     clip: pick(raw.clip, CLIP_IDS, base.clip),
+    assembly: sanitizeAssembly(raw.assembly, base.assembly),
     material: pick(raw.material, MATERIALS, base.material),
     infill: num(raw.infill, LIMITS.infill, base.infill),
     hardwareMass: num(raw.hardwareMass, LIMITS.hardwareMass, base.hardwareMass),
+    ballastDensity: num(raw.ballastDensity, LIMITS.ballastDensity, base.ballastDensity),
     ballasts: sanitizeBallasts(raw.ballasts, base.ballasts),
     paint: {
       dorsal: color(paint.dorsal, base.paint.dorsal),

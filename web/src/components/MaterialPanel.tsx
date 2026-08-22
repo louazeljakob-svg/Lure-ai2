@@ -3,14 +3,12 @@
 import { useState } from 'react';
 import type {
   BallastWeight,
-  ClipId,
   LureParams,
   PaintConfig,
   PatternId,
   SavedPalette,
 } from '../types/lure';
-import { LEAD_DENSITY } from '../lib/geometry';
-import { CLIPS, FINISHES, MATERIALS, getMaterial } from '../lib/materials';
+import { FINISHES, MATERIALS, getMaterial } from '../lib/materials';
 import { paintPreviewCss } from '../lib/paint';
 import { LIMITS } from '../lib/presets';
 import { ColorField, Fieldset, Segmented, Slider } from './ui';
@@ -19,7 +17,6 @@ interface Props {
   params: LureParams;
   onChange: (patch: Partial<LureParams>) => void;
   /** Masse reelle de l'agrafe choisie, calculee depuis sa geometrie. */
-  clipMass: number;
   palettes: SavedPalette[];
   onSavePalette: (name: string) => void;
   onApplyPalette: (id: string) => void;
@@ -28,9 +25,15 @@ interface Props {
 
 const MAX_BALLASTS = 8;
 
-/** Diametre de la bille de plomb equivalente, en mm. */
-const leadDiameter = (mass: number): number =>
-  2 * Math.cbrt((3 * (Math.max(mass, 0.01) / LEAD_DENSITY)) / (4 * Math.PI)) * 10;
+/** Diametre du lest equivalent, en mm, pour la densite choisie. */
+const ballastDiameter = (mass: number, density: number, shape: 'sphere' | 'cylinder'): number => {
+  const volume = Math.max(mass, 0.01) / Math.max(density, 0.5);
+  const radius =
+    shape === 'cylinder'
+      ? Math.cbrt(volume / (2.5 * Math.PI))
+      : Math.cbrt((3 * volume) / (4 * Math.PI));
+  return radius * 20;
+};
 
 const PALETTES: { name: string; paint: Partial<PaintConfig> }[] = [
   {
@@ -92,7 +95,6 @@ const PALETTES: { name: string; paint: Partial<PaintConfig> }[] = [
 export function MaterialPanel({
   params,
   onChange,
-  clipMass,
   palettes,
   onSavePalette,
   onApplyPalette,
@@ -119,6 +121,7 @@ export function MaterialPanel({
           position: 0.5,
           height: -0.7,
           mass: 1.5,
+          shape: 'sphere',
         },
       ],
     });
@@ -157,6 +160,14 @@ export function MaterialPanel({
           onChange={(infill) => onChange({ infill })}
         />
         <Slider
+          label="Densite des lests"
+          value={params.ballastDensity}
+          {...LIMITS.ballastDensity}
+          display={`${params.ballastDensity.toFixed(2)} g/cm3`}
+          hint="Inox : 7,75 a 8,0. Plomb : 11,34. A masse egale, un lest inox occupe pres de moitie plus de volume."
+          onChange={(ballastDensity) => onChange({ ballastDensity })}
+        />
+        <Slider
           label="Quincaillerie"
           value={params.hardwareMass}
           {...LIMITS.hardwareMass}
@@ -179,7 +190,8 @@ export function MaterialPanel({
             <div className="ballast__head">
               <span className="ballast__name">Lest {index + 1}</span>
               <span className="ballast__spec">
-                {ballast.mass.toFixed(1)} g · diam. {leadDiameter(ballast.mass).toFixed(1)} mm
+                {ballast.mass.toFixed(1)} g · diam.{' '}
+                {ballastDiameter(ballast.mass, params.ballastDensity, ballast.shape).toFixed(1)} mm
               </span>
               <button
                 type="button"
@@ -223,6 +235,15 @@ export function MaterialPanel({
               hint="Plus le lest est bas, plus le leurre resiste au roulis."
               onChange={(height) => setBallast(ballast.id, { height })}
             />
+            <Segmented
+              label="Forme"
+              value={ballast.shape}
+              options={[
+                { value: 'sphere' as const, label: 'Bille' },
+                { value: 'cylinder' as const, label: 'Cylindre' },
+              ]}
+              onChange={(shape) => setBallast(ballast.id, { shape })}
+            />
             <Slider
               label="Masse"
               value={ballast.mass}
@@ -241,40 +262,6 @@ export function MaterialPanel({
         >
           + Ajouter un lest
         </button>
-      </Fieldset>
-
-      <Fieldset
-        legend="Clips"
-        hint="Agrafe montee sur l oeillet de tete. Elle n est pas imprimee : elle s ajoute a la masse et deplace le centre de gravite vers l avant."
-      >
-        <Segmented
-          label="Anneau brise"
-          value={params.clip}
-          options={[
-            { value: 'none' as ClipId, label: 'Aucun' },
-            ...CLIPS.map((clip) => ({
-              value: clip.id as ClipId,
-              label: clip.label,
-              title: `Fil ${clip.wire} mm, longueur ${clip.length} mm`,
-            })),
-          ]}
-          onChange={(clip) => onChange({ clip })}
-        />
-        {params.clip === 'none' ? (
-          <p className="control__hint">Aucune agrafe : le leurre est noue directement.</p>
-        ) : (
-          <div className="stat" style={{ border: '1px solid var(--line)' }}>
-            <span className="stat__label">Agrafe montee</span>
-            <div className="stat__value">
-              {clipMass.toFixed(2)}
-              <span className="stat__unit">g</span>
-            </div>
-            <span className="stat__sub">
-              fil {CLIPS.find((c) => c.id === params.clip)?.wire} mm · longueur{' '}
-              {CLIPS.find((c) => c.id === params.clip)?.length} mm
-            </span>
-          </div>
-        )}
       </Fieldset>
 
       <Fieldset legend="Livree" hint="Cinq zones colorables, motif de surface et finition.">

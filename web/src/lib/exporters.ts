@@ -9,8 +9,83 @@
 import * as THREE from 'three';
 import { STLExporter } from 'three/examples/jsm/exporters/STLExporter.js';
 import type { LureParams, ProjectFile, SavedPalette } from '../types/lure';
-import { buildLure, STEP_RESOLUTION, type LureGeometry } from './geometry';
+import {
+  buildBib,
+  buildLure,
+  buildTailFin,
+  STEP_RESOLUTION,
+  type LureGeometry,
+  type ShellPart,
+} from './geometry';
+import { ASSEMBLY_DISPLAY, ASSEMBLY_STEP, buildAssembly } from './assembly';
+import { bibOutline } from './billTemplate';
+import { createProfile } from './profile';
 import { buildStepFile } from './step';
+
+/** Piece a exporter : ensemble assemble, ou l'une des deux coques. */
+export type ExportKind = 'assembly' | 'male' | 'female';
+
+export const EXPORT_LABEL: Record<ExportKind, string> = {
+  assembly: 'assemble',
+  male: 'male',
+  female: 'femelle',
+};
+
+/**
+ * Reunit les pieces a exporter pour une variante donnee.
+ *
+ * `owned` liste les geometries creees pour l'occasion : l'appelant doit les
+ * liberer une fois la copie transformee produite.
+ */
+function collectParts(
+  params: LureParams,
+  geo: LureGeometry,
+  kind: ExportKind,
+  coarse: boolean,
+): { parts: THREE.BufferGeometry[]; owned: THREE.BufferGeometry[] } {
+  const owned: THREE.BufferGeometry[] = [];
+  const parts: THREE.BufferGeometry[] = [];
+
+  if (kind === 'assembly' || !params.assembly.enabled) {
+    parts.push(geo.body);
+    if (geo.bib) parts.push(geo.bib);
+    if (geo.tail) parts.push(geo.tail);
+    return { parts, owned };
+  }
+
+  const profile = createProfile(params);
+  const assembly = buildAssembly(profile, params, coarse ? ASSEMBLY_STEP : ASSEMBLY_DISPLAY);
+  owned.push(assembly.male, assembly.female, assembly.pin.geometry);
+  if (assembly.tenons) owned.push(assembly.tenons);
+
+  if (kind === 'male') {
+    parts.push(assembly.male);
+    if (assembly.tenons) parts.push(assembly.tenons);
+  } else {
+    parts.push(assembly.female);
+  }
+
+  // Bavette et caudale sont des plaques minces qui vivent dans le plan de
+  // joint : elles se partagent en deux quand le joint est vertical. Sur un
+  // joint incline, les couper proprement demanderait une decoupe hors plan :
+  // elles restent alors solidaires de la coque male.
+  const vertical = params.assembly.planeAngle < 5;
+  const share: ShellPart = vertical ? kind : 'full';
+  if (vertical || kind === 'male') {
+    if (params.hasBib && params.billMode === 'printed') {
+      const bib = buildBib(profile, params, share);
+      owned.push(bib);
+      parts.push(bib);
+    }
+    if (profile.hasFin) {
+      const tail = buildTailFin(profile, params, share);
+      owned.push(tail);
+      parts.push(tail);
+    }
+  }
+
+  return { parts, owned };
+}
 import { sanitizeName, sanitizeParams, sanitizePalettes } from './validation';
 
 export const slugify = (value: string): string =>
@@ -121,8 +196,7 @@ export function downloadBlob(blob: Blob, filename: string): void {
  * Les geometries retournees sont des copies transformees : STL et STEP
  * partagent ainsi exactement la meme mise en position.
  */
-export function printableParts(geo: LureGeometry): THREE.BufferGeometry[] {
-  const parts = [geo.body, geo.bib, geo.tail].filter(Boolean) as THREE.BufferGeometry[];
+export function printableParts(parts: THREE.BufferGeometry[]): THREE.BufferGeometry[] {
   const place = new THREE.Matrix4()
     .makeRotationX(Math.PI / 2)
     .premultiply(new THREE.Matrix4().makeScale(10, 10, 10));
@@ -141,17 +215,25 @@ export function printableParts(geo: LureGeometry): THREE.BufferGeometry[] {
   return clones;
 }
 
-export async function exportSTL(geo: LureGeometry, name: string): Promise<SaveOutcome> {
-  const parts = printableParts(geo);
+export async function exportSTL(
+  params: LureParams,
+  geo: LureGeometry,
+  name: string,
+  kind: ExportKind = 'assembly',
+): Promise<SaveOutcome> {
+  const { parts, owned } = collectParts(params, geo, kind, false);
+  const placed = printableParts(parts);
   const group = new THREE.Group();
-  for (const part of parts) group.add(new THREE.Mesh(part));
+  for (const part of placed) group.add(new THREE.Mesh(part));
   group.updateMatrixWorld(true);
 
   const data = new STLExporter().parse(group, { binary: true });
   group.clear();
-  for (const part of parts) part.dispose();
+  for (const part of placed) part.dispose();
+  for (const part of owned) part.dispose();
 
-  const base = slugify(name);
+  const suffix = kind === 'assembly' ? '' : `-${EXPORT_LABEL[kind]}`;
+  const base = `${slugify(name)}${suffix}`;
   return offerFile(`${base}.stl`, data, 'model/stl', `${base}.stl.txt`);
 }
 
@@ -163,23 +245,79 @@ export async function exportSTL(geo: LureGeometry, name: string): Promise<SaveOu
 export async function exportSTEP(
   params: LureParams,
   name: string,
-): Promise<SaveOutcome & { faces: number }> {
+  kind: ExportKind = 'assembly',
+): Promise<SaveOutcome & { faces: number; solid: boolean }> {
   const coarse = buildLure(params, STEP_RESOLUTION);
+  const { parts, owned } = collectParts(params, coarse, kind, true);
+  const placed = printableParts(parts);
   try {
-    const parts = printableParts(coarse);
-    const step = buildStepFile(parts, slugify(name));
-    for (const part of parts) part.dispose();
-    const base = slugify(name);
+    const suffix = kind === 'assembly' ? '' : `-${EXPORT_LABEL[kind]}`;
+    const base = `${slugify(name)}${suffix}`;
+    const step = buildStepFile(placed, base);
     const outcome = await offerFile(
       `${base}.step`,
       step.text,
       'application/step',
       `${base}.step.txt`,
     );
-    return { ...outcome, faces: step.faces };
+    return { ...outcome, faces: step.faces, solid: step.solid };
   } finally {
+    for (const part of placed) part.dispose();
+    for (const part of owned) part.dispose();
     coarse.dispose();
   }
+}
+
+/**
+ * Gabarit plat de la bavette a decouper dans du polycarbonate, aux cotes
+ * reelles en millimetres. DXF pour la CN, SVG pour la decoupe laser ou le
+ * trace au cutter.
+ */
+export async function exportBillTemplate(
+  params: LureParams,
+  name: string,
+  format: 'dxf' | 'svg',
+): Promise<SaveOutcome> {
+  const profile = createProfile(params);
+  const outline = bibOutline(profile, params).map((point) => ({
+    x: point.x * 10,
+    y: point.y * 10,
+  }));
+  const base = `${slugify(name)}-bavette`;
+
+  if (format === 'dxf') {
+    const body = [
+      '0', 'SECTION', '2', 'ENTITIES',
+      '0', 'LWPOLYLINE', '8', 'BAVETTE',
+      '90', String(outline.length), '70', '1',
+    ];
+    for (const point of outline) {
+      body.push('10', point.x.toFixed(4), '20', point.y.toFixed(4));
+    }
+    body.push('0', 'ENDSEC', '0', 'EOF', '');
+    return offerFile(`${base}.dxf`, body.join('\n'), 'image/vnd.dxf', `${base}.dxf.txt`);
+  }
+
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const point of outline) {
+    minX = Math.min(minX, point.x); maxX = Math.max(maxX, point.x);
+    minY = Math.min(minY, point.y); maxY = Math.max(maxY, point.y);
+  }
+  const pad = 2;
+  const width = maxX - minX + pad * 2;
+  const height = maxY - minY + pad * 2;
+  const path = outline
+    .map((point, i) => `${i === 0 ? 'M' : 'L'}${(point.x - minX + pad).toFixed(3)} ${(maxY - point.y + pad).toFixed(3)}`)
+    .join(' ');
+  const svg = [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width.toFixed(2)}mm" height="${height.toFixed(2)}mm" viewBox="0 0 ${width.toFixed(2)} ${height.toFixed(2)}">`,
+    `<title>Bavette ${name} — ${(maxX - minX).toFixed(1)} x ${(maxY - minY).toFixed(1)} mm, epaisseur ${params.billThickness} mm</title>`,
+    `<path d="${path} Z" fill="none" stroke="#000000" stroke-width="0.2"/>`,
+    '</svg>',
+    '',
+  ].join('\n');
+  return offerFile(`${base}.svg`, svg, 'image/svg+xml', `${base}.svg.txt`);
 }
 
 export function buildProjectFile(

@@ -14,6 +14,8 @@ import type { LureParams, WaterId } from '../types/lure';
 import type { LureGeometry } from './geometry';
 import { getMaterial, solidFraction, WATER_DENSITY } from './materials';
 import { clamp, createProfile } from './profile';
+import { resolvePin } from './assembly';
+import { pinPath, pinWireLength, STAINLESS_DENSITY } from './hardware';
 
 export type Buoyancy = 'float' | 'suspend' | 'sink';
 export type Attitude = 'nose-up' | 'level' | 'nose-down';
@@ -42,6 +44,8 @@ export interface PhysicsResult {
   hardwareMass: number;
   /** Masse de l'agrafe montee sur l'oeillet de tete. */
   clipMass: number;
+  /** Masse de la goupille en 8 traversante. */
+  pinMass: number;
   totalMass: number;
   displacedMass: number;
   /** Masse / poussee. < 1 flotte, = 1 suspend, > 1 coule. */
@@ -164,7 +168,11 @@ export function computePhysics(
   const hardwareMass = Math.max(params.hardwareMass, 0);
   // L'agrafe est en acier : elle ne deplace presque pas d'eau mais pese au nez.
   const clipMass = geo.clip?.mass ?? 0;
-  const totalMass = bodyMass + ballastMass + hardwareMass + clipMass;
+  // La goupille traverse le corps : sa masse se deduit de la longueur de fil
+  // developpee, comme pour l'agrafe.
+  const pinSpec = params.assembly.enabled ? resolvePin(params) : null;
+  const pinMass = pinSpec ? pinWireLength(pinPath(pinSpec)) * Math.PI * ((pinSpec.wire * 0.05) ** 2) * STAINLESS_DENSITY : 0;
+  const totalMass = bodyMass + ballastMass + hardwareMass + clipMass + pinMass;
 
   // Centre de gravite : corps homogene + billes de lest + quincaillerie.
   const points: PointMass[] = [
@@ -172,6 +180,8 @@ export function computePhysics(
     ...geo.ballasts.map((m) => ({ x: m.position[0], y: m.position[1], mass: m.mass })),
     ...hardwarePoints(params, hardwareMass),
     ...(clipMass > 0 ? [{ x: profile.xAt(0), y: 0, mass: clipMass }] : []),
+    // La goupille est logee dans la tete, sur l'axe.
+    ...(pinMass > 0 ? [{ x: profile.xAt(0.07), y: 0, mass: pinMass }] : []),
   ];
   const cg = { x: 0, y: 0, z: 0 };
   const massSum = points.reduce((sum, p) => sum + p.mass, 0);
@@ -241,6 +251,7 @@ export function computePhysics(
     ballastMass,
     hardwareMass,
     clipMass,
+    pinMass,
     totalMass,
     displacedMass,
     ratio,
@@ -384,6 +395,22 @@ function buildWarnings(
       title: 'Corps creux : etancheite',
       detail: 'Sous 25 % de remplissage, la flottaison depend de l air enferme. Prevoyez au moins 3 perimetres et 5 couches dessus/dessous, puis un vernis epoxy.',
     });
+  }
+
+  if (params.assembly.enabled) {
+    const spec = resolvePin(params);
+    const profile = createProfile(params);
+    // Le logement se creuse a environ 7 % de la longueur depuis le nez.
+    const section = profile.section(0.1);
+    const available = Math.min(section.top - section.bottom, section.halfWidth * 2) * 10;
+    if (spec.loopWidth > available * 0.85) {
+      list.push({
+        id: 'pin-fit',
+        level: 'warn',
+        title: 'Goupille trop grosse pour la tete',
+        detail: `La petite boucle mesure ${spec.loopWidth} mm alors que la tete n offre que ${available.toFixed(1)} mm de section a cet endroit. Choisissez une taille en dessous, ou epaississez l avant du corps.`,
+      });
+    }
   }
 
   if (params.hasBib && params.bibLength > params.length * 0.45) {

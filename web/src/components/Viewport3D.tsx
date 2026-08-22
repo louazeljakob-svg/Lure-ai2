@@ -13,6 +13,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import type { LureParams } from '../types/lure';
 import type { LureGeometry } from '../lib/geometry';
+import { buildAssembly } from '../lib/assembly';
+import { createProfile } from '../lib/profile';
 import { FINISHES } from '../lib/materials';
 import { createPaintTexture } from '../lib/paint';
 import { useReducedMotion } from '../lib/hooks';
@@ -236,6 +238,61 @@ function WaterPlane({ y, radius }: { y: number | null; radius: number }) {
   );
 }
 
+/**
+ * Vue eclatee : les deux coques s'ecartent de part et d'autre du plan de
+ * joint, ce qui rend visibles les goujons, le logement et la goupille.
+ */
+function ExplodedAssembly({ params, spread }: { params: LureParams; spread: number }) {
+  const assembly = useMemo(() => buildAssembly(createProfile(params), params), [params]);
+  useEffect(
+    () => () => {
+      assembly.male.dispose();
+      assembly.female.dispose();
+      assembly.tenons?.dispose();
+      assembly.pin.geometry.dispose();
+    },
+    [assembly],
+  );
+
+  const offset = assembly.splitNormal.clone().multiplyScalar(spread);
+  const finish = FINISHES[params.paint.finish];
+
+  return (
+    <group>
+      <group position={offset}>
+        <mesh geometry={assembly.male}>
+          <meshStandardMaterial
+            color={params.paint.flank}
+            roughness={finish.roughness}
+            metalness={finish.metalness}
+            side={THREE.DoubleSide}
+          />
+        </mesh>
+        {assembly.tenons ? (
+          <mesh geometry={assembly.tenons}>
+            <meshStandardMaterial color="#e30613" roughness={0.5} />
+          </mesh>
+        ) : null}
+      </group>
+
+      <group position={offset.clone().negate()}>
+        <mesh geometry={assembly.female}>
+          <meshStandardMaterial
+            color={params.paint.dorsal}
+            roughness={finish.roughness}
+            metalness={finish.metalness}
+            side={THREE.DoubleSide}
+          />
+        </mesh>
+      </group>
+
+      <mesh geometry={assembly.pin.geometry}>
+        <meshStandardMaterial color="#c9ccd1" roughness={0.25} metalness={0.95} />
+      </mesh>
+    </group>
+  );
+}
+
 export interface Viewport3DProps {
   geo: LureGeometry;
   params: LureParams;
@@ -251,6 +308,7 @@ export function Viewport3D({ geo, params, physics, fitKey }: Viewport3DProps) {
   const [showMarkers, setShowMarkers] = useState(true);
   const [xray, setXray] = useState(false);
   const [floatView, setFloatView] = useState(false);
+  const [exploded, setExploded] = useState(false);
 
   const radius =
     Math.hypot(geo.bounds.length, geo.bounds.height, geo.bounds.width) / 20 || 5;
@@ -280,7 +338,11 @@ export function Viewport3D({ geo, params, physics, fitKey }: Viewport3DProps) {
           <pointLight position={[0, -5, 6]} intensity={0.5} />
 
           <group rotation={[0, 0, tilt]}>
-            <LureModel geo={geo} params={params} xray={xray} />
+            {exploded && params.assembly.enabled ? (
+              <ExplodedAssembly params={params} spread={radius * 0.55} />
+            ) : (
+              <LureModel geo={geo} params={params} xray={xray} />
+            )}
             <Ballasts geo={geo} visible={showMarkers || xray} overlay={showMarkers && !xray} />
             <BalanceMarkers physics={physics} radius={radius} visible={showMarkers} />
           </group>
@@ -372,6 +434,15 @@ export function Viewport3D({ geo, params, physics, fitKey }: Viewport3DProps) {
           onClick={() => setFloatView((value) => !value)}
         >
           Flottaison
+        </button>
+        <button
+          type="button"
+          className="toolbtn"
+          aria-pressed={exploded}
+          disabled={!params.assembly.enabled}
+          onClick={() => setExploded((value) => !value)}
+        >
+          Eclate
         </button>
       </div>
 

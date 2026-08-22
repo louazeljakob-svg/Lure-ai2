@@ -11,14 +11,18 @@ import { buildLure } from './lib/geometry';
 import { computePhysics } from './lib/physics';
 import { clonePreset, getPreset } from './lib/presets';
 import {
+  EXPORT_LABEL,
+  exportBillTemplate,
   exportProjectJSON,
   exportSTEP,
   exportSTL,
   readProjectFile,
+  type ExportKind,
   type SaveOutcome,
 } from './lib/exporters';
 import { ExportManager } from './components/ExportManager';
 import { LureSilhouette } from './components/LureSilhouette';
+import { AssemblyPanel } from './components/AssemblyPanel';
 import { MaterialPanel } from './components/MaterialPanel';
 import { PhysicsSimulator } from './components/PhysicsSimulator';
 import { ProjectsPanel } from './components/ProjectsPanel';
@@ -27,7 +31,7 @@ import { ShapeGallery } from './components/ShapeGallery';
 import { Viewport3D } from './components/Viewport3D';
 
 type Route = 'gallery' | 'editor';
-type PanelTab = 'material' | 'physics' | 'projects';
+type PanelTab = 'material' | 'assembly' | 'physics' | 'projects';
 type Pane = 'shape' | 'panel';
 
 interface Toast {
@@ -36,10 +40,11 @@ interface Toast {
   message: string;
 }
 
-const PANEL_META: Record<PanelTab, { title: string; subtitle: string }> = {
-  material: { title: 'Matiere & finition', subtitle: 'Impression, lestage, livree' },
-  physics: { title: 'Simulation', subtitle: 'Flottabilite, assiette, action' },
-  projects: { title: 'Projets', subtitle: 'Creations de la session' },
+const PANEL_META: Record<PanelTab, { title: string; subtitle: string; tab: string }> = {
+  material: { title: 'Matiere & finition', subtitle: 'Impression, lestage, livree', tab: 'Matiere' },
+  assembly: { title: 'Assemblage', subtitle: 'Coques, goujons, goupille', tab: 'Assemblage' },
+  physics: { title: 'Simulation', subtitle: 'Flottabilite, assiette, action', tab: 'Physique' },
+  projects: { title: 'Projets', subtitle: 'Creations de la session', tab: 'Projets' },
 };
 
 const newId = () => `p-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -126,8 +131,12 @@ export default function App() {
   );
 
   const handleExportSTL = useCallback(
-    () => runExport(() => exportSTL(geo, name), 'STL'),
-    [geo, name, runExport],
+    (kind: ExportKind) =>
+      runExport(
+        () => exportSTL(params, geo, name, kind),
+        kind === 'assembly' ? 'STL' : `STL ${EXPORT_LABEL[kind]}`,
+      ),
+    [geo, name, params, runExport],
   );
 
   const handleExportJSON = useCallback(
@@ -136,7 +145,17 @@ export default function App() {
   );
 
   const handleExportSTEP = useCallback(
-    () => runExport(() => exportSTEP(params, name), 'STEP'),
+    (kind: ExportKind) =>
+      runExport(
+        () => exportSTEP(params, name, kind),
+        kind === 'assembly' ? 'STEP' : `STEP ${EXPORT_LABEL[kind]}`,
+      ),
+    [name, params, runExport],
+  );
+
+  const handleExportBill = useCallback(
+    (format: 'dxf' | 'svg') =>
+      runExport(() => exportBillTemplate(params, name, format), `Gabarit ${format.toUpperCase()}`),
     [name, params, runExport],
   );
 
@@ -359,7 +378,7 @@ export default function App() {
               <button
                 type="button"
                 className="btn btn--primary btn--sm"
-                onClick={handleExportSTL}
+                onClick={() => handleExportSTL('assembly')}
               >
                 Exporter STL
               </button>
@@ -416,7 +435,7 @@ export default function App() {
                   setPanelTab(tab);
                 }}
               >
-                {tab === 'material' ? 'Matiere' : tab === 'physics' ? 'Physique' : 'Projets'}
+                {PANEL_META[tab].tab}
               </button>
             ))}
           </div>
@@ -456,7 +475,7 @@ export default function App() {
                     aria-selected={panelTab === tab}
                     onClick={() => setPanelTab(tab)}
                   >
-                    {tab === 'material' ? 'Matiere' : tab === 'physics' ? 'Physique' : 'Projets'}
+                    {PANEL_META[tab].tab}
                   </button>
                 ))}
               </div>
@@ -466,11 +485,18 @@ export default function App() {
                   <MaterialPanel
                     params={params}
                     onChange={updateParams}
-                    clipMass={physics.clipMass}
                     palettes={palettes}
                     onSavePalette={savePalette}
                     onApplyPalette={applyPalette}
                     onDeletePalette={deletePalette}
+                  />
+                ) : null}
+                {panelTab === 'assembly' ? (
+                  <AssemblyPanel
+                    params={params}
+                    onChange={updateParams}
+                    clipMass={physics.clipMass}
+                    pinMass={physics.pinMass}
                   />
                 ) : null}
                 {panelTab === 'physics' ? (
@@ -504,6 +530,7 @@ export default function App() {
                 onExportSTL={handleExportSTL}
                 onExportSTEP={handleExportSTEP}
                 onExportJSON={handleExportJSON}
+                onExportBill={handleExportBill}
                 onSaveSession={saveToSession}
                 saveLabel={activeId ? 'Mettre a jour' : 'Ajouter'}
               />

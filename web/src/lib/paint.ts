@@ -221,12 +221,23 @@ function paintEyes(ctx: CanvasRenderingContext2D, params: LureParams): void {
       ctx.fill();
     };
     ring(0.95, '#f7f4ee');
-    ring(0.72, params.paint.eyeColor);
+
+    if (params.eyeStyle === 'holographic') {
+      // Pastille holo : anneaux concentriques alternes, comme un film prismatique.
+      for (let i = 8; i >= 1; i--) {
+        ring((i / 8) * 0.78, i % 2 === 0 ? params.paint.eyeColor : '#ffffff');
+      }
+    } else {
+      ring(0.72, params.paint.eyeColor);
+    }
+
     ring(0.34, '#101114');
-    // Reflet.
+
+    // Reflet : plus marque sur un oeil globuleux, qui accroche la lumiere.
+    const glare = params.eyeStyle === 'globular' ? 0.2 : 0.14;
     ctx.beginPath();
-    ctx.ellipse(cx - rx * 0.22, cy - ry * 0.24, rx * 0.14, ry * 0.14, 0, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    ctx.ellipse(cx - rx * 0.24, cy - ry * 0.26, rx * glare, ry * glare, 0, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255,255,255,0.92)';
     ctx.fill();
   }
 }

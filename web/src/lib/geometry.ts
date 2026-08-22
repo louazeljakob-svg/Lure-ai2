@@ -14,9 +14,13 @@ import * as THREE from 'three';
 import type { BallastWeight, ClipId, LureParams } from '../types/lure';
 import { getClip, STEEL_DENSITY } from './materials';
 import { clamp, createProfile, MM_TO_CM, type ProfileSampler } from './profile';
+import { bibShape, clipHalfPlane } from './billTemplate';
 
-/** Densite du plomb, en g/cm3 — sert a dimensionner les lests affiches. */
+/** Densite du plomb, conservee comme repere pour l'interface. */
 export const LEAD_DENSITY = 11.34;
+
+/** Elancement des lests cylindriques : longueur = 2,5 x diametre. */
+const CYLINDER_RATIO = 2.5;
 
 const RADIAL_SEGMENTS = 48;
 const LENGTH_SEGMENTS = 128;
@@ -45,9 +49,13 @@ export const STEP_RESOLUTION: Resolution = {
 export interface BallastMarker {
   id: string;
   mass: number;
+  /** Rayon de la bille, ou rayon du cylindre. */
   radius: number;
+  /** Longueur du cylindre, en cm (0 pour une bille). */
+  length: number;
+  shape: 'sphere' | 'cylinder';
   position: [number, number, number];
-  /** Faux si la bille de plomb depasse de la section du corps. */
+  /** Faux si le lest depasse de la section du corps a cet endroit. */
   fits: boolean;
 }
 
@@ -77,7 +85,7 @@ const EYE_ANGLE = 1.15;
  *
  * Retourne `null` quand aucun detail n'est actif.
  */
-function createDetailField(
+export function createDetailField(
   profile: ProfileSampler,
   params: LureParams,
 ): ((p: number, theta: number) => number) | null {
@@ -221,19 +229,30 @@ function buildBody(
 // Bavette
 // ---------------------------------------------------------------------------
 
-function buildBib(profile: ProfileSampler, params: LureParams): THREE.BufferGeometry {
-  const bl = Math.max(params.bibLength * MM_TO_CM, 0.2);
-  const hw = Math.max((params.bibWidth * MM_TO_CM) / 2, 0.15);
-  const root = profile.section(0.1);
-  const rootHalf = Math.max(root.halfWidth * 0.85, hw * 0.4);
+/** Moitie d'appendice a produire, pour l'impression en deux coques. */
+export type ShellPart = 'full' | 'male' | 'female';
+
+/** Repartit l'epaisseur d'un appendice plat de part et d'autre du joint. */
+function extrudeSpan(thickness: number, part: ShellPart): { depth: number; shift: number } {
+  if (part === 'full') return { depth: thickness, shift: -thickness / 2 };
+  if (part === 'male') return { depth: thickness / 2, shift: 0 };
+  return { depth: thickness / 2, shift: -thickness / 2 };
+}
+
+export function buildBib(
+  profile: ProfileSampler,
+  params: LureParams,
+  part: ShellPart = 'full',
+): THREE.BufferGeometry {
+  const outline = bibShape(profile, params, false);
   const thickness = clamp(params.thickness * MM_TO_CM * 0.1, 0.1, 0.28);
 
-  const shape = new THREE.Shape();
-  shape.moveTo(0, rootHalf);
-  shape.quadraticCurveTo(bl * 0.45, hw, bl * 0.86, hw * 0.9);
-  shape.quadraticCurveTo(bl * 1.08, 0, bl * 0.86, -hw * 0.9);
-  shape.quadraticCurveTo(bl * 0.45, -hw, 0, -rootHalf);
-  shape.closePath();
+  // La largeur de la bavette devient laterale apres bascule : c'est donc le
+  // CONTOUR qu'il faut trancher dans le plan de joint, pas l'epaisseur.
+  const points =
+    part === 'full' ? outline.points : clipHalfPlane(outline.points, part === 'female');
+  if (points.length < 3) return new THREE.BufferGeometry();
+  const shape = new THREE.Shape(points);
 
   const geometry = new THREE.ExtrudeGeometry(shape, {
     depth: thickness,
@@ -262,7 +281,11 @@ function buildBib(profile: ProfileSampler, params: LureParams): THREE.BufferGeom
 // Nageoire caudale
 // ---------------------------------------------------------------------------
 
-function buildTailFin(profile: ProfileSampler, params: LureParams): THREE.BufferGeometry {
+export function buildTailFin(
+  profile: ProfileSampler,
+  params: LureParams,
+  part: ShellPart = 'full',
+): THREE.BufferGeometry {
   const overlap = profile.lengthCm * 0.02;
   const len = (1 - profile.bodyEnd) * profile.lengthCm + overlap;
   const thicknessCm = params.thickness * MM_TO_CM;
@@ -296,12 +319,13 @@ function buildTailFin(profile: ProfileSampler, params: LureParams): THREE.Buffer
   }
   shape.closePath();
 
+  const span = extrudeSpan(thickness, part);
   const geometry = new THREE.ExtrudeGeometry(shape, {
-    depth: thickness,
+    depth: span.depth,
     bevelEnabled: false,
     curveSegments: 24,
   });
-  geometry.translate(0, 0, -thickness / 2);
+  geometry.translate(0, 0, span.shift);
 
   const junction = profile.section(Math.max(profile.bodyEnd - 0.045, 0.05));
   const centerY = (junction.top + junction.bottom) / 2;
@@ -384,12 +408,18 @@ function buildClip(profile: ProfileSampler, id: ClipId): ClipPart | null {
 export function ballastMarkers(
   profile: ProfileSampler,
   ballasts: BallastWeight[],
+  density: number,
 ): BallastMarker[] {
   return ballasts.map((ballast) => {
     const p = clamp(ballast.position, 0.02, Math.max(profile.bodyEnd - 0.02, 0.05));
     const section = profile.section(p);
-    const volume = Math.max(ballast.mass, 0.01) / LEAD_DENSITY;
-    const radius = Math.cbrt((3 * volume) / (4 * Math.PI));
+    const volume = Math.max(ballast.mass, 0.01) / Math.max(density, 0.5);
+    // A masse egale, le cylindre loge dans une section plus fine que la bille.
+    const radius =
+      ballast.shape === 'cylinder'
+        ? Math.cbrt(volume / (CYLINDER_RATIO * Math.PI)) 
+        : Math.cbrt((3 * volume) / (4 * Math.PI));
+    const length = ballast.shape === 'cylinder' ? radius * 2 * CYLINDER_RATIO : 0;
     const h = clamp(ballast.height, -1, 1);
     // -1 colle au ventre, +1 colle au dos, 0 sur l'axe neutre.
     const y = h < 0 ? -h * section.bottom * 0.72 : h * section.top * 0.72;
@@ -398,6 +428,8 @@ export function ballastMarkers(
       id: ballast.id,
       mass: ballast.mass,
       radius,
+      length,
+      shape: ballast.shape,
       position: [profile.xAt(p), y, 0],
       fits: radius <= available * 0.92,
     };
@@ -408,13 +440,58 @@ export function ballastMarkers(
 // Assemblage
 // ---------------------------------------------------------------------------
 
+export interface SurfaceSampler {
+  (p: number, theta: number): THREE.Vector3;
+}
+
+/**
+ * Echantillonneur de la surface du corps, details compris.
+ *
+ * Le corps affiche et les deux coques d'assemblage passent par cette meme
+ * fonction : c'est ce qui garantit que le plan de joint tombe exactement sur
+ * la surface, sans decrochement.
+ */
+export function createSurfaceSampler(
+  profile: ProfileSampler,
+  params: LureParams,
+): SurfaceSampler {
+  const exponent = 2 / clamp(params.crossSection, 1.2, 3.6);
+  const detail = createDetailField(profile, params);
+  const out = new THREE.Vector3();
+
+  return (p: number, theta: number): THREE.Vector3 => {
+    const section = profile.section(p);
+    const topAbs = section.top;
+    const bottomAbs = -section.bottom;
+    const centerY = (topAbs - bottomAbs) / 2;
+    const yUnit = sgnPow(Math.cos(theta), exponent);
+    const zUnit = sgnPow(Math.sin(theta), exponent);
+    let y = yUnit * (yUnit >= 0 ? topAbs : bottomAbs);
+    let z = zUnit * section.halfWidth;
+
+    if (detail) {
+      const displacement = detail(p, theta);
+      if (displacement !== 0) {
+        const dy = y - centerY;
+        const radial = Math.hypot(dy, z);
+        if (radial > 1e-6) {
+          y += (dy / radial) * displacement;
+          z += (z / radial) * displacement;
+        }
+      }
+    }
+    return out.set(profile.xAt(p), y, z);
+  };
+}
+
 export function buildLure(
   params: LureParams,
   resolution: Resolution = DISPLAY_RESOLUTION,
 ): LureGeometry {
   const profile = createProfile(params);
   const body = buildBody(profile, params, resolution);
-  const bib = params.hasBib ? buildBib(profile, params) : null;
+  const bib =
+    params.hasBib && params.billMode === 'printed' ? buildBib(profile, params) : null;
   const tail = profile.hasFin ? buildTailFin(profile, params) : null;
   const clip = buildClip(profile, params.clip);
 
@@ -433,7 +510,7 @@ export function buildLure(
     bib,
     tail,
     clip,
-    ballasts: ballastMarkers(profile, params.ballasts),
+    ballasts: ballastMarkers(profile, params.ballasts, params.ballastDensity),
     bounds: {
       length: size.x * 10,
       width: size.z * 10,
