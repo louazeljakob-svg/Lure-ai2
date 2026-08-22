@@ -1,10 +1,13 @@
 /**
  * Assemble le build Vite en UN seul fichier HTML autonome.
  *
- * Deux sorties :
+ * Trois sorties :
  *   dist-single/sakuma.html          page complete, ouvrable par double-clic
  *   dist-single/sakuma-artifact.html contenu seul, pour la publication en artefact
  *     (l hote fournit deja doctype / html / head / body)
+ *   ../docs/index.html               meme page, versionnee pour GitHub Pages
+ *     (Pages sert le dossier docs/ : le lien public est alors ouvrable par
+ *      n importe qui, sans compte ni installation)
  *
  * Aucune requete reseau hors Google Fonts : le JS et le CSS sont integres.
  */
@@ -16,6 +19,7 @@ import { fileURLToPath } from 'node:url';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const dist = join(root, 'dist');
 const out = join(root, 'dist-single');
+const pages = join(root, '..', 'docs');
 
 const FONTS =
   '<link rel="preconnect" href="https://fonts.googleapis.com">' +
@@ -88,6 +92,14 @@ ${body}
 // 2. Contenu seul : l hote de l artefact fournit l enveloppe du document.
 await writeFile(join(out, 'sakuma-artifact.html'), `<title>${TITLE}</title>\n${FONTS}\n${body}\n`, 'utf8');
 
+// 3. Copie servie par GitHub Pages, versionnee dans le depot.
+const standalone = await readFile(join(out, 'sakuma.html'), 'utf8');
+await mkdir(pages, { recursive: true });
+await writeFile(join(pages, 'index.html'), standalone, 'utf8');
+// Empeche Jekyll de retraiter la page.
+await writeFile(join(pages, '.nojekyll'), '', 'utf8');
+
 const kb = (n) => `${(n / 1024).toFixed(0)} ko`;
-console.log(`sakuma.html          ${kb(Buffer.byteLength(body) + 600)}`);
-console.log(`sakuma-artifact.html ${kb(Buffer.byteLength(body) + 300)}`);
+console.log(`dist-single/sakuma.html          ${kb(Buffer.byteLength(body) + 600)}`);
+console.log(`dist-single/sakuma-artifact.html ${kb(Buffer.byteLength(body) + 300)}`);
+console.log(`docs/index.html                  ${kb(Buffer.byteLength(standalone))} (GitHub Pages)`);

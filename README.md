@@ -33,7 +33,9 @@ cd web && npm install && npm run dev
 
 Un build en **fichier HTML unique** (React, Three.js et l'application entiere
 integres, ouvrable par double-clic sans serveur) est disponible via
-`npm run build:single`.
+`npm run build:single`. La meme page est versionnee dans [`docs/`](docs/) pour
+etre servie par GitHub Pages : une fois Pages active sur ce dossier, le lien
+est ouvrable par toute personne qui le recoit, sans compte ni installation.
 
 Documentation detaillee : [`web/README.md`](web/README.md).
 

@@ -26,12 +26,27 @@ Autres scripts : `npm run build` (bundle de production), `npm run preview`,
 npm run build:single
 ```
 
-Produit deux fichiers dans `dist-single/` :
+Produit trois fichiers :
 
 | Fichier | Usage |
 | --- | --- |
-| `sakuma.html` | Page complete et autonome (~1,2 Mo) : React, Three.js et toute l'application sont integres. Ouvrable par double-clic, sans serveur ni installation. |
-| `sakuma-artifact.html` | Contenu seul, pour une publication en artefact claude.ai (l'hote fournit l'enveloppe du document). |
+| `dist-single/sakuma.html` | Page complete et autonome (~1,2 Mo) : React, Three.js et toute l'application sont integres. Ouvrable par double-clic, sans serveur ni installation. |
+| `dist-single/sakuma-artifact.html` | Contenu seul, pour une publication en artefact claude.ai (l'hote fournit l'enveloppe du document). |
+| `docs/index.html` | Copie versionnee servie par GitHub Pages. |
+
+### Lien public (GitHub Pages)
+
+`docs/index.html` est la meme page, versionnee dans le depot pour etre servie
+telle quelle. Une fois Pages active (Settings -> Pages -> branche
+`claude/sakuma-lure-3d-editor-g9griq`, dossier `/docs`), l'application est
+accessible a **toute personne disposant du lien**, sans compte ni installation :
+
+```
+https://louazeljakob-svg.github.io/Lure-ai2/
+```
+
+Le fichier etant autonome, il fonctionne aussi bien depuis n'importe quel autre
+hebergement statique, ou simplement envoye par mail.
 
 Aucune requete reseau hors Google Fonts, qui disposent d'une pile de repli.
 Le bundle est emis en ASCII pur (`esbuild.charset`), de sorte que les accents
