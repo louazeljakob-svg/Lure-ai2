@@ -24,6 +24,9 @@ import type {
   LureParams,
   MaterialId,
   PatternId,
+  PinExit,
+  RattleChamber,
+  RattlePocket,
   SavedPalette,
   ShapeId,
   TailShape,
@@ -32,10 +35,8 @@ import { clonePreset, LIMITS, type Range } from './presets';
 
 const SHAPES: ShapeId[] = [
   'stickbait165',
-  'irresistible',
   'ryoshi',
   'model25',
-  'minnow',
   'popper',
   'crankbait',
   'jerkbait',
@@ -54,6 +55,7 @@ const BILL_MODES: BillMode[] = ['printed', 'polycarbonate'];
 const EYE_STYLES: EyeStyle[] = ['realistic', 'globular', 'holographic', 'custom'];
 const BALLAST_SHAPES: BallastShape[] = ['sphere', 'cylinder'];
 const BILL_PROFILES: BillProfile[] = ['rounded', 'rect', 'diamond'];
+const EXITS: PinExit[] = ['nose', 'belly', 'tail', 'back'];
 
 const num = (value: unknown, range: Range, fallback: number): number => {
   const n = typeof value === 'number' ? value : Number(value);
@@ -112,7 +114,7 @@ function sanitizeAnchors(value: unknown, fallback: PinAnchor[]): PinAnchor[] {
           : `ancrage-${index}-${Math.random().toString(36).slice(2, 8)}`,
       position: num(item.position, LIMITS.anchorPosition, 0.5),
       height: num(item.height, LIMITS.anchorHeight, 0),
-      axisAngle: num(item.axisAngle, LIMITS.anchorAngle, 0),
+      exit: pick(item.exit, EXITS, 'belly'),
       depth: num(item.depth, LIMITS.anchorDepth, 0),
       pin: pick(item.pin, PIN_IDS, 'auto'),
       method: pick(item.method, SOCKETS, 'bore'),
@@ -143,6 +145,37 @@ function sanitizeFabrication(
     sweepExtra: num(raw.sweepExtra, LIMITS.sweepExtra, fallback.sweepExtra),
     tenonFit: num(raw.tenonFit, LIMITS.tenonFit, fallback.tenonFit),
     billFit: num(raw.billFit, LIMITS.billFit, fallback.billFit),
+    rattleFit: num(raw.rattleFit, LIMITS.rattleFit, fallback.rattleFit),
+  };
+}
+
+function sanitizeRattles(value: unknown, fallback: RattlePocket[]): RattlePocket[] {
+  if (!Array.isArray(value)) return fallback.map((item) => ({ ...item }));
+  return value.slice(0, 10).map((raw, index) => {
+    const item = (raw ?? {}) as Partial<RattlePocket>;
+    return {
+      id:
+        typeof item.id === 'string' && item.id.length > 0 && item.id.length <= 64
+          ? item.id
+          : `bille-${index}-${Math.random().toString(36).slice(2, 8)}`,
+      position: num(item.position, LIMITS.ballastPosition, 0.55),
+      height: num(item.height, LIMITS.ballastHeight, -0.2),
+      ball: num(item.ball, LIMITS.rattleBall, 6),
+    };
+  });
+}
+
+function sanitizeChamber(value: unknown, fallback: RattleChamber): RattleChamber {
+  const raw = (value ?? {}) as Partial<RattleChamber>;
+  return {
+    enabled: bool(raw.enabled, fallback.enabled),
+    diameter: num(raw.diameter, LIMITS.chamberDiameter, fallback.diameter),
+    fromPosition: num(raw.fromPosition, LIMITS.ballastPosition, fallback.fromPosition),
+    fromHeight: num(raw.fromHeight, LIMITS.ballastHeight, fallback.fromHeight),
+    toPosition: num(raw.toPosition, LIMITS.ballastPosition, fallback.toPosition),
+    toHeight: num(raw.toHeight, LIMITS.ballastHeight, fallback.toHeight),
+    ball: num(raw.ball, LIMITS.rattleBall, fallback.ball),
+    balls: Math.round(num(raw.balls, LIMITS.chamberBalls, fallback.balls)),
   };
 }
 
@@ -166,7 +199,9 @@ function sanitizeSculpt(value: unknown, fallback: SculptPoint[]): SculptPoint[] 
 /** Ramene n'importe quelle entree a un jeu de parametres exploitable. */
 export function sanitizeParams(input: unknown): LureParams {
   const raw = (input ?? {}) as Partial<LureParams>;
-  const shape = pick(raw.shape, SHAPES, 'minnow');
+  // Les gabarits Irresistible et Minnow ont ete retires de la bibliotheque :
+  // un projet qui les reference retombe sur la premiere forme disponible.
+  const shape = pick(raw.shape, SHAPES, SHAPES[0]);
   const base = clonePreset(shape);
   const paint = (raw.paint ?? {}) as Partial<LureParams['paint']>;
 
@@ -214,6 +249,8 @@ export function sanitizeParams(input: unknown): LureParams {
     hardwareMass: num(raw.hardwareMass, LIMITS.hardwareMass, base.hardwareMass),
     ballastDensity: num(raw.ballastDensity, LIMITS.ballastDensity, base.ballastDensity),
     ballasts: sanitizeBallasts(raw.ballasts, base.ballasts),
+    rattles: sanitizeRattles(raw.rattles, base.rattles),
+    chamber: sanitizeChamber(raw.chamber, base.chamber),
     paint: {
       dorsal: color(paint.dorsal, base.paint.dorsal),
       flank: color(paint.flank, base.paint.flank),

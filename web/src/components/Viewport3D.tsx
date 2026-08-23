@@ -17,6 +17,7 @@ import type { LureParams } from '../types/lure';
 import type { LureGeometry } from '../lib/geometry';
 import { buildAssembly, worldToAnchor, type AssemblyResult } from '../lib/assembly';
 import { createSurfaceSampler } from '../lib/geometry';
+import { markOnMaleSide } from '../lib/mark';
 import { createProfile } from '../lib/profile';
 import type { ThreeEvent } from '@react-three/fiber';
 import { FINISHES } from '../lib/materials';
@@ -145,14 +146,27 @@ function LureModel({
       ) : null}
 
       {geo.bib ? (
-        <mesh geometry={geo.bib}>
+        // Bavette rapportee : modele fantome, jamais exporte. Il ne sert qu a
+        // voir ou la plaque decoupee viendra se placer.
+        <mesh geometry={geo.bib} userData={{ excludeFromExport: geo.bibIsGhost }}>
           <meshStandardMaterial
-            color="#cfe0ec"
+            color={geo.bibIsGhost ? '#7fb4dd' : '#cfe0ec'}
             roughness={0.1}
             metalness={0.05}
             transparent
-            opacity={0.62}
+            opacity={geo.bibIsGhost ? 0.3 : 0.62}
+            depthWrite={!geo.bibIsGhost}
             side={THREE.DoubleSide}
+          />
+        </mesh>
+      ) : null}
+
+      {geo.mark ? (
+        <mesh geometry={geo.mark}>
+          <meshStandardMaterial
+            color={params.paint.belly}
+            roughness={FINISHES[params.paint.finish].roughness}
+            metalness={FINISHES[params.paint.finish].metalness}
           />
         </mesh>
       ) : null}
@@ -181,6 +195,32 @@ function Ballasts({
             roughness={0.32}
             metalness={0.85}
             depthTest={!overlay}
+          />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+/** Billes mobiles, dessinees dans leur logement comme les lests. */
+function Rattles({
+  assembly,
+  visible,
+}: {
+  assembly: AssemblyResult | null;
+  visible: boolean;
+}) {
+  if (!assembly || !visible || assembly.rattles.length === 0) return null;
+  return (
+    <group renderOrder={12}>
+      {assembly.rattles.map((ball, index) => (
+        <mesh key={index} position={ball.position} renderOrder={12}>
+          <sphereGeometry args={[ball.radius, 20, 14]} />
+          <meshStandardMaterial
+            color="#b9bdc4"
+            roughness={0.18}
+            metalness={0.95}
+            depthTest={false}
           />
         </mesh>
       ))}
@@ -259,15 +299,27 @@ function WaterPlane({ y, radius }: { y: number | null; radius: number }) {
  */
 function ExplodedAssembly({
   assembly,
+  geo,
   params,
   spread,
 }: {
   assembly: AssemblyResult;
+  geo: LureGeometry;
   params: LureParams;
   spread: number;
 }) {
   const offset = assembly.splitNormal.clone().multiplyScalar(spread);
   const finish = FINISHES[params.paint.finish];
+  // Le marquage part avec la coque qui le porte, comme a l'export.
+  const markOnMale = useMemo(
+    () => markOnMaleSide(createProfile(params), params),
+    [params],
+  );
+  const mark = geo.mark ? (
+    <mesh geometry={geo.mark}>
+      <meshStandardMaterial color="#101114" roughness={0.6} />
+    </mesh>
+  ) : null;
 
   return (
     <group>
@@ -285,6 +337,7 @@ function ExplodedAssembly({
             <meshStandardMaterial color="#e30613" roughness={0.5} />
           </mesh>
         ) : null}
+        {markOnMale ? mark : null}
       </group>
 
       <group position={offset.clone().negate()}>
@@ -296,6 +349,7 @@ function ExplodedAssembly({
             side={THREE.DoubleSide}
           />
         </mesh>
+        {markOnMale ? null : mark}
       </group>
 
       {assembly.pins.map((pin, index) => (
@@ -496,7 +550,9 @@ export function Viewport3D({
   const groundY = -geo.bounds.height / 20 - 0.9;
   // L'assemblage n'est calcule que lorsqu'il sert : vue eclatee, apercu des
   // portees ou placement d'ancrages.
-  const needsAssembly = params.assembly.enabled && (exploded || showSockets || placing);
+  const hasCavity = params.rattles.length > 0 || params.chamber.enabled;
+  const needsAssembly =
+    params.assembly.enabled && (exploded || showSockets || placing || hasCavity);
   const assembly = useMemo(
     () => (needsAssembly ? buildAssembly(createProfile(params), params) : null),
     [needsAssembly, params],
@@ -561,7 +617,12 @@ export function Viewport3D({
             }}
           >
             {exploded && assembly ? (
-              <ExplodedAssembly assembly={assembly} params={params} spread={radius * 0.55} />
+              <ExplodedAssembly
+                assembly={assembly}
+                geo={geo}
+                params={params}
+                spread={radius * 0.55}
+              />
             ) : (
               <LureModel
                 geo={geo}
@@ -573,6 +634,7 @@ export function Viewport3D({
               />
             )}
             {assembly && showSockets ? <SocketPreview assembly={assembly} /> : null}
+            <Rattles assembly={assembly} visible={showMarkers || xray} />
             {sculpting ? (
               <CageHandles
                 params={params}

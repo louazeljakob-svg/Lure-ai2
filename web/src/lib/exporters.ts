@@ -19,6 +19,7 @@ import {
 } from './geometry';
 import { ASSEMBLY_DISPLAY, ASSEMBLY_STEP, buildAssembly } from './assembly';
 import { bibOutline } from './billTemplate';
+import { markOnMaleSide } from './mark';
 import { createProfile } from './profile';
 import { buildStepFile } from './step';
 
@@ -46,10 +47,15 @@ function collectParts(
   const owned: THREE.BufferGeometry[] = [];
   const parts: THREE.BufferGeometry[] = [];
 
+  // La bavette polycarbonate n'est jamais exportee : c'est une plaque
+  // decoupee a part, son modele 3D n'est qu'une aide au placement.
+  const printedBib = geo.bib && !geo.bibIsGhost ? geo.bib : null;
+
   if (kind === 'assembly' || !params.assembly.enabled) {
     parts.push(geo.body);
-    if (geo.bib) parts.push(geo.bib);
+    if (printedBib) parts.push(printedBib);
     if (geo.tail) parts.push(geo.tail);
+    if (geo.mark) parts.push(geo.mark);
     return { parts, owned };
   }
 
@@ -66,6 +72,14 @@ function collectParts(
     parts.push(assembly.female);
   }
 
+  // Le marquage est obligatoire, et pose entierement d'un cote du joint :
+  // il part avec la coque qui le porte.
+  if (geo.mark && markOnMaleSide(profile, params) === (kind === 'male')) {
+    const mark = geo.mark.clone();
+    owned.push(mark);
+    parts.push(mark);
+  }
+
   // Bavette et caudale sont des plaques minces qui vivent dans le plan de
   // joint : elles se partagent en deux quand le joint est vertical. Sur un
   // joint incline, les couper proprement demanderait une decoupe hors plan :
@@ -73,7 +87,7 @@ function collectParts(
   const vertical = params.assembly.planeAngle < 5;
   const share: ShellPart = vertical ? kind : 'full';
   if (vertical || kind === 'male') {
-    if (params.hasBib && params.billMode === 'printed') {
+    if (printedBib) {
       const bib = buildBib(profile, params, share);
       owned.push(bib);
       parts.push(bib);

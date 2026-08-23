@@ -132,6 +132,18 @@ export function PhysicsSimulator({ params, physics, water, onWaterChange }: Prop
             dont {physics.ballastMass.toFixed(1)} g de plomb interne
           </span>
         </div>
+        {physics.rattleMass > 0 ? (
+          <div className="stat">
+            <span className="stat__label">Billes mobiles</span>
+            <div className="stat__value">
+              {physics.rattleMass.toFixed(2)}
+              <span className="stat__unit">g</span>
+            </div>
+            <span className="stat__sub">
+              inox libre dans ses logements : masse ajoutee, matiere retiree
+            </span>
+          </div>
+        ) : null}
       </div>
 
       <div className="attitude">

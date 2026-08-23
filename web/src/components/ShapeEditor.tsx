@@ -281,10 +281,10 @@ export function ShapeEditor({
         />
         {params.billMode === 'polycarbonate' ? (
           <p className="control__hint">
-            Le corps recoit une fente d insertion dimensionnee sur cette epaisseur, et le
-            gabarit plat s exporte en DXF ou SVG depuis le bloc d export. La fente s arrete a
-            quelques dixiemes de la peau : on l ouvre a la lime au montage, comme sur une
-            bavette du commerce.
+            Les deux coques recoivent la meme fente d insertion, dimensionnee sur cette
+            epaisseur, et debouchante : la plaque ressort du corps. Le gabarit plat s exporte
+            en DXF ou SVG depuis le bloc d export. La bavette affichee ici n est qu un
+            fantome d aide au placement — elle n est jamais incluse dans les STL ni les STEP.
           </p>
         ) : null}
         <Slider

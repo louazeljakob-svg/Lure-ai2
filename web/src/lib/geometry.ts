@@ -15,6 +15,7 @@ import type { BallastWeight, ClipId, LureParams } from '../types/lure';
 import { getClip, STEEL_DENSITY } from './materials';
 import { clamp, createProfile, MM_TO_CM, type ProfileSampler } from './profile';
 import { bibShape, clipHalfPlane } from './billTemplate';
+import { buildMark } from './mark';
 
 /** Densite du plomb, conservee comme repere pour l'interface. */
 export const LEAD_DENSITY = 11.34;
@@ -61,7 +62,16 @@ export interface BallastMarker {
 
 export interface LureGeometry {
   body: THREE.BufferGeometry;
+  /**
+   * Bavette. En mode polycarbonate elle n'est PAS imprimee : la geometrie
+   * n'existe que comme fantome d'aide au placement dans l'editeur, jamais
+   * dans un export — voir `bibIsGhost`.
+   */
   bib: THREE.BufferGeometry | null;
+  /** Vrai quand la bavette affichee est une plaque rapportee, hors export. */
+  bibIsGhost: boolean;
+  /** Marquage SAKUMA en relief sous la queue, obligatoire sur chaque export. */
+  mark: THREE.BufferGeometry | null;
   tail: THREE.BufferGeometry | null;
   /** Quincaillerie : affichee et pesee, mais jamais exportee a l'impression. */
   clip: ClipPart | null;
@@ -525,15 +535,18 @@ export function buildLure(
 ): LureGeometry {
   const profile = createProfile(params);
   const body = buildBody(profile, params, resolution);
-  const bib =
-    params.hasBib && params.billMode === 'printed' ? buildBib(profile, params) : null;
+  // La bavette rapportee est modelisee malgre tout : l'utilisateur doit voir
+  // ou la plaque viendra se placer avant de la decouper.
+  const bib = params.hasBib ? buildBib(profile, params) : null;
+  const bibIsGhost = params.hasBib && params.billMode === 'polycarbonate';
+  const mark = buildMark(profile, params);
   const tail = profile.hasFin ? buildTailFin(profile, params) : null;
   const clip = buildClip(profile, params.clip);
 
   const box = new THREE.Box3();
   body.computeBoundingBox();
   if (body.boundingBox) box.union(body.boundingBox);
-  for (const part of [bib, tail]) {
+  for (const part of [bibIsGhost ? null : bib, tail]) {
     if (!part) continue;
     part.computeBoundingBox();
     if (part.boundingBox) box.union(part.boundingBox);
@@ -543,6 +556,8 @@ export function buildLure(
   return {
     body,
     bib,
+    bibIsGhost,
+    mark,
     tail,
     clip,
     ballasts: ballastMarkers(profile, params.ballasts, params.ballastDensity),
@@ -554,6 +569,7 @@ export function buildLure(
     dispose: () => {
       body.dispose();
       bib?.dispose();
+      mark?.dispose();
       tail?.dispose();
       clip?.geometry.dispose();
     },

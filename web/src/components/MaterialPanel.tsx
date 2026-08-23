@@ -6,12 +6,14 @@ import type {
   LureParams,
   PaintConfig,
   PatternId,
+  RattleChamber,
+  RattlePocket,
   SavedPalette,
 } from '../types/lure';
 import { FINISHES, MATERIALS, getMaterial } from '../lib/materials';
 import { paintPreviewCss } from '../lib/paint';
 import { LIMITS } from '../lib/presets';
-import { ColorField, Fieldset, Segmented, Slider } from './ui';
+import { ColorField, Fieldset, Segmented, Slider, Switch } from './ui';
 
 interface Props {
   params: LureParams;
@@ -24,6 +26,7 @@ interface Props {
 }
 
 const MAX_BALLASTS = 8;
+const MAX_RATTLES = 6;
 
 /** Diametre du lest equivalent, en mm, pour la densite choisie. */
 const ballastDiameter = (mass: number, density: number, shape: 'sphere' | 'cylinder'): number => {
@@ -129,6 +132,29 @@ export function MaterialPanel({
 
   const removeBallast = (id: string) =>
     onChange({ ballasts: params.ballasts.filter((item) => item.id !== id) });
+
+  const setRattle = (id: string, patch: Partial<RattlePocket>) =>
+    onChange({
+      rattles: params.rattles.map((item) => (item.id === id ? { ...item, ...patch } : item)),
+    });
+
+  const addRattle = () => {
+    if (params.rattles.length >= MAX_RATTLES) return;
+    onChange({
+      rattles: [
+        ...params.rattles,
+        {
+          id: `bille-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          position: 0.55,
+          height: -0.2,
+          ball: 6,
+        },
+      ],
+    });
+  };
+
+  const setChamber = (patch: Partial<RattleChamber>) =>
+    onChange({ chamber: { ...params.chamber, ...patch } });
 
   return (
     <div className="panel__body">
@@ -262,6 +288,141 @@ export function MaterialPanel({
         >
           + Ajouter un lest
         </button>
+      </Fieldset>
+
+      <Fieldset
+        legend="Billes mobiles"
+        hint="Une bille inox libre dans une portee plus large qu elle : c est le jeu qui fait le bruit. Le logement est une demi-sphere creusee dans chaque coque, il exige donc le corps en deux parties."
+      >
+        {!params.assembly.enabled ? (
+          <p className="control__hint">
+            Activez « Corps en deux parties » dans l onglet Assemblage : une bille ne peut pas
+            etre enfermee dans un corps imprime d un seul tenant.
+          </p>
+        ) : null}
+
+        {params.rattles.length === 0 ? (
+          <p className="empty">Aucune bille mobile.</p>
+        ) : null}
+
+        {params.rattles.map((rattle, index) => (
+          <div className="ballast" key={rattle.id}>
+            <div className="ballast__head">
+              <span className="ballast__name">Bille {index + 1}</span>
+              <span className="ballast__spec">
+                {rattle.ball.toFixed(1)} mm dans {(rattle.ball + params.fabrication.rattleFit).toFixed(1)} mm
+              </span>
+              <button
+                type="button"
+                className="btn btn--sm btn--ghost btn--danger"
+                onClick={() =>
+                  onChange({ rattles: params.rattles.filter((item) => item.id !== rattle.id) })
+                }
+              >
+                Retirer<span className="sr-only"> la bille {index + 1}</span>
+              </button>
+            </div>
+            <Slider
+              label="Position"
+              value={rattle.position}
+              {...LIMITS.ballastPosition}
+              display={`${Math.round(rattle.position * 100)} %`}
+              onChange={(position) => setRattle(rattle.id, { position })}
+            />
+            <Slider
+              label="Hauteur"
+              value={rattle.height}
+              {...LIMITS.ballastHeight}
+              display={rattle.height < -0.35 ? 'Ventre' : rattle.height > 0.35 ? 'Dos' : 'Axe'}
+              onChange={(height) => setRattle(rattle.id, { height })}
+            />
+            <Slider
+              label="Diametre de bille"
+              value={rattle.ball}
+              {...LIMITS.rattleBall}
+              display={`${rattle.ball.toFixed(1)} mm`}
+              hint="La portee vaut ce diametre plus le jeu de fabrication."
+              onChange={(ball) => setRattle(rattle.id, { ball })}
+            />
+          </div>
+        ))}
+
+        <button
+          type="button"
+          className="btn btn--block"
+          onClick={addRattle}
+          disabled={params.rattles.length >= MAX_RATTLES}
+        >
+          + Ajouter une bille
+        </button>
+      </Fieldset>
+
+      <Fieldset
+        legend="Chambre de bruit"
+        hint="Un tube creuse dans le plan de joint, dans lequel les billes roulent d un bout a l autre pendant la nage."
+      >
+        <Switch
+          label="Chambre a billes"
+          checked={params.chamber.enabled}
+          onChange={(enabled) => setChamber({ enabled })}
+        />
+        <Slider
+          label="Diametre du tube"
+          value={params.chamber.diameter}
+          {...LIMITS.chamberDiameter}
+          display={`${params.chamber.diameter.toFixed(1)} mm`}
+          disabled={!params.chamber.enabled}
+          onChange={(diameter) => setChamber({ diameter })}
+        />
+        <Slider
+          label="Depart : position"
+          value={params.chamber.fromPosition}
+          {...LIMITS.ballastPosition}
+          display={`${Math.round(params.chamber.fromPosition * 100)} %`}
+          disabled={!params.chamber.enabled}
+          onChange={(fromPosition) => setChamber({ fromPosition })}
+        />
+        <Slider
+          label="Depart : hauteur"
+          value={params.chamber.fromHeight}
+          {...LIMITS.ballastHeight}
+          display={params.chamber.fromHeight.toFixed(2)}
+          disabled={!params.chamber.enabled}
+          onChange={(fromHeight) => setChamber({ fromHeight })}
+        />
+        <Slider
+          label="Arrivee : position"
+          value={params.chamber.toPosition}
+          {...LIMITS.ballastPosition}
+          display={`${Math.round(params.chamber.toPosition * 100)} %`}
+          disabled={!params.chamber.enabled}
+          onChange={(toPosition) => setChamber({ toPosition })}
+        />
+        <Slider
+          label="Arrivee : hauteur"
+          value={params.chamber.toHeight}
+          {...LIMITS.ballastHeight}
+          display={params.chamber.toHeight.toFixed(2)}
+          disabled={!params.chamber.enabled}
+          hint="Deux hauteurs differentes donnent un tube incline : les billes reviennent d elles-memes vers l avant."
+          onChange={(toHeight) => setChamber({ toHeight })}
+        />
+        <Slider
+          label="Diametre des billes"
+          value={params.chamber.ball}
+          {...LIMITS.rattleBall}
+          display={`${params.chamber.ball.toFixed(1)} mm`}
+          disabled={!params.chamber.enabled}
+          onChange={(ball) => setChamber({ ball })}
+        />
+        <Slider
+          label="Nombre de billes"
+          value={params.chamber.balls}
+          {...LIMITS.chamberBalls}
+          display={`${params.chamber.balls}`}
+          disabled={!params.chamber.enabled}
+          onChange={(balls) => setChamber({ balls })}
+        />
       </Fieldset>
 
       <Fieldset legend="Livree" hint="Cinq zones colorables, motif de surface et finition.">

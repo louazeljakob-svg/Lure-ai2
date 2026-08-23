@@ -14,7 +14,7 @@ import type { LureParams, WaterId } from '../types/lure';
 import type { LureGeometry } from './geometry';
 import { getMaterial, solidFraction, WATER_DENSITY } from './materials';
 import { clamp, createProfile } from './profile';
-import { resolvePin } from './assembly';
+import { buildAssembly, resolvePin } from './assembly';
 import { pinPath, pinWireLength, STAINLESS_DENSITY } from './hardware';
 
 export type Buoyancy = 'float' | 'suspend' | 'sink';
@@ -46,6 +46,8 @@ export interface PhysicsResult {
   clipMass: number;
   /** Masse de la goupille en 8 traversante. */
   pinMass: number;
+  /** Masse des billes mobiles (rattle ponctuel et chambre). */
+  rattleMass: number;
   totalMass: number;
   displacedMass: number;
   /** Masse / poussee. < 1 flotte, = 1 suspend, > 1 coule. */
@@ -146,7 +148,11 @@ export function computePhysics(
   geo: LureGeometry,
   water: WaterId = 'fresh',
 ): PhysicsResult {
-  const parts = [geo.body, geo.bib, geo.tail].filter(Boolean) as THREE.BufferGeometry[];
+  // La bavette rapportee ne fait pas partie du corps imprime : elle ne pese
+  // pas dans le calcul et ne deplace pas d'eau au titre du corps.
+  const parts = [geo.body, geo.bibIsGhost ? null : geo.bib, geo.tail].filter(
+    Boolean,
+  ) as THREE.BufferGeometry[];
   let volume = 0;
   const weightedCentroid = new THREE.Vector3();
   for (const part of parts) {
@@ -156,11 +162,19 @@ export function computePhysics(
   }
   const cb = volume > 1e-9 ? weightedCentroid.divideScalar(volume) : new THREE.Vector3();
 
+  const profile = createProfile(params);
+
+  // Logements de billes : la matiere retiree n'est pas imprimee, et chaque
+  // bille inox pese. Les deux effets vont en sens contraire, il faut donc
+  // les compter tous les deux.
+  const cavities =
+    params.assembly.enabled && (params.rattles.length > 0 || params.chamber.enabled)
+      ? rattleContent(params, profile)
+      : { volume: 0, mass: 0, points: [] as PointMass[] };
+
   const material = getMaterial(params.material);
   const fill = solidFraction(params.material, params.infill);
-  const bodyMass = volume * material.density * fill;
-
-  const profile = createProfile(params);
+  const bodyMass = Math.max(volume - cavities.volume, volume * 0.2) * material.density * fill;
   const lengthCm = profile.lengthCm;
   const halfLength = lengthCm / 2;
 
@@ -172,7 +186,8 @@ export function computePhysics(
   // developpee, comme pour l'agrafe.
   const pinSpec = params.assembly.enabled ? resolvePin(params) : null;
   const pinMass = pinSpec ? pinWireLength(pinPath(pinSpec)) * Math.PI * ((pinSpec.wire * 0.05) ** 2) * STAINLESS_DENSITY : 0;
-  const totalMass = bodyMass + ballastMass + hardwareMass + clipMass + pinMass;
+  const rattleMass = cavities.mass;
+  const totalMass = bodyMass + ballastMass + hardwareMass + clipMass + pinMass + rattleMass;
 
   // Centre de gravite : corps homogene + billes de lest + quincaillerie.
   const points: PointMass[] = [
@@ -182,6 +197,7 @@ export function computePhysics(
     ...(clipMass > 0 ? [{ x: profile.xAt(0), y: 0, mass: clipMass }] : []),
     // La goupille est logee dans la tete, sur l'axe.
     ...(pinMass > 0 ? [{ x: profile.xAt(0.07), y: 0, mass: pinMass }] : []),
+    ...cavities.points,
   ];
   const cg = { x: 0, y: 0, z: 0 };
   const massSum = points.reduce((sum, p) => sum + p.mass, 0);
@@ -252,6 +268,7 @@ export function computePhysics(
     hardwareMass,
     clipMass,
     pinMass,
+    rattleMass,
     totalMass,
     displacedMass,
     ratio,
@@ -277,6 +294,32 @@ export function computePhysics(
       totalMass,
     }),
   };
+}
+
+/**
+ * Billes mobiles : volume creuse dans le corps et masse d'inox ajoutee.
+ *
+ * On passe par le generateur d'assemblage plutot que par un calcul separe :
+ * c'est lui qui decide si un logement tient reellement dans la section, et
+ * la physique doit compter exactement ce qui sera imprime.
+ */
+function rattleContent(
+  params: LureParams,
+  profile: ReturnType<typeof createProfile>,
+): { volume: number; mass: number; points: PointMass[] } {
+  const assembly = buildAssembly(profile, params, { stations: 40, arcSamples: 10 });
+  const points = assembly.rattles.map((ball) => ({
+    x: ball.position[0],
+    y: ball.position[1],
+    mass: ball.mass,
+  }));
+  const mass = points.reduce((sum, point) => sum + point.mass, 0);
+  assembly.male.dispose();
+  assembly.female.dispose();
+  assembly.tenons?.dispose();
+  assembly.socketPreview?.dispose();
+  for (const pin of assembly.pins) pin.geometry.dispose();
+  return { volume: assembly.cavityVolume, mass, points };
 }
 
 // ---------------------------------------------------------------------------
@@ -411,6 +454,21 @@ function buildWarnings(
         detail: `La petite boucle mesure ${spec.loopWidth} mm alors que la tete n offre que ${available.toFixed(1)} mm de section a cet endroit. Choisissez une taille en dessous, ou epaississez l avant du corps.`,
       });
     }
+  }
+
+  if (
+    params.hasBib &&
+    params.billMode === 'polycarbonate' &&
+    params.assembly.enabled &&
+    params.assembly.planeAngle >= 25
+  ) {
+    list.push({
+      id: 'bill-joint',
+      level: 'warn',
+      title: 'Fente de bavette non generee',
+      detail:
+        'La fente d insertion suit l inclinaison de la bavette dans le plan vertical : elle n a de sens que sur un joint vertical. Ramenez l orientation du joint sous 25 deg, ou imprimez la bavette avec le corps.',
+    });
   }
 
   if (params.hasBib && params.bibLength > params.length * 0.45) {

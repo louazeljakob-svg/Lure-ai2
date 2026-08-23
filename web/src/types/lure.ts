@@ -11,11 +11,9 @@
 export type ShapeId =
   // Formes relevees sur des references reelles.
   | 'stickbait165'
-  | 'irresistible'
   | 'ryoshi'
   | 'model25'
   // Formes generiques.
-  | 'minnow'
   | 'popper'
   | 'crankbait'
   | 'jerkbait'
@@ -28,6 +26,15 @@ export type PinId = 'xs06' | 'xs10' | 's' | 'm' | 'l';
 
 /** Methode de creusement du logement de goupille. */
 export type SocketMethod = 'bore' | 'channel';
+
+/**
+ * Cote par lequel la grande boucle de la goupille sort du corps.
+ *
+ * Quatre valeurs et pas un angle libre : le passage doit deboucher a la
+ * surface, ce qui impose de savoir par quelle extremite ou quel bord de la
+ * coque il ressort. Un angle intermediaire ne debouche nulle part.
+ */
+export type PinExit = 'nose' | 'tail' | 'belly' | 'back';
 
 /** Mode de fabrication de la bavette. */
 export type BillMode = 'printed' | 'polycarbonate';
@@ -54,8 +61,8 @@ export interface PinAnchor {
   position: number;
   /** Hauteur dans le plan de joint : -1 = ventre, 0 = axe, 1 = dos. */
   height: number;
-  /** Direction de sortie du fil, en degres : 0 = vers le nez, 180 = vers la queue. */
-  axisAngle: number;
+  /** Cote de sortie de la grande boucle : le passage debouche a la surface. */
+  exit: PinExit;
   /** Profondeur d'ancrage (hauteur du goujon) en mm ; 0 = proportionnel. */
   depth: number;
   pin: PinId | 'auto';
@@ -96,6 +103,47 @@ export interface FabricationConfig {
   tenonFit: number;
   /** Jeu d'insertion de la bavette rapportee, en mm. */
   billFit: number;
+  /**
+   * Jeu diametral entre une bille mobile et sa portee, en mm.
+   *
+   * A l'oppose des precedents, celui-ci est volontairement large : c'est lui
+   * qui laisse la bille rouler et claquer (effet rattle).
+   */
+  rattleFit: number;
+}
+
+/**
+ * Logement de bille mobile : une bille inox libre dans une portee spherique
+ * plus large qu'elle. Le jeu est le bruit.
+ */
+export interface RattlePocket {
+  id: string;
+  /** Position sur l'axe du corps : 0 = nez, 1 = queue. */
+  position: number;
+  /** Hauteur dans la section : -1 = ventre, 0 = axe, 1 = dos. */
+  height: number;
+  /** Diametre de la bille, en mm. */
+  ball: number;
+}
+
+/**
+ * Chambre de bruit tubulaire : une capsule creusee dans le plan de joint,
+ * dans laquelle une ou plusieurs billes roulent librement pendant la nage.
+ */
+export interface RattleChamber {
+  enabled: boolean;
+  /** Diametre interieur du tube, en mm. */
+  diameter: number;
+  /** Depart : position sur l'axe (0 = nez, 1 = queue) et hauteur (-1..1). */
+  fromPosition: number;
+  fromHeight: number;
+  /** Arrivee : meme convention. Un tube peut donc etre incline. */
+  toPosition: number;
+  toHeight: number;
+  /** Diametre des billes logees dans le tube, en mm. */
+  ball: number;
+  /** Nombre de billes. */
+  balls: number;
 }
 
 /** Forme de la queue. `taper` et `round` sont portees par le corps lui-meme, */
@@ -271,6 +319,10 @@ export interface LureParams {
   /** Densite des lests internes, en g/cm3 (inox ~7,9 ; plomb 11,34). */
   ballastDensity: number;
   ballasts: BallastWeight[];
+  /** Logements de billes mobiles (rattle ponctuel). */
+  rattles: RattlePocket[];
+  /** Chambre a billes tubulaire. */
+  chamber: RattleChamber;
 
   // --- Finition ----------------------------------------------------------
   paint: PaintConfig;

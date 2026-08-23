@@ -58,9 +58,9 @@ s'affichent correctement sans dependre d'une declaration de charset de l'hote.
 
 ### 1. Galerie de formes
 
-Onze gabarits **entierement parametriques** : quatre profils releves sur des
-references reelles — Stickbait 165, Irresistible, Ryoshi, Modele 1 (2.5 po) — et
-sept generiques — Minnow, Popper, Crankbait, Jerkbait, Spoon, Swimbait, Topwater.
+Neuf gabarits **entierement parametriques** : trois profils releves sur des
+references reelles — Stickbait 165, Ryoshi, Modele 1 (2.5 po) — et six
+generiques — Popper, Crankbait, Jerkbait, Spoon, Swimbait, Topwater.
 
 Chaque forme est un **point de depart, jamais une contrainte** : corps, bavette,
 details de tete, quincaillerie, plan d'assemblage et livree se reglent
@@ -124,12 +124,28 @@ La position est stockee en coordonnees **parametriques** (position le long de
 l'axe, hauteur dans le plan de joint), pas en (x, y, z) bruts : un ancrage suit
 donc la forme quand on la retaille au slider.
 
-Chaque ancrage porte sa propre taille de goupille, sa methode de logement, sa
-direction de sortie et sa profondeur. Une portee qui deborderait de la coque ou
-en chevaucherait une autre est **signalee en rouge** dans la vue et dans le
+Chaque ancrage porte sa propre taille de goupille, sa methode de logement, son
+cote de sortie et sa profondeur. Une portee qui deborderait de la coque ou en
+chevaucherait une autre est **signalee en rouge** dans la vue et dans le
 panneau, et n'est pas creusee : mieux vaut une coque pleine et fermee qu'une
 coque trouee. Les portees elles-memes sont rendues en surbrillance, sans quoi
 elles resteraient invisibles puisqu'elles sont creusees dans le plan de joint.
+
+#### Passages traversants
+
+Une goupille dont la grande boucle reste prisonniere du corps ne sert a rien :
+le logement **debouche a la surface**. Quatre sorties, choisies par ancrage —
+nez, ventre, queue, dos — et deux geometries selon le cas :
+
+| Sortie | Construction |
+| --- | --- |
+| **Nez / queue** | Le corps est coupe net a l'endroit ou la section devient trop mince pour entourer le passage — quelques dixiemes de millimetre avant la pointe — et la face de coupe est percee a la cote du canal. |
+| **Ventre / dos** | L'arc de peau est rogne sur la largeur du passage, la ou la coque est deja plus mince que le canal. Le contour du plan de joint est entaille d'autant, et la bouche s'ouvre sur le bord. |
+
+Dans les deux cas les deux coques recoivent la meme entaille : mises face a
+face, elles forment un passage carre a la cote du fil. Un passage qui ne peut
+pas deboucher proprement (coque trop mince, ancrage trop pres d'un autre) est
+signale et non creuse.
 
 #### Goupille en 8 et logement
 
@@ -151,15 +167,60 @@ Deux methodes de logement, creusees dans le plan de joint, moitie par coque :
 Tous les jeux sont exposes dans l'interface, aucun n'est code en dur : jeu
 goupille / alesage (methode A), offset de silhouette et supplement de profil
 balaye (methode B), jeu d'emboitement goujon male / alesage femelle, jeu
-d'insertion de la bavette. Ce sont des valeurs qui se mesurent sur une machine
-et se reajustent.
+d'insertion de la bavette, jeu des billes mobiles. Ce sont des valeurs qui se
+mesurent sur une machine et se reajustent.
+
+Le dernier va a contre-courant des autres : les jeux d'assemblage se veulent
+serres, celui des billes est **volontairement large** — c'est lui qui fait le
+bruit. Bille de 6 mm, jeu de 1 mm, portee de 7 mm.
+
+#### Billes mobiles et chambre de bruit
+
+Deux logements distincts, tous deux creuses moitie dans chaque coque :
+
+- **Bille ponctuelle** : une demi-sphere par coque, diametre de bille reglable,
+  jusqu'a six emplacements le long du corps.
+- **Chambre tubulaire** : une capsule creusee dans le plan de joint, dont on
+  regle le diametre et les deux extremites en position ET en hauteur — un tube
+  incline ramene les billes vers l'avant de lui-meme. Une a six billes.
+
+Les deux comptent dans la simulation : la masse d'inox s'ajoute et se place au
+centre de gravite, le volume creuse se retire de la matiere imprimee.
 
 #### Bavette imprimee ou polycarbonate
 
-En mode **polycarbonate**, le corps recoit une fente d'insertion taillee dans le
-plan de joint a l'angle de la bavette, et le gabarit plat s'exporte en DXF ou SVG
-aux cotes reelles. Le meme contour sert a la piece imprimee, au gabarit et a la
-fente : aucune derive possible entre les trois.
+En mode **polycarbonate**, les deux coques recoivent la **meme** fente
+d'insertion, taillee dans le plan de joint a l'angle de la bavette et
+**debouchante** : la plaque ressort du corps au lieu d'y rester enfermee. Sa
+profondeur est bornee par l'epaisseur reellement disponible, elle ne perce donc
+jamais le flanc. Le gabarit plat s'exporte en DXF ou SVG aux cotes reelles, et
+le meme contour sert a la piece imprimee, au gabarit et a la fente : aucune
+derive possible entre les trois.
+
+La bavette rapportee reste **visible dans l'editeur** comme un modele fantome
+semi-transparent, pour voir ou la plaque viendra se placer — mais elle n'est
+**jamais** incluse dans un STL ou un STEP.
+
+Le trace de la fente suit l'inclinaison de la bavette dans le plan vertical : il
+n'a de sens que sur un joint vertical. Au-dela de 25 degres d'inclinaison de
+joint, aucune fente n'est creusee et la simulation le signale.
+
+#### Marquage SAKUMA
+
+Chaque leurre porte le mot **SAKUMA** en relief sous la queue. Ce n'est pas une
+texture : c'est une geometrie extrudee, six prismes dont la base est enfoncee
+sous la peau et le sommet decale de 0,45 mm le long de la normale, de sorte que
+le relief sorte a l'impression. Sa taille suit celle du corps (16,6 mm de long
+pour un leurre de 160 mm, 6,6 mm pour une cuiller), il est pose entierement d'un
+cote du plan de joint et part avec la coque qui le porte.
+
+Le marquage est **obligatoire et non desactivable** : aucun reglage de
+l'interface ne le retire.
+
+Les glyphes sont decrits dans le code plutot que charges d'une police : une
+police JSON pesait plus lourd que tout le reste de l'application, et six lettres
+suffisent. Ils sont dessines au trait, sans contre-forme fermee, pour rester
+imprimables a quelques millimetres de haut.
 
 #### Controles de bavette
 

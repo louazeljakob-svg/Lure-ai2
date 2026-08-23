@@ -16,7 +16,7 @@ import type {
   ShapeId,
   WaterId,
 } from './types/lure';
-import { socketPlans } from './lib/assembly';
+import { socketPlans, suggestExit } from './lib/assembly';
 import { createProfile } from './lib/profile';
 import {
   applyCalibration,
@@ -69,8 +69,8 @@ const newId = () => `p-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
 export default function App() {
   const [route, setRoute] = useState<Route>('gallery');
-  const [params, setParams] = useState<LureParams>(() => clonePreset('minnow'));
-  const [name, setName] = useState('Minnow 110');
+  const [params, setParams] = useState<LureParams>(() => clonePreset('ryoshi'));
+  const [name, setName] = useState('Ryoshi 86');
   const [water, setWater] = useState<WaterId>('fresh');
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -148,9 +148,9 @@ export default function App() {
         id: `anc-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
         position,
         height,
-        // Un ancrage pres du nez sort vers l avant, pres de la queue vers
-        // l arriere, ailleurs vers le ventre : le cas le plus courant.
-        axisAngle: position < 0.2 ? 0 : position > 0.8 ? 180 : 90,
+        // Un ancrage pres du nez ressort au nez, pres de la queue a la queue,
+        // ailleurs au ventre : le cas le plus courant.
+        exit: suggestExit(position, height),
         depth: 0,
         pin: 'auto',
         method: params.assembly.socketMethod,

@@ -6,11 +6,12 @@ import type {
   FabricationConfig,
   LureParams,
   PinAnchor,
+  PinExit,
   PinId,
 } from '../types/lure';
 import { CLIPS } from '../lib/materials';
 import { PINS, autoPin } from '../lib/hardware';
-import { anchorPin, resolvePin, type SocketPlan } from '../lib/assembly';
+import { EXIT_LABEL, anchorPin, resolvePin, type SocketPlan } from '../lib/assembly';
 import { LIMITS } from '../lib/presets';
 import { Fieldset, Segmented, Slider, Switch } from './ui';
 
@@ -32,14 +33,8 @@ interface Props {
 
 const mm = (value: number) => `${value.toFixed(value < 10 ? 2 : 1)} mm`;
 
-/** Libelle parlant pour la direction de sortie du fil. */
-const directionLabel = (angle: number): string => {
-  const normalized = ((angle % 360) + 360) % 360;
-  if (normalized < 45 || normalized >= 315) return 'Vers le nez';
-  if (normalized < 135) return 'Vers le ventre';
-  if (normalized < 225) return 'Vers la queue';
-  return 'Vers le dos';
-};
+/** Les quatre sorties possibles : le passage doit deboucher a la surface. */
+const EXITS: PinExit[] = ['nose', 'belly', 'tail', 'back'];
 
 export function AssemblyPanel({
   params,
@@ -164,13 +159,12 @@ export function AssemblyPanel({
                     }
                     onChange={(height) => onUpdateAnchor(anchor.id, { height })}
                   />
-                  <Slider
-                    label="Direction de sortie"
-                    value={anchor.axisAngle}
-                    {...LIMITS.anchorAngle}
-                    display={directionLabel(anchor.axisAngle)}
-                    hint="0 deg vers le nez, 90 vers le ventre, 180 vers la queue."
-                    onChange={(axisAngle) => onUpdateAnchor(anchor.id, { axisAngle })}
+                  <Segmented
+                    label="Sortie de la boucle"
+                    value={anchor.exit}
+                    options={EXITS.map((exit) => ({ value: exit, label: EXIT_LABEL[exit] }))}
+                    hint="Le passage est creuse jusqu a la peau : la grande boucle ressort du corps de ce cote."
+                    onChange={(exit) => onUpdateAnchor(anchor.id, { exit })}
                   />
                   <Slider
                     label="Profondeur d ancrage"
@@ -202,8 +196,9 @@ export function AssemblyPanel({
                 </>
               ) : (
                 <p className="control__hint">
-                  Position {Math.round(anchor.position * 100)} % ·{' '}
-                  {directionLabel(anchor.axisAngle)} · {anchor.method === 'bore' ? 'alesage' : 'canal'}
+                  Position {Math.round(anchor.position * 100)} % · sortie{' '}
+                  {EXIT_LABEL[anchor.exit].toLowerCase()} ·{' '}
+                  {anchor.method === 'bore' ? 'alesage' : 'canal'}
                   {' — '}
                   <button
                     type="button"
@@ -266,6 +261,14 @@ export function AssemblyPanel({
           display={mm(fabrication.billFit)}
           hint="S ajoute a l epaisseur du polycarbonate pour dimensionner la fente."
           onChange={(billFit) => setFabrication({ billFit })}
+        />
+        <Slider
+          label="Jeu des billes mobiles"
+          value={fabrication.rattleFit}
+          {...LIMITS.rattleFit}
+          display={mm(fabrication.rattleFit)}
+          hint="Volontairement large, a l inverse des precedents : c est ce jeu qui laisse la bille claquer dans son logement."
+          onChange={(rattleFit) => setFabrication({ rattleFit })}
         />
       </Fieldset>
 
