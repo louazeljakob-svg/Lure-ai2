@@ -25,15 +25,27 @@
 import * as THREE from 'three';
 import type { LureParams, PinAnchor, PinExit, SocketMethod } from '../types/lure';
 import { createSurfaceSampler, type SurfaceSampler } from './geometry';
-import { autoPin, buildPin, getPin, type PinPart, type PinSpec } from './hardware';
+import { PINS, autoPin, buildPin, getPin, type PinPart, type PinSpec } from './hardware';
 import { MM_TO_CM, type ProfileSampler } from './profile';
-import { bibTangLength } from './billTemplate';
+import { billSlotPlan, type BillRoomProbe, type BillSlotPlan } from './billTemplate';
 
 const STATIONS = 112;
 const ARC_SAMPLES = 40;
 
 /** Epaisseur de matiere conservee autour d'un logement, en cm. */
 const WALL = 0.06;
+
+/**
+ * Peau conservee entre la face exterieure du leurre et le fond d'un
+ * logement : un demi-millimetre, quelle que soit la largeur locale du corps.
+ */
+const SKIN = 0.05;
+
+/** Marge du contour de poche au-dela du puits, pour degager les rails. */
+const LEDGE = 0.02;
+
+/** Place a reserver autour d'une portee lors du controle de section. */
+const LEDGE_ROOM = 0.1;
 
 export interface AssemblyResolution {
   stations: number;
@@ -359,7 +371,6 @@ interface SideExit {
   iEnd: number;
   path: THREE.Vector2[];
   depth: number;
-  island?: THREE.Vector2[];
   bore?: { outline: THREE.Vector2[]; depth: number };
 }
 
@@ -372,7 +383,7 @@ interface EndExit {
   depth: number;
   /** Poche associee, dans le plan de joint, ouverte du cote de la coupe. */
   path: THREE.Vector2[];
-  island?: THREE.Vector2[];
+  /** Puits plus profond au fond de la poche : le logement de la boucle. */
   bore?: { outline: THREE.Vector2[]; depth: number };
 }
 
@@ -385,7 +396,8 @@ export interface SocketPlan {
   /** Position 3D du centre, pour l'affichage des reperes. */
   world: THREE.Vector3;
   tenonRadius: number;
-  tenonHeight: number;
+  /** Demi-cote du canal de sortie, en cm. */
+  channelHalf: number;
   seatRadius: number;
   seatDepth: number;
   method: SocketMethod;
@@ -393,6 +405,8 @@ export interface SocketPlan {
   /** Faux si la portee sort du corps ou en chevauche une autre. */
   valid: boolean;
   problem: string | null;
+  /** Vrai si la taille automatique a du descendre d'un cran pour tenir. */
+  downsized: boolean;
 }
 
 export interface AssemblyResult {
@@ -407,10 +421,10 @@ export interface AssemblyResult {
   /** Goupilles modelisees, une par ancrage. */
   pins: PinPart[];
   sockets: SocketPlan[];
+  /** Empreinte de bavette reellement creusee, apres arbitrage avec les portees. */
+  billPlan: BillSlotPlan | null;
   pinSpec: PinSpec;
   pinMass: number;
-  /** Volume de matiere retiree par les logements internes, en cm3. */
-  cavityVolume: number;
   /** Direction d'ecartement pour la vue eclatee. */
   splitNormal: THREE.Vector3;
 }
@@ -518,20 +532,24 @@ function stationRange(
  * ou la coque est plus mince que le logement, la matiere disparait
  * entierement et la bouche s'ouvre plus large que prevu.
  */
-function bulgeAtT(
+function bulgeOnArc(
   surface: SurfaceSampler,
   frame: JointFrame,
   station: Station,
   t: number,
+  from: number,
+  to: number,
 ): number {
-  if (station.degenerate) return 0;
   const at = (theta: number) => {
     const point = surface(station.p, theta);
-    return { t: frame.transverseOf(point.y, point.z), n: Math.abs(frame.normalOf(point.y, point.z)) };
+    return {
+      t: frame.transverseOf(point.y, point.z),
+      n: Math.abs(frame.normalOf(point.y, point.z)),
+    };
   };
   // La cote transverse est monotone d'un bord a l'autre de l'arc.
-  let lo = station.theta1;
-  let hi = station.theta2;
+  let lo = from;
+  let hi = to;
   const increasing = at(hi).t > at(lo).t;
   for (let i = 0; i < 30; i++) {
     const mid = (lo + hi) / 2;
@@ -539,6 +557,37 @@ function bulgeAtT(
     else hi = mid;
   }
   return at((lo + hi) / 2).n;
+}
+
+function bulgeAtT(
+  surface: SurfaceSampler,
+  frame: JointFrame,
+  station: Station,
+  t: number,
+): number {
+  if (station.degenerate) return 0;
+  return bulgeOnArc(surface, frame, station, t, station.theta1, station.theta2);
+}
+
+/**
+ * Epaisseur de la coque la plus mince a cette cote transverse, en cm.
+ *
+ * Les deux demi-coques n'ont la meme epaisseur que si le plan de joint passe
+ * par le centre de la section — vrai sur un joint vertical, faux des qu'il
+ * s'incline. Un logement creuse a la meme profondeur des deux cotes doit
+ * donc se regler sur la plus mince, sinon la paroi disparait d'un cote.
+ */
+function shellThickness(
+  surface: SurfaceSampler,
+  frame: JointFrame,
+  station: Station,
+  t: number,
+): number {
+  if (station.degenerate) return 0;
+  return Math.min(
+    bulgeOnArc(surface, frame, station, t, station.theta1, station.theta2),
+    bulgeOnArc(surface, frame, station, t, station.theta2, station.theta1 + Math.PI * 2),
+  );
 }
 
 /** Epaisseur maximale de la demi-coque a cette station, en cm. */
@@ -747,8 +796,15 @@ function buildShell(
 
   const loExits = openExits.filter((exit) => exit.rail === 'lo');
   const hiExits = openExits.filter((exit) => exit.rail === 'hi');
-  const frontExit = input.endExits.find((exit) => exit.end === 'front');
-  const rearExit = input.endExits.find((exit) => exit.end === 'rear');
+  // Plusieurs encoches peuvent partager une meme face de coupe : une goupille
+  // de nez et la fente de bavette, par exemple. Le contour les traverse dans
+  // l'ordre ou il descend la ligne de coupe.
+  const frontExits = input.endExits
+    .filter((exit) => exit.end === 'front')
+    .sort((a, b) => b.tHi - a.tHi);
+  const rearExits = input.endExits
+    .filter((exit) => exit.end === 'rear')
+    .sort((a, b) => a.tLo - b.tLo);
 
   const contour: THREE.Vector2[] = [];
   for (let i = 0; i < stations.length; ) {
@@ -763,7 +819,7 @@ function buildShell(
   }
   // Face de coupe arriere : l'encoche du passage y est inseree a l'endroit
   // ou le contour passe du bord bas au bord haut.
-  if (rearExit) contour.push(...rearExit.path);
+  for (const exit of rearExits) contour.push(...exit.path);
   for (let i = stations.length - 1; i >= 0; ) {
     const exit = hiExits.find((candidate) => candidate.iEnd === i);
     if (exit) {
@@ -774,7 +830,7 @@ function buildShell(
       i -= 1;
     }
   }
-  if (frontExit) contour.push(...frontExit.path);
+  for (const exit of frontExits) contour.push(...exit.path);
 
   // --- Poches fermees ------------------------------------------------------
   const outlineOf = contourOf(contour);
@@ -869,13 +925,13 @@ function buildShell(
   }
 
   // --- Faces de coupe des extremites --------------------------------------
-  const emitCut = (index: number, front: boolean, notch: EndExit | undefined) => {
+  const emitCut = (index: number, front: boolean, notches: EndExit[]) => {
     const ring = rings[index];
     const section: THREE.Vector2[] = [];
     const lo = 0;
     const hi = arcSamples;
     section.push(new THREE.Vector2(ring.t[lo], 0));
-    if (notch) {
+    for (const notch of [...notches].sort((a, b) => a.tLo - b.tLo)) {
       section.push(new THREE.Vector2(notch.tLo, 0));
       section.push(new THREE.Vector2(notch.tLo, notch.depth));
       section.push(new THREE.Vector2(notch.tHi, notch.depth));
@@ -888,8 +944,8 @@ function buildShell(
     }
     fill(mesh, contourOf(section), [], cross(stations[index].x), front);
   };
-  if (input.cutFront) emitCut(0, true, frontExit);
-  if (input.cutRear) emitCut(stations.length - 1, false, rearExit);
+  if (input.cutFront) emitCut(0, true, frontExits);
+  if (input.cutRear) emitCut(stations.length - 1, false, rearExits);
 
   // --- Poches des passages par une extremite ------------------------------
   for (const exit of input.endExits) {
@@ -914,25 +970,14 @@ function buildShell(
 function emitCavity(
   mesh: MeshBuilder,
   outline: THREE.Vector2[],
-  exit: { depth: number; island?: THREE.Vector2[]; bore?: { outline: THREE.Vector2[]; depth: number } },
+  exit: { depth: number; bore?: { outline: THREE.Vector2[]; depth: number } },
   planar: (n: number) => Lift,
   lift: Raise,
   skip: (index: number) => boolean,
 ): void {
-  const island = exit.island ? contourOf(exit.island) : null;
   const bore = exit.bore ? contourOf(exit.bore.outline) : null;
-  fill(
-    mesh,
-    outline,
-    [island, bore].filter(Boolean) as THREE.Vector2[][],
-    planar(exit.depth),
-    true,
-  );
+  fill(mesh, outline, bore ? [bore] : [], planar(exit.depth), true);
   pocketWall(mesh, outline, 0, exit.depth, lift, skip);
-  if (island) {
-    bossWall(mesh, island, 0, exit.depth, lift);
-    fill(mesh, island, [], planar(0), true);
-  }
   if (bore && exit.bore) {
     pocketWall(mesh, bore, exit.depth, exit.bore.depth, lift);
     fill(mesh, bore, [], planar(exit.bore.depth), true);
@@ -980,63 +1025,6 @@ function emitDome(mesh: MeshBuilder, pocket: Pocket, lift: Raise): void {
 }
 
 // ---------------------------------------------------------------------------
-// Bavette rapportee
-// ---------------------------------------------------------------------------
-
-/** Les deux rails de la fente d'insertion, en fonction de l'abscisse. */
-interface SlotRails {
-  /** Bord haut de la fente a l'abscisse x. */
-  top: (x: number) => number;
-  /** Bord bas de la fente a l'abscisse x. */
-  bottom: (x: number) => number;
-  /** Extremite arriere : les deux coins, du haut vers le bas. */
-  rear: [THREE.Vector2, THREE.Vector2];
-  /** Abscisse de la racine (cote corps) et de la pointe. */
-  rootX: number;
-  tipX: number;
-  half: number;
-}
-
-/**
- * Fente d'insertion d'une bavette rapportee, tracee dans le plan de joint.
- *
- * La fente doit DEBOUCHER : une bavette qui ne ressort pas du corps ne sert a
- * rien. Elle est donc prolongee vers l'avant jusqu'a percer le bord du plan
- * de joint, et c'est ce percement qui devient la bouche du logement.
- */
-function billRails(profile: ProfileSampler, params: LureParams): SlotRails {
-  const angle = THREE.MathUtils.degToRad(Math.min(Math.max(params.bibAngle, 5), 89));
-  const cos = Math.cos(angle);
-  const sin = Math.sin(angle);
-  const half = (params.billThickness * MM_TO_CM + params.fabrication.billFit * MM_TO_CM) / 2;
-  const offset = Math.min(Math.max(params.billOffset * MM_TO_CM, 0), profile.lengthCm * 0.3);
-  const anchorP = Math.min(Math.max(offset / Math.max(profile.lengthCm, 1e-6) + 0.03, 0.03), 0.4);
-  const originX = profile.xAt(0) + offset;
-  const originT = profile.section(anchorP).bottom * 0.55;
-
-  // u > 0 : vers l'avant et vers le bas, comme la bavette elle-meme.
-  const along = (u: number, v: number) =>
-    new THREE.Vector2(originX - u * cos + v * sin, originT - u * sin - v * cos);
-
-  // v = +half donne le rail bas, v = -half le rail haut : la bascule vient du
-  // signe de cos dans l'expression de t.
-  const railT = (x: number, v: number) => {
-    const u = (originX + v * sin - x) / cos;
-    return originT - u * sin - v * cos;
-  };
-
-  const back = -bibTangLength(params) * 1.15;
-  return {
-    top: (x) => railT(x, -half),
-    bottom: (x) => railT(x, half),
-    rear: [along(back, -half), along(back, half)],
-    rootX: along(back, 0).x,
-    tipX: along(bibTangLength(params) + profile.lengthCm * 0.35, 0).x,
-    half,
-  };
-}
-
-// ---------------------------------------------------------------------------
 // Assemblage
 // ---------------------------------------------------------------------------
 
@@ -1044,15 +1032,158 @@ interface AnchorPlan {
   anchor: PinAnchor;
   spec: PinSpec;
   center: THREE.Vector2;
-  tenonRadius: number;
-  tenonHeight: number;
+  /** Rayon du puits qui recoit la petite boucle de la goupille. */
   seatRadius: number;
+  /** Profondeur du puits : epaisseur locale moins la peau conservee. */
   seatDepth: number;
-  collarRadius: number;
-  boreRadius: number;
+  /** Demi-cote du canal de sortie : deux fois le diametre du cable. */
+  channelHalf: number;
+  tenonRadius: number;
   exit: PinExit;
   valid: boolean;
   problem: string | null;
+  /** Vrai si la taille automatique a du descendre d'un cran pour tenir. */
+  downsized: boolean;
+}
+
+/** Goujon : un pilier qui traverse les deux puits et enfile la petite boucle. */
+interface TenonSolid {
+  center: THREE.Vector2;
+  radius: number;
+  /** Cotes extremes dans le repere de la coque male. */
+  from: number;
+  to: number;
+}
+
+/** Position parametrique correspondant a une abscisse, par iterations. */
+function pAtX(profile: ProfileSampler, x: number): number {
+  const length = Math.max(profile.lengthCm, 1e-6);
+  let p = (x + profile.lengthCm / 2) / length;
+  for (let i = 0; i < 4; i++) {
+    p = Math.min(Math.max(p - (profile.xAt(p) - x) / length, 0), 1);
+  }
+  return p;
+}
+
+/**
+ * Epaisseur disponible sous une portee : la plus faible mesuree sur son
+ * emprise, des deux cotes du joint. C'est elle qui fixe la profondeur du
+ * puits, moins la peau conservee.
+ */
+function seatRoom(
+  surface: SurfaceSampler,
+  frame: JointFrame,
+  profile: ProfileSampler,
+  x: number,
+  t: number,
+  radius: number,
+  tMin: number,
+  tMax: number,
+): number {
+  let room = Infinity;
+  for (const dx of [-radius, 0, radius]) {
+    const station = findStation(surface, frame, pAtX(profile, x + dx), x + dx);
+    if (station.degenerate) return 0;
+    for (const dt of [-radius * 0.8, 0, radius * 0.8]) {
+      const probe = Math.min(Math.max(t + dt, tMin + 1e-3), tMax - 1e-3);
+      room = Math.min(room, shellThickness(surface, frame, station, probe));
+    }
+  }
+  return room;
+}
+
+/**
+ * Epaisseur disponible sur toute la largeur d'une encoche de face de coupe.
+ *
+ * Mesurer au seul centre ne suffit pas : la coque s'amincit vers les bords de
+ * l'encoche, et un fond plus profond que la peau ferait ressortir les coins
+ * hors de la section.
+ */
+function notchRoom(
+  surface: SurfaceSampler,
+  frame: JointFrame,
+  station: Station,
+  tLo: number,
+  tHi: number,
+): number {
+  let room = Infinity;
+  for (let i = 0; i <= 4; i++) {
+    room = Math.min(room, shellThickness(surface, frame, station, tLo + ((tHi - tLo) * i) / 4));
+  }
+  return room;
+}
+
+/** Vrai si un disque mord dans un polygone, contact tangent compris. */
+function polygonMeetsDisc(
+  polygon: THREE.Vector2[],
+  centre: THREE.Vector2,
+  radius: number,
+): boolean {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const a = polygon[i];
+    const b = polygon[j];
+    if (a.y > centre.y !== b.y > centre.y) {
+      const x = ((b.x - a.x) * (centre.y - a.y)) / (b.y - a.y) + a.x;
+      if (centre.x < x) inside = !inside;
+    }
+    // Distance du centre au segment : un disque peut mordre un bord sans que
+    // son centre soit dedans.
+    const seg = new THREE.Vector2().subVectors(b, a);
+    const len2 = seg.lengthSq();
+    const s =
+      len2 < 1e-12
+        ? 0
+        : Math.min(Math.max(new THREE.Vector2().subVectors(centre, a).dot(seg) / len2, 0), 1);
+    if (new THREE.Vector2(a.x + seg.x * s, a.y + seg.y * s).distanceTo(centre) < radius) return true;
+  }
+  return inside;
+}
+
+/**
+ * Ramene le chemin d'une encoche du cote matiere du plan de coupe.
+ *
+ * L'empreinte de la bavette est un pave incline : son fond est un plan
+ * perpendiculaire a la plaque, pas au corps. Quand la coupe recule — un
+ * passage de goupille de nez peut la repousser — un coin de ce fond ressort
+ * devant la face de coupe et le contour se croise. On rabat donc le chemin
+ * sur le plan : l'empreinte reste l'intersection exacte de la plaque et de
+ * la coque, et la bande ouverte dans la face de coupe suit ce qu'il en reste.
+ */
+function clipEndPath(
+  path: THREE.Vector2[],
+  xCut: number,
+  front: boolean,
+): THREE.Vector2[] | null {
+  const EPS = 1e-9;
+  const inside = (p: THREE.Vector2) => (front ? p.x >= xCut - EPS : p.x <= xCut + EPS);
+  const meet = (a: THREE.Vector2, b: THREE.Vector2) => {
+    const span = b.x - a.x;
+    const s = Math.abs(span) < EPS ? 0 : (xCut - a.x) / span;
+    return new THREE.Vector2(xCut, a.y + (b.y - a.y) * s);
+  };
+  const out: THREE.Vector2[] = [];
+  const push = (p: THREE.Vector2) => {
+    const last = out[out.length - 1];
+    if (last && last.distanceTo(p) < 1e-7) return;
+    out.push(p);
+  };
+  for (let i = 0; i < path.length; i++) {
+    const cur = path[i];
+    if (i > 0 && inside(path[i - 1]) !== inside(cur)) push(meet(path[i - 1], cur));
+    if (inside(cur)) push(cur);
+  }
+  // Deux points de suite sur le plan feraient une paroi la ou la face de
+  // coupe est deja ouverte : on ne garde que l'extremite de la bande.
+  const onCut = (p: THREE.Vector2) => Math.abs(p.x - xCut) < 1e-7;
+  while (out.length > 2 && onCut(out[0]) && onCut(out[1])) out.shift();
+  while (out.length > 2 && onCut(out[out.length - 1]) && onCut(out[out.length - 2])) out.pop();
+  if (out.length < 3) return null;
+  if (!onCut(out[0]) || !onCut(out[out.length - 1])) return null;
+  // Le contour de la coque descend le bord haut avant d'atteindre la face
+  // avant, et remonte le bord bas a l'arriere : le sens ne se devine pas.
+  if (front ? out[0].y <= out[out.length - 1].y : out[0].y >= out[out.length - 1].y) return null;
+  return out;
 }
 
 /** Arc de cercle allant de l'angle `from` a l'angle `to`, dans le sens donne. */
@@ -1073,6 +1204,38 @@ function arcPoints(
   return points;
 }
 
+/**
+ * Sonde d'epaisseur pour l'empreinte de bavette : la matiere disponible par
+ * coque sur toute la largeur de la bande, peau comprise. C'est la meme mesure
+ * que pour une encoche de passage, au meme endroit.
+ */
+function roomProbe(
+  surface: SurfaceSampler,
+  frame: JointFrame,
+  profile: ProfileSampler,
+): BillRoomProbe {
+  return (x, tLo, tHi) => {
+    const station = findStation(surface, frame, pAtX(profile, x), x);
+    if (station.degenerate) return 0;
+    const [tMin, tMax] = stationRange(surface, frame, station);
+    if (tLo < tMin || tHi > tMax) return 0;
+    return notchRoom(surface, frame, station, tLo, tHi);
+  };
+}
+
+/**
+ * Empreinte de bavette d'un leurre, mesuree sur la vraie surface.
+ *
+ * Le gabarit imprime, la masse et la fente creusee viennent tous de cet
+ * appel : le trait d'enfoncement du DXF ne peut pas diverger de la fente.
+ */
+export function billPlanFor(
+  profile: ProfileSampler,
+  params: LureParams,
+): BillSlotPlan | null {
+  return buildAssembly(profile, params).billPlan;
+}
+
 export function buildAssembly(
   profile: ProfileSampler,
   params: LureParams,
@@ -1083,109 +1246,179 @@ export function buildAssembly(
   const fabrication = params.fabrication;
 
   // --- Cotes de chaque ancrage --------------------------------------------
+  // Troncature d'une pointe : la station la plus avancee ou la section entoure
+  // encore le canal. Elle decide aussi si une sortie par la pointe est tenable.
+  const pointCut = (centerT: number, w: number, front: boolean): number | null => {
+    const steps = 60;
+    for (let i = 1; i <= steps; i++) {
+      const p = front
+        ? (0.3 * i) / steps
+        : profile.bodyEnd - ((profile.bodyEnd * 0.3) * i) / steps;
+      const station = findStation(surface, frame, p, profile.xAt(p));
+      if (station.degenerate) continue;
+      const [tMin, tMax] = stationRange(surface, frame, station);
+      const fits =
+        tMin + SKIN <= centerT - w &&
+        centerT + w <= tMax - SKIN &&
+        notchRoom(surface, frame, station, centerT - w, centerT + w) >= w + SKIN;
+      if (fits) return p;
+    }
+    return null;
+  };
+
   const plans: AnchorPlan[] = [];
-  for (const anchor of params.assembly.anchors) {
-    const spec = anchorPin(params, anchor);
-    const position = Math.min(Math.max(anchor.position, 0.02), profile.bodyEnd - 0.02);
-    const x = profile.xAt(position);
-    const station = findStation(surface, frame, position, x);
+  /**
+   * Cote d'un ancrage pour une taille de goupille donnee.
+   *
+   * Rien n'est fige : la position se deduit de la longueur de la goupille,
+   * le canal de son diametre de fil, la profondeur du puits de l'epaisseur
+   * locale du corps. Changer de taille recalcule tout.
+   */
+  const sizeAnchor = (anchor: PinAnchor, spec: PinSpec) => {
+    const wire = spec.wire * MM_TO_CM;
+    const halfPin = (spec.length * MM_TO_CM) / 2;
 
-    const wireRadius = (spec.wire * MM_TO_CM) / 2;
+    // Placement automatique : la position se deduit de la taille de goupille,
+    // jamais d'un reglage libre. Nez et queue sont en retrait de la pointe
+    // d'une demi-longueur de goupille et centres en hauteur ; ventre et dos
+    // gardent leur position sur l'axe et se decalent d'une demi-longueur
+    // depuis la face correspondante.
+    let p: number;
+    if (anchor.exit === 'nose') p = pAtX(profile, profile.xAt(0) + halfPin);
+    else if (anchor.exit === 'tail') p = pAtX(profile, profile.xAt(profile.bodyEnd) - halfPin);
+    else p = anchor.position;
+    p = Math.min(Math.max(p, 0.02), profile.bodyEnd - 0.02);
+    const x = profile.xAt(p);
+    const station = findStation(surface, frame, p, x);
+
+    // Canal de sortie : au moins deux fois le diametre du cable, quelle que
+    // soit la taille de goupille. La regle est proportionnelle, jamais une
+    // cote figee.
+    const sweepRadius = Math.max(
+      ((spec.wire + fabrication.sweepExtra) * MM_TO_CM) / 2,
+      wire,
+    );
+    const channelHalf = anchor.method === 'channel' ? sweepRadius : wire;
+
     const loopOuter = (spec.loopWidth * MM_TO_CM) / 2;
-    const loopCenterRadius = loopOuter - wireRadius;
-    const loopInner = Math.max(loopOuter - spec.wire * MM_TO_CM, wireRadius * 0.6);
+    const loopCenterRadius = loopOuter - wire / 2;
+    const loopInner = Math.max(loopOuter - spec.wire * MM_TO_CM, wire * 0.3);
     const tenonRadius = Math.max(loopInner - (fabrication.tenonFit * MM_TO_CM) / 2, 0.045);
-    const tenonHeight =
-      anchor.depth > 0 ? anchor.depth * MM_TO_CM : Math.max(tenonRadius * 2, 0.12);
-
-    const sweepRadius = (spec.wire * MM_TO_CM + fabrication.sweepExtra * MM_TO_CM) / 2;
-    const channelOffset = fabrication.channelOffset * MM_TO_CM;
     const seatRadius =
       anchor.method === 'bore'
         ? loopOuter + (fabrication.boreClearance * MM_TO_CM) / 2
-        : loopCenterRadius + sweepRadius + channelOffset;
-    // La profondeur vaut le demi-cote du canal : les deux coques mises face a
-    // face forment alors un passage carre qui laisse filer le fil.
-    const seatDepth =
-      anchor.method === 'bore'
-        ? wireRadius + (fabrication.boreClearance * MM_TO_CM) / 2
-        : sweepRadius;
-    const collarRadius =
-      anchor.method === 'bore'
-        ? tenonRadius
-        : Math.max(loopCenterRadius - sweepRadius - channelOffset, tenonRadius);
+        : loopCenterRadius + sweepRadius + fabrication.channelOffset * MM_TO_CM;
 
     let t = 0;
+    let seatDepth = channelHalf;
     let valid = true;
     let problem: string | null = null;
+
     if (station.degenerate) {
       valid = false;
       problem = 'Ancrage hors du corps.';
     } else {
       const [tMin, tMax] = stationRange(surface, frame, station);
-      t = anchor.height >= 0 ? anchor.height * tMax : -anchor.height * tMin;
-      const low = tMin + seatRadius + WALL;
-      const high = tMax - seatRadius - WALL;
+      t =
+        anchor.exit === 'belly'
+          ? tMin + halfPin
+          : anchor.exit === 'back'
+            ? tMax - halfPin
+            : (tMin + tMax) / 2;
+      // La collerette du puits demande un peu plus que le rayon de portee.
+      const outer = seatRadius + LEDGE_ROOM;
+      const low = tMin + outer + SKIN;
+      const high = tMax - outer - SKIN;
       if (low > high) {
         valid = false;
-        problem = `La portee de ${spec.loopWidth} mm ne tient pas dans la section a cet endroit.`;
+        problem =
+          `La portee de ${spec.loopWidth} mm demande ${(outer * 20).toFixed(1)} mm de hauteur et la section ` +
+          `n en offre que ${((tMax - tMin) * 10).toFixed(1)} mm. Prenez une taille en dessous.`;
       } else {
         t = Math.min(Math.max(t, low), high);
-      }
-      if (valid && maxBulge(surface, frame, station) < seatDepth + WALL) {
-        valid = false;
-        problem = 'La coque est trop mince ici pour loger la goupille.';
+        // Profondeur du puits : epaisseur locale moins 0,5 mm de peau,
+        // mesuree sur toute l'emprise et sur la plus mince des deux coques.
+        // Elle suit donc la largeur du corps au lieu d'etre figee.
+        //
+        // Un garde-fou : le puits ne descend jamais plus bas que sa propre
+        // largeur. Au-dela il ne loge rien de plus et il ne reste qu'une
+        // coquille de 0,5 mm — sur une cuiller large, la regle nue creuserait
+        // dix millimetres de puits pour un fil d'un millimetre.
+        const room = seatRoom(surface, frame, profile, x, t, seatRadius, tMin, tMax);
+        const usable = Math.min(room - SKIN, seatRadius * 2);
+        seatDepth = anchor.depth > 0 ? Math.min(anchor.depth * MM_TO_CM, room - SKIN) : usable;
+        if (seatDepth < channelHalf) {
+          valid = false;
+          problem =
+            `Coque trop mince : le canal demande ${(channelHalf * 20).toFixed(1)} mm et la peau n en laisse que ` +
+            `${(Math.max(room - SKIN, 0) * 20).toFixed(1)} mm. Prenez une taille de goupille en dessous.`;
+        }
       }
     }
 
     const center = new THREE.Vector2(x, t);
-    for (const other of plans) {
-      if (other.valid && other.center.distanceTo(center) < other.seatRadius + seatRadius + WALL) {
-        valid = false;
-        problem = 'Chevauchement avec une autre portee.';
-      }
+    // Une sortie par la pointe suppose que la pointe soit assez epaisse pour
+    // entourer le canal : autant le savoir avant de retenir cette taille.
+    if (valid && isLongitudinal(anchor.exit) && pointCut(center.y, channelHalf, anchor.exit === 'nose') === null) {
+      valid = false;
+      problem = 'La pointe est trop fine pour laisser sortir cette goupille.';
     }
 
-    plans.push({
+    return {
       anchor,
       spec,
       center,
-      tenonRadius,
-      tenonHeight,
       seatRadius,
       seatDepth,
-      collarRadius,
-      boreRadius: tenonRadius + (fabrication.tenonFit * MM_TO_CM) / 2,
+      channelHalf,
+      tenonRadius,
       exit: anchor.exit,
       valid,
       problem,
-    });
+      downsized: false,
+    };
+  };
+
+  for (const anchor of params.assembly.anchors) {
+    const wanted = anchorPin(params, anchor);
+    let plan = sizeAnchor(anchor, wanted);
+    // Taille automatique : plutot qu'un message d'erreur, on descend le
+    // catalogue jusqu'a la premiere goupille que le corps accepte. C'est
+    // le propre du placement automatique — l'utilisateur n'a rien a regler.
+    if (!plan.valid && anchor.pin === 'auto') {
+      let index = PINS.findIndex((pin) => pin.id === wanted.id);
+      let fitted = false;
+      while (index > 0 && !fitted) {
+        index -= 1;
+        const smaller = sizeAnchor(anchor, PINS[index]);
+        if (smaller.valid) {
+          plan = { ...smaller, downsized: true };
+          fitted = true;
+        }
+      }
+      // Catalogue epuise : le corps est trop fin ici pour la plus petite
+      // goupille. Inutile de conseiller une taille en dessous, il n'y en a pas.
+      if (!fitted && wanted.id !== PINS[0].id) {
+        plan.problem =
+          'Aucune taille du catalogue ne tient a cet endroit : la section y est trop ' +
+          'mince. Deplacez l ancrage ou epaississez le corps.';
+      }
+    }
+
+    for (const other of plans) {
+      if (other.valid && other.center.distanceTo(plan.center) < other.seatRadius + plan.seatRadius + SKIN) {
+        plan.valid = false;
+        plan.problem = 'Chevauchement avec une autre portee.';
+      }
+    }
+
+    plans.push(plan);
   }
 
   // --- Troncature des extremites ------------------------------------------
   // Une sortie par le nez ou par la queue perce la pointe : le corps y est
   // coupe net, juste la ou la section devient trop mince pour entourer le
   // passage. La coupe mesure quelques dixiemes de millimetre.
-  const cutFor = (plan: AnchorPlan, front: boolean): number | null => {
-    const w = plan.seatDepth;
-    const limit = front ? 0.3 : profile.bodyEnd;
-    const steps = 60;
-    for (let i = 1; i <= steps; i++) {
-      const p = front
-        ? (limit * i) / steps
-        : profile.bodyEnd - ((profile.bodyEnd - profile.bodyEnd * 0.7) * i) / steps;
-      const station = findStation(surface, frame, p, profile.xAt(p));
-      if (station.degenerate) continue;
-      const [tMin, tMax] = stationRange(surface, frame, station);
-      const fits =
-        tMin + WALL <= plan.center.y - w &&
-        plan.center.y + w <= tMax - WALL &&
-        maxBulge(surface, frame, station) >= w + WALL;
-      if (fits) return p;
-    }
-    return null;
-  };
-
   let pStart = 0;
   let pEnd = profile.bodyEnd;
   let cutFront = false;
@@ -1193,7 +1426,7 @@ export function buildAssembly(
   for (const plan of plans) {
     if (!plan.valid || !isLongitudinal(plan.exit)) continue;
     const front = plan.exit === 'nose';
-    const cut = cutFor(plan, front);
+    const cut = pointCut(plan.center.y, plan.channelHalf, front);
     if (cut === null) {
       plan.valid = false;
       plan.problem = 'La pointe est trop fine pour laisser sortir cette goupille.';
@@ -1206,6 +1439,19 @@ export function buildAssembly(
       pEnd = Math.min(pEnd, cut);
       cutRear = true;
     }
+  }
+  // --- Fente de bavette : empreinte de la plaque ---------------------------
+  // Le trace suit l'inclinaison de la bavette dans le plan vertical : il n'a
+  // de sens que si le plan de joint est lui aussi vertical. La coupe imposee
+  // par un passage de goupille de nez est connue : l'empreinte se mesure
+  // depuis cette face-la, jamais depuis une pointe deja retiree.
+  const bill =
+    params.hasBib && params.billMode === 'polycarbonate' && params.assembly.planeAngle < 25
+      ? billSlotPlan(profile, params, roomProbe(surface, frame, profile), pStart)
+      : null;
+  if (bill) {
+    pStart = Math.max(pStart, bill.cutP);
+    cutFront = true;
   }
   if (pEnd - pStart < 0.2) {
     pStart = 0;
@@ -1228,14 +1474,13 @@ export function buildAssembly(
   }
 
   // --- Recalage des portees longitudinales ---------------------------------
-  // La portee doit tenir ENTIEREMENT en arriere de la coupe : si l'ancrage a
-  // ete pose trop pres de la pointe, on le recule juste ce qu'il faut, puis
-  // on verifie que la section l'accepte encore a sa nouvelle abscisse.
-  for (const plan of plans) {
-    if (!plan.valid || !isLongitudinal(plan.exit)) continue;
+  // La portee doit tenir ENTIEREMENT en arriere de la coupe : si la coupe a
+  // ete reculee par un autre logement, l'ancrage recule d'autant.
+  const recale = (plan: AnchorPlan) => {
     const front = plan.exit === 'nose';
     const xCut = front ? stations[0].x : stations[stations.length - 1].x;
-    const reach = Math.sqrt(Math.max(plan.seatRadius ** 2 - plan.seatDepth ** 2, 0)) + WALL;
+    const outer = plan.seatRadius + LEDGE_ROOM;
+    const reach = Math.sqrt(Math.max(outer * outer - plan.channelHalf ** 2, 0)) + SKIN;
     plan.center.x = front
       ? Math.max(plan.center.x, xCut + reach)
       : Math.min(plan.center.x, xCut - reach);
@@ -1244,17 +1489,77 @@ export function buildAssembly(
     if (!station) {
       plan.valid = false;
       plan.problem = 'Ancrage hors du corps.';
-      continue;
+      return;
     }
     const [tMin, tMax] = stationRange(surface, frame, station);
-    const low = tMin + plan.seatRadius + WALL;
-    const high = tMax - plan.seatRadius - WALL;
-    if (low > high || maxBulge(surface, frame, station) < plan.seatDepth + WALL) {
+    const low = tMin + outer + SKIN;
+    const high = tMax - outer - SKIN;
+    if (low > high) {
       plan.valid = false;
       plan.problem = `La portee de ${plan.spec.loopWidth} mm ne tient pas si pres de la pointe.`;
-      continue;
+      return;
     }
     plan.center.y = Math.min(Math.max(plan.center.y, low), high);
+    const room = shellThickness(surface, frame, station, plan.center.y);
+    plan.seatDepth = Math.min(plan.seatDepth, room - SKIN);
+    if (plan.seatDepth < plan.channelHalf) {
+      plan.valid = false;
+      plan.problem =
+        `Pointe trop mince : le canal de ${(plan.channelHalf * 20).toFixed(1)} mm n y tient pas. ` +
+        'Prenez une taille de goupille en dessous.';
+    }
+  };
+  for (const plan of plans) {
+    if (!plan.valid || !isLongitudinal(plan.exit)) continue;
+    recale(plan);
+  }
+
+  // --- Arbitrage entre la fente de bavette et les portees de pointe --------
+  // Les deux visent la meme tete : la fente monte du menton vers l'arriere,
+  // la portee est au centre. On rentre la plaque juste assez pour ne pas
+  // mordre dans une portee ; si deux millimetres n'y suffisent pas, une
+  // goupille de taille automatique descend d'un cran, et en dernier recours
+  // c'est la fente qui l'emporte — l'ancrage fautif est alors signale.
+  let billInsertion = bill ? bill.insertion : 0;
+  if (bill) {
+    const xCut = stations[0].x;
+    const centre = bill.centreAt(xCut);
+    const footprint = (insertion: number) => [
+      new THREE.Vector2(xCut, centre + bill.halfBand),
+      bill.along(-insertion, -bill.halfPlate),
+      bill.along(-insertion, bill.halfPlate),
+      new THREE.Vector2(xCut, centre - bill.halfBand),
+    ];
+    const hits = (insertion: number, plan: AnchorPlan) =>
+      polygonMeetsDisc(footprint(insertion), plan.center, plan.seatRadius + LEDGE + SKIN);
+    const clashing = () =>
+      plans.filter(
+        (plan) => plan.valid && isLongitudinal(plan.exit) && hits(billInsertion, plan),
+      );
+
+    const FLOOR = 0.2;
+    while (billInsertion > FLOOR && clashing().length > 0) {
+      billInsertion = Math.max(FLOOR, billInsertion - 0.02);
+    }
+    for (const plan of clashing()) {
+      let index = plan.anchor.pin === 'auto' ? PINS.findIndex((pin) => pin.id === plan.spec.id) : 0;
+      let saved = false;
+      while (index > 0 && !saved) {
+        index -= 1;
+        const smaller = sizeAnchor(plan.anchor, PINS[index]);
+        if (!smaller.valid) continue;
+        recale(smaller);
+        if (!smaller.valid || hits(billInsertion, smaller)) continue;
+        Object.assign(plan, smaller, { downsized: true });
+        saved = true;
+      }
+      if (!saved) {
+        plan.valid = false;
+        plan.problem =
+          'La portee tombe dans la fente de bavette. Sortez cette goupille par le dos ou ' +
+          'le ventre, ou reduisez la bavette.';
+      }
+    }
   }
 
   // --- Logements engendres par les ancrages --------------------------------
@@ -1263,7 +1568,7 @@ export function buildAssembly(
   const femaleSides: SideExit[] = [];
   const maleEnds: EndExit[] = [];
   const femaleEnds: EndExit[] = [];
-  const tenonCircles: { center: THREE.Vector2; radius: number; height: number }[] = [];
+  const posts: TenonSolid[] = [];
   const previews: { center: THREE.Vector2; radius: number; depth: number }[] = [];
   const pins: PinPart[] = [];
 
@@ -1275,57 +1580,67 @@ export function buildAssembly(
     taken.push([iStart, iEnd]);
     return true;
   };
-
-  const rimLoAt = (index: number): number => {
-    const station = stations[index];
-    if (station.degenerate) return 0;
-    return stationRange(surface, frame, station)[0];
+  /** Encoches deja placees dans une face de coupe, pour eviter qu'elles se touchent. */
+  const notched: { end: 'front' | 'rear'; tLo: number; tHi: number }[] = [];
+  const freeNotch = (end: 'front' | 'rear', tLo: number, tHi: number): boolean => {
+    for (const other of notched) {
+      if (other.end === end && tLo <= other.tHi + SKIN && other.tLo - SKIN <= tHi) return false;
+    }
+    notched.push({ end, tLo, tHi });
+    return true;
   };
 
   for (const plan of plans) {
     if (!plan.valid) continue;
-    const { center, seatRadius: R, seatDepth: d } = plan;
-    const island =
-      plan.collarRadius > 0.02 ? circleOutline(center, plan.collarRadius, 40) : undefined;
-    const bore = {
-      outline: circleOutline(center, plan.boreRadius, 40),
-      depth: d + plan.tenonHeight,
-    };
+    const { center, seatRadius: R, seatDepth, channelHalf: w } = plan;
+    const well = { outline: circleOutline(center, R, 48), depth: seatDepth };
 
     if (isLongitudinal(plan.exit)) {
       const front = plan.exit === 'nose';
       const xCut = front ? stations[0].x : stations[stations.length - 1].x;
-      const s = Math.sqrt(Math.max(R * R - d * d, (R * 0.2) ** 2));
-      const tLo = center.y - d;
-      const tHi = center.y + d;
+      const outer = Math.hypot(R, w) + LEDGE;
+      const s = Math.sqrt(Math.max(outer * outer - w * w, (outer * 0.2) ** 2));
+      const tLo = center.y - w;
+      const tHi = center.y + w;
+      if (!freeNotch(front ? 'front' : 'rear', tLo, tHi)) {
+        plan.valid = false;
+        plan.problem = 'Deux passages sortent au meme endroit de la pointe.';
+        continue;
+      }
       const jointX = front ? center.x - s : center.x + s;
-      // Le grand arc contourne la portee du cote oppose a la sortie.
-      const angleHi = Math.atan2(d, front ? -s : s);
-      const angleLo = Math.atan2(-d, front ? -s : s);
+      const angleHi = Math.atan2(w, front ? -s : s);
+      const angleLo = Math.atan2(-w, front ? -s : s);
       const path = front
         ? [
             new THREE.Vector2(xCut, tHi),
             new THREE.Vector2(jointX, tHi),
-            ...arcPoints(center, R, angleHi, angleLo),
+            ...arcPoints(center, outer, angleHi, angleLo),
             new THREE.Vector2(jointX, tLo),
             new THREE.Vector2(xCut, tLo),
           ]
         : [
             new THREE.Vector2(xCut, tLo),
             new THREE.Vector2(jointX, tLo),
-            ...arcPoints(center, R, angleLo, angleHi - Math.PI * 2),
+            ...arcPoints(center, outer, angleLo, angleHi - Math.PI * 2),
             new THREE.Vector2(jointX, tHi),
             new THREE.Vector2(xCut, tHi),
           ];
-      const common = { end: front ? ('front' as const) : ('rear' as const), tLo, tHi, depth: d, path };
-      maleEnds.push({ ...common, island });
-      femaleEnds.push({ ...common, bore });
+      const common = {
+        end: front ? ('front' as const) : ('rear' as const),
+        tLo,
+        tHi,
+        depth: w,
+        path,
+        bore: well,
+      };
+      maleEnds.push(common);
+      femaleEnds.push(common);
     } else {
       const rail: 'lo' | 'hi' = plan.exit === 'belly' ? 'lo' : 'hi';
       let iStart = 0;
-      while (iStart < stations.length - 1 && stations[iStart + 1].x <= center.x - d) iStart++;
+      while (iStart < stations.length - 1 && stations[iStart + 1].x <= center.x - w) iStart++;
       let iEnd = stations.length - 1;
-      while (iEnd > 0 && stations[iEnd - 1].x >= center.x + d) iEnd--;
+      while (iEnd > 0 && stations[iEnd - 1].x >= center.x + w) iEnd--;
       if (iEnd < iStart + 2) {
         const middle = Math.round((iStart + iEnd) / 2);
         iStart = middle - 1;
@@ -1333,33 +1648,31 @@ export function buildAssembly(
       }
       const aLo = center.x - stations[iStart].x;
       const aHi = stations[iEnd].x - center.x;
-      if (
-        iStart < 1 ||
-        iEnd > stations.length - 2 ||
-        Math.max(aLo, aHi) > R * 0.9 ||
-        !reserve(iStart, iEnd)
-      ) {
+      // Le contour du puits doit passer au large des rails, sinon le percage
+      // profond mordrait sur la paroi de la rainure.
+      const outer = Math.hypot(R, Math.max(aLo, aHi)) + LEDGE;
+      if (iStart < 1 || iEnd > stations.length - 2 || !reserve(iStart, iEnd)) {
         plan.valid = false;
         plan.problem = 'Le passage de sortie ne tient pas ici : deplacez l ancrage.';
         continue;
       }
-      // La bouche s'ouvre la ou la peau atteint la cote du canal. Si la
-      // coque est deja plus mince que cela au bord interieur de l'encoche,
-      // le passage mange plus de matiere que prevu et le maillage se croise.
+      // La bouche s'ouvre la ou la peau atteint la cote du canal.
       let room = Infinity;
       for (let i = iStart; i <= iEnd; i++) {
         const dx = stations[i].x - center.x;
-        const edge = center.y + (rail === 'lo' ? -1 : 1) * Math.sqrt(Math.max(R * R - dx * dx, 0));
-        const inner = edge + (rail === 'lo' ? 1 : -1) * 2 * WALL;
+        const edge =
+          center.y +
+          (rail === 'lo' ? -1 : 1) * Math.sqrt(Math.max(outer * outer - dx * dx, 0));
+        const inner = edge + (rail === 'lo' ? 1 : -1) * 2 * SKIN;
         room = Math.min(room, bulgeAtT(surface, frame, stations[i], inner));
       }
-      if (room < d) {
+      if (room < w) {
         plan.valid = false;
-        plan.problem = 'La coque est trop mince ici pour ouvrir le passage : reculez l ancrage.';
+        plan.problem = 'La coque est trop mince ici pour ouvrir le passage : deplacez l ancrage.';
         continue;
       }
-      const sLo = Math.sqrt(Math.max(R * R - aLo * aLo, 1e-6));
-      const sHi = Math.sqrt(Math.max(R * R - aHi * aHi, 1e-6));
+      const sLo = Math.sqrt(Math.max(outer * outer - aLo * aLo, 1e-6));
+      const sHi = Math.sqrt(Math.max(outer * outer - aHi * aHi, 1e-6));
       const sign = rail === 'lo' ? -1 : 1;
       const angleStart = Math.atan2(sign * sLo, -aLo);
       const angleEnd = Math.atan2(sign * sHi, aHi);
@@ -1370,15 +1683,23 @@ export function buildAssembly(
         rail,
         iStart,
         iEnd,
-        path: arcPoints(center, R, angleStart, sweep),
-        depth: d,
+        path: arcPoints(center, outer, angleStart, sweep),
+        depth: w,
+        bore: well,
       };
-      maleSides.push({ ...common, island });
-      femaleSides.push({ ...common, bore });
+      maleSides.push(common);
+      femaleSides.push(common);
     }
 
-    tenonCircles.push({ center, radius: plan.tenonRadius, height: plan.tenonHeight });
-    previews.push({ center, radius: R, depth: d });
+    // Goujon : un seul pilier traversant les deux puits, qui enfile la petite
+    // boucle. Il s'arrete a un jeu d'emboitement du fond de la femelle.
+    posts.push({
+      center,
+      radius: plan.tenonRadius,
+      from: -(seatDepth - (fabrication.tenonFit * MM_TO_CM)),
+      to: seatDepth,
+    });
+    previews.push({ center, radius: R, depth: seatDepth });
     const world = frame.toWorld(center.y, 0);
     pins.push(
       buildPin(
@@ -1390,25 +1711,49 @@ export function buildAssembly(
     );
   }
 
-  // --- Fente de bavette rapportee, debouchante -----------------------------
-  // Le trace de la fente suit l'inclinaison de la bavette dans le plan
-  // vertical : il n'a de sens que si le plan de joint est lui aussi vertical.
-  // Sur un joint incline ou horizontal, la plaque se prend simplement entre
-  // les deux coques et aucune fente n'est creusee (avertissement cote
-  // simulation).
-  if (params.hasBib && params.billMode === 'polycarbonate' && params.assembly.planeAngle < 25) {
-    const slot = buildBillSlot(profile, params, surface, frame, stations, rimLoAt, reserve);
-    if (slot?.kind === 'side') {
-      maleSides.push(slot.exit);
-      femaleSides.push(slot.exit);
-    } else if (slot?.kind === 'pocket') {
-      pockets.push(slot.pocket);
+  // --- Fente de bavette, identique dans les deux coques --------------------
+  let billResult: BillSlotPlan | null = bill;
+  if (bill) {
+    const xCut = stations[0].x;
+    const centre = bill.centreAt(xCut);
+    const path = clipEndPath(
+      [
+        new THREE.Vector2(xCut, centre + bill.halfBand),
+        bill.along(-billInsertion, -bill.halfPlate),
+        bill.along(-billInsertion, bill.halfPlate),
+        new THREE.Vector2(xCut, centre - bill.halfBand),
+      ],
+      xCut,
+      true,
+    );
+    billResult = null;
+    if (path) {
+      const tHi = path[0].y;
+      const tLo = path[path.length - 1].y;
+      const depth = Math.min(
+        bill.depth,
+        notchRoom(surface, frame, stations[0], tLo, tHi) - SKIN,
+      );
+      const [tMin, tMax] = stations[0].degenerate
+        ? [0, 0]
+        : stationRange(surface, frame, stations[0]);
+      if (
+        depth > 0.05 &&
+        tHi - tLo > 0.02 &&
+        tMin + SKIN <= tLo &&
+        tHi <= tMax - SKIN &&
+        freeNotch('front', tLo, tHi)
+      ) {
+        const exit: EndExit = { end: 'front', tLo, tHi, depth, path };
+        maleEnds.push(exit);
+        femaleEnds.push(exit);
+        billResult = { ...bill, depth, insertion: billInsertion };
+      }
     }
   }
 
   // --- Logements de billes mobiles ----------------------------------------
   const rattles: AssemblyResult['rattles'] = [];
-  let cavityVolume = 0;
   const clearance = (fabrication.rattleFit * MM_TO_CM) / 2;
   const STAINLESS = 7.9;
 
@@ -1440,8 +1785,6 @@ export function buildAssembly(
       radius: ballRadius,
       mass: (4 / 3) * Math.PI * ballRadius ** 3 * STAINLESS,
     });
-    // Les deux coques creusent chacune une demi-sphere.
-    cavityVolume += (4 / 3) * Math.PI * radius ** 3;
   }
 
   const chamber = params.chamber;
@@ -1455,8 +1798,6 @@ export function buildAssembly(
     const b = stationB ? fitCavity(stationB, chamber.toHeight, radius) : null;
     if (a && b && a.distanceTo(b) > radius * 0.3) {
       pockets.push({ outline: capsuleOutline(a, b, radius), depth: radius, dome: { a, b } });
-      const length = a.distanceTo(b);
-      cavityVolume += Math.PI * radius * radius * length + (4 / 3) * Math.PI * radius ** 3;
       const ballRadius = (chamber.ball * MM_TO_CM) / 2;
       const count = Math.max(1, Math.min(Math.round(chamber.balls), 6));
       for (let i = 0; i < count; i++) {
@@ -1492,7 +1833,7 @@ export function buildAssembly(
     { ...shared, sideExits: femaleSides, endExits: femaleEnds },
     false,
   );
-  const tenons = buildTenonSolids(tenonCircles, frame);
+  const tenons = buildTenonSolids(posts, frame);
   const socketPreview = buildSocketPreview(previews, frame);
 
   const normal = frame.toWorld(0, 1);
@@ -1512,124 +1853,21 @@ export function buildAssembly(
         center: plan.center,
         world: new THREE.Vector3(plan.center.x, world.y, world.z),
         tenonRadius: plan.tenonRadius,
-        tenonHeight: plan.tenonHeight,
+        channelHalf: plan.channelHalf,
         seatRadius: plan.seatRadius,
         seatDepth: plan.seatDepth,
         method: plan.anchor.method,
         exit: plan.exit,
         valid: plan.valid,
         problem: plan.problem,
+        downsized: plan.downsized,
       };
     }),
+    billPlan: billResult,
     pinSpec: plans[0]?.spec ?? fallback,
     pinMass: pins.reduce((sum, pin) => sum + pin.mass, 0),
-    cavityVolume,
     splitNormal: new THREE.Vector3(0, normal.y, normal.z).normalize(),
   };
-}
-
-/**
- * Fente d'insertion de la bavette rapportee.
- *
- * Elle DOIT deboucher : une bavette qui ne ressort pas du corps ne sert a
- * rien. Le trace est prolonge vers l'avant jusqu'a percer le bord du plan de
- * joint, et ce percement devient la bouche du logement — identique dans les
- * deux coques, comme sur la vue en coupe de reference.
- */
-function buildBillSlot(
-  profile: ProfileSampler,
-  params: LureParams,
-  surface: SurfaceSampler,
-  frame: JointFrame,
-  stations: Station[],
-  rimLoAt: (index: number) => number,
-  reserve: (iStart: number, iEnd: number) => boolean,
-): { kind: 'side'; exit: SideExit } | { kind: 'pocket'; pocket: Pocket } | null {
-  const rails = billRails(profile, params);
-  const rear = rails.rear;
-  const rearX = rear[0].x;
-
-  // Stations reellement traversees par la fente.
-  const inside = (index: number) => {
-    const station = stations[index];
-    if (station.degenerate) return false;
-    const [tMin, tMax] = stationRange(surface, frame, station);
-    return rails.top(station.x) < tMax - WALL && rails.bottom(station.x) > tMin;
-  };
-
-  let iRear = stations.length - 1;
-  while (iRear > 0 && stations[iRear].x > rearX) iRear--;
-  if (iRear < 3) return null;
-
-  // iStart : premiere station (la plus avant) ou le rail haut repasse
-  // au-dessus du bord — c'est la que la fente commence a mordre dans la
-  // matiere. iEnd : premiere station, en reculant, ou le rail bas est lui
-  // aussi rentre dans le corps ; au-dela, la fente est une poche ordinaire.
-  let iStart = -1;
-  for (let i = 0; i <= iRear; i++) {
-    if (rails.top(stations[i].x) > rimLoAt(i) + WALL) {
-      iStart = i;
-      break;
-    }
-  }
-  let iEnd = -1;
-  for (let i = Math.max(iStart, 0) + 1; i <= iRear; i++) {
-    if (rails.bottom(stations[i].x) >= rimLoAt(i) + WALL) {
-      iEnd = i;
-      break;
-    }
-  }
-
-  // Profondeur : la largeur de la bavette, bornee par l'epaisseur disponible
-  // le long de la fente, puis par l'epaisseur au bord interieur de la bouche
-  // — au-dela, le logement percerait la peau sur toute la largeur.
-  let depth = Math.max((params.bibWidth * MM_TO_CM) / 2, 0.12);
-  for (let i = Math.max(iStart, 0); i <= iRear; i++) {
-    if (stations[i].degenerate) continue;
-    depth = Math.min(depth, maxBulge(surface, frame, stations[i]) - WALL);
-  }
-  if (iStart >= 0 && iEnd > iStart) {
-    for (let i = iStart; i <= iEnd; i++) {
-      const x = stations[i].x;
-      const inner = (i === iEnd ? rails.bottom(x) : rails.top(x)) - 2 * WALL;
-      depth = Math.min(depth, bulgeAtT(surface, frame, stations[i], inner));
-    }
-  }
-  if (depth < 0.05) return null;
-
-  const railPath = (from: number, to: number, top: boolean): THREE.Vector2[] => {
-    const points: THREE.Vector2[] = [];
-    const steps = 24;
-    for (let i = 0; i <= steps; i++) {
-      const x = from + ((to - from) * i) / steps;
-      points.push(new THREE.Vector2(x, top ? rails.top(x) : rails.bottom(x)));
-    }
-    return points;
-  };
-
-  if (iStart >= 1 && iEnd > iStart + 1 && iEnd < iRear - 1 && inside(iRear) && reserve(iStart, iEnd)) {
-    const xStart = stations[iStart].x;
-    const xEnd = stations[iEnd].x;
-    const path = [
-      ...railPath(xStart, rearX, true),
-      rear[0],
-      rear[1],
-      ...railPath(rearX, xEnd, false),
-    ];
-    return { kind: 'side', exit: { rail: 'lo', iStart, iEnd, path, depth } };
-  }
-
-  // Repli : la fente ne rencontre pas le bord (bavette tres inclinee, corps
-  // tres epais). Elle reste une poche fermee, a ouvrir a la lime au montage.
-  const front = Math.max(rails.tipX, stations[1].x);
-  if (rearX - front < 0.1) return null;
-  const outline = [
-    ...railPath(front, rearX, true),
-    rear[0],
-    rear[1],
-    ...railPath(rearX, front, false),
-  ];
-  return { kind: 'pocket', pocket: { outline, depth } };
 }
 
 /**
@@ -1637,15 +1875,26 @@ function buildBillSlot(
  * quel ancrage est invalide a chaque frappe de slider, ce qui serait trop
  * couteux en reconstruisant tout le maillage.
  */
-export function socketPlans(profile: ProfileSampler, params: LureParams): SocketPlan[] {
-  if (!params.assembly.enabled) return [];
+/**
+ * Cotes de l'assemblage sans les maillages : de quoi renseigner l'interface
+ * a chaque frappe, et placer la bavette fantome exactement dans sa fente.
+ */
+export function assemblyPlans(
+  profile: ProfileSampler,
+  params: LureParams,
+): { sockets: SocketPlan[]; billPlan: BillSlotPlan | null } {
+  if (!params.assembly.enabled) return { sockets: [], billPlan: null };
   const result = buildAssembly(profile, params, { stations: 40, arcSamples: 10 });
   result.male.dispose();
   result.female.dispose();
   result.tenons?.dispose();
   result.socketPreview?.dispose();
   for (const pin of result.pins) pin.geometry.dispose();
-  return result.sockets;
+  return { sockets: result.sockets, billPlan: result.billPlan };
+}
+
+export function socketPlans(profile: ProfileSampler, params: LureParams): SocketPlan[] {
+  return assemblyPlans(profile, params).sockets;
 }
 
 /**
@@ -1682,7 +1931,7 @@ export function suggestExit(position: number, height: number): PinExit {
 
 /** Goujons males : cylindres fermes poses sur le plan de joint. */
 function buildTenonSolids(
-  tenons: { center: THREE.Vector2; radius: number; height: number }[],
+  tenons: TenonSolid[],
   frame: JointFrame,
 ): THREE.BufferGeometry | null {
   if (tenons.length === 0) return null;
@@ -1693,10 +1942,11 @@ function buildTenonSolids(
   };
   for (const tenon of tenons) {
     const outline = contourOf(circleOutline(tenon.center, tenon.radius, 40));
-    // Le goujon sort de la coque male : il occupe -height a 0.
-    bossWall(mesh, outline, -tenon.height, 0, lift);
-    fill(mesh, outline, [], (point) => lift(point.y, -tenon.height, point.x), true);
-    fill(mesh, outline, [], (point) => lift(point.y, 0, point.x), false);
+    // Le pilier part du fond du puits male et traverse jusqu'au fond du puits
+    // femelle, a un jeu d'emboitement pres.
+    bossWall(mesh, outline, tenon.from, tenon.to, lift);
+    fill(mesh, outline, [], (point) => lift(point.y, tenon.from, point.x), true);
+    fill(mesh, outline, [], (point) => lift(point.y, tenon.to, point.x), false);
   }
   return mesh.build();
 }

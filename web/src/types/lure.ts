@@ -272,6 +272,11 @@ export interface LureParams {
   billMode: BillMode;
   /** Epaisseur de la bavette, en mm, independante de sa longueur et sa largeur. */
   billThickness: number;
+  /**
+   * Echelle liee : largeur et epaisseur suivent la longueur, selon les
+   * proportions de la bavette de reference. Decoche pour les regler a part.
+   */
+  billUniform: boolean;
   /** Recul du point d'ancrage depuis la pointe du nez, en mm. */
   billOffset: number;
   /** Rayon de conge sur les aretes de la bavette, en mm. */

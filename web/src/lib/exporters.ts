@@ -17,9 +17,8 @@ import {
   type LureGeometry,
   type ShellPart,
 } from './geometry';
-import { ASSEMBLY_DISPLAY, ASSEMBLY_STEP, buildAssembly } from './assembly';
-import { bibOutline } from './billTemplate';
-import { markOnMaleSide } from './mark';
+import { ASSEMBLY_DISPLAY, ASSEMBLY_STEP, billPlanFor, buildAssembly } from './assembly';
+import { bibOutline, bibShape, billHalfWidthAt, billSize } from './billTemplate';
 import { createProfile } from './profile';
 import { buildStepFile } from './step';
 
@@ -55,7 +54,6 @@ function collectParts(
     parts.push(geo.body);
     if (printedBib) parts.push(printedBib);
     if (geo.tail) parts.push(geo.tail);
-    if (geo.mark) parts.push(geo.mark);
     return { parts, owned };
   }
 
@@ -70,14 +68,6 @@ function collectParts(
     if (assembly.tenons) parts.push(assembly.tenons);
   } else {
     parts.push(assembly.female);
-  }
-
-  // Le marquage est obligatoire, et pose entierement d'un cote du joint :
-  // il part avec la coque qui le porte.
-  if (geo.mark && markOnMaleSide(profile, params) === (kind === 'male')) {
-    const mark = geo.mark.clone();
-    owned.push(mark);
-    parts.push(mark);
   }
 
   // Bavette et caudale sont des plaques minces qui vivent dans le plan de
@@ -298,6 +288,16 @@ export async function exportBillTemplate(
     x: point.x * 10,
     y: point.y * 10,
   }));
+  // Trait de reference : jusqu'ou la plaque s'enfonce dans la tete. C'est la
+  // cote qui a servi a creuser la fente, donc les deux ne peuvent pas diverger.
+  const plan = billPlanFor(profile, params);
+  const shape = bibShape(profile, params);
+  const insertion = plan
+    ? {
+        x: plan.insertion * 10,
+        half: billHalfWidthAt(params, plan.insertion / Math.max(shape.length, 1e-6)) * 10,
+      }
+    : null;
   const base = `${slugify(name)}-bavette`;
 
   if (format === 'dxf') {
@@ -308,6 +308,13 @@ export async function exportBillTemplate(
     ];
     for (const point of outline) {
       body.push('10', point.x.toFixed(4), '20', point.y.toFixed(4));
+    }
+    if (insertion) {
+      body.push(
+        '0', 'LWPOLYLINE', '8', 'INSERTION', '90', '2', '70', '0',
+        '10', insertion.x.toFixed(4), '20', (-insertion.half).toFixed(4),
+        '10', insertion.x.toFixed(4), '20', insertion.half.toFixed(4),
+      );
     }
     body.push('0', 'ENDSEC', '0', 'EOF', '');
     return offerFile(`${base}.dxf`, body.join('\n'), 'image/vnd.dxf', `${base}.dxf.txt`);
@@ -327,8 +334,11 @@ export async function exportBillTemplate(
   const svg = [
     '<?xml version="1.0" encoding="UTF-8"?>',
     `<svg xmlns="http://www.w3.org/2000/svg" width="${width.toFixed(2)}mm" height="${height.toFixed(2)}mm" viewBox="0 0 ${width.toFixed(2)} ${height.toFixed(2)}">`,
-    `<title>Bavette ${name} — ${(maxX - minX).toFixed(1)} x ${(maxY - minY).toFixed(1)} mm, epaisseur ${params.billThickness} mm</title>`,
+    `<title>Bavette ${name} — ${(maxX - minX).toFixed(1)} x ${(maxY - minY).toFixed(1)} mm, epaisseur ${billSize(params).thickness.toFixed(1)} mm${insertion ? `, enfoncement ${insertion.x.toFixed(1)} mm` : ''}</title>`,
     `<path d="${path} Z" fill="none" stroke="#000000" stroke-width="0.2"/>`,
+    insertion
+      ? `<line x1="${(insertion.x - minX + pad).toFixed(3)}" y1="${(maxY - insertion.half - minY + pad).toFixed(3)}" x2="${(insertion.x - minX + pad).toFixed(3)}" y2="${(maxY + insertion.half - minY + pad).toFixed(3)}" stroke="#e30613" stroke-width="0.2" stroke-dasharray="1 1"/>`
+      : '',
     '</svg>',
     '',
   ].join('\n');

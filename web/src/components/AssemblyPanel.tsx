@@ -36,6 +36,9 @@ const mm = (value: number) => `${value.toFixed(value < 10 ? 2 : 1)} mm`;
 /** Les quatre sorties possibles : le passage doit deboucher a la surface. */
 const EXITS: PinExit[] = ['nose', 'belly', 'tail', 'back'];
 
+/** Une sortie longitudinale fixe a elle seule la position de l'ancrage. */
+const longitudinal = (exit: PinExit) => exit === 'nose' || exit === 'tail';
+
 export function AssemblyPanel({
   params,
   onChange,
@@ -91,7 +94,7 @@ export function AssemblyPanel({
 
       <Fieldset
         legend="Points d ancrage"
-        hint="Activez le placement puis cliquez sur le corps dans la vue 3D. Chaque point engendre son goujon sur la coque male et son alesage en vis-a-vis sur la femelle."
+        hint="Activez le placement puis cliquez sur le corps dans la vue 3D. Le clic choisit le cote de sortie ; la position exacte se deduit ensuite de la taille de goupille, pour qu aucun point ne puisse etre mal place."
       >
         <Switch
           label="Placement de goupille"
@@ -106,6 +109,9 @@ export function AssemblyPanel({
 
         {anchors.map((anchor, index) => {
           const plan = sockets.find((socket) => socket.anchorId === anchor.id);
+          // La cote retenue prime sur la cote demandee : la taille automatique
+          // descend d un cran quand le corps est trop mince a cet endroit.
+          const spec = plan?.spec ?? anchorPin(params, anchor);
           const selected = anchor.id === selectedAnchor;
           return (
             <div
@@ -123,8 +129,8 @@ export function AssemblyPanel({
                   Ancrage {index + 1}
                 </button>
                 <span className="ballast__spec">
-                  {anchorPin(params, anchor).label}
-                  {plan ? ` · goujon ${(plan.tenonRadius * 20).toFixed(1)} mm` : ''}
+                  {spec.label}
+                  {plan ? ` · canal ${(plan.channelHalf * 20).toFixed(1)} mm` : ''}
                 </span>
                 <button
                   type="button"
@@ -141,24 +147,15 @@ export function AssemblyPanel({
                 </p>
               ) : null}
 
+              {plan?.downsized ? (
+                <p className="control__hint">
+                  Taille ramenee a {spec.label} : la section ne laisse pas la place a une
+                  {' '}{anchorPin(params, anchor).label}.
+                </p>
+              ) : null}
+
               {selected ? (
                 <>
-                  <Slider
-                    label="Position"
-                    value={anchor.position}
-                    {...LIMITS.anchorPosition}
-                    display={`${Math.round(anchor.position * 100)} %`}
-                    onChange={(position) => onUpdateAnchor(anchor.id, { position })}
-                  />
-                  <Slider
-                    label="Hauteur"
-                    value={anchor.height}
-                    {...LIMITS.anchorHeight}
-                    display={
-                      anchor.height < -0.3 ? 'Ventre' : anchor.height > 0.3 ? 'Dos' : 'Axe'
-                    }
-                    onChange={(height) => onUpdateAnchor(anchor.id, { height })}
-                  />
                   <Segmented
                     label="Sortie de la boucle"
                     value={anchor.exit}
@@ -166,12 +163,40 @@ export function AssemblyPanel({
                     hint="Le passage est creuse jusqu a la peau : la grande boucle ressort du corps de ce cote."
                     onChange={(exit) => onUpdateAnchor(anchor.id, { exit })}
                   />
+                  {longitudinal(anchor.exit) ? (
+                    <p className="control__hint">
+                      Position automatique : en retrait de la pointe d une demi-longueur de
+                      goupille ({(spec.length / 2).toFixed(1)} mm), centree
+                      entre le dos et le ventre. Elle se recalcule si vous changez de taille.
+                    </p>
+                  ) : (
+                    <>
+                      <Slider
+                        label="Position sur l axe"
+                        value={anchor.position}
+                        {...LIMITS.anchorPosition}
+                        display={`${Math.round(anchor.position * 100)} %`}
+                        onChange={(position) => onUpdateAnchor(anchor.id, { position })}
+                      />
+                      <p className="control__hint">
+                        Hauteur automatique : en retrait de la face{' '}
+                        {anchor.exit === 'belly' ? 'du ventre' : 'du dos'} d une demi-longueur de
+                        goupille ({(spec.length / 2).toFixed(1)} mm).
+                      </p>
+                    </>
+                  )}
                   <Slider
-                    label="Profondeur d ancrage"
+                    label="Profondeur du puits"
                     value={anchor.depth}
                     {...LIMITS.anchorDepth}
-                    display={anchor.depth > 0 ? mm(anchor.depth) : 'Auto'}
-                    hint="Hauteur du goujon. Auto : deux fois son rayon."
+                    display={
+                      anchor.depth > 0
+                        ? mm(anchor.depth)
+                        : plan
+                          ? `${(plan.seatDepth * 10).toFixed(1)} mm (auto)`
+                          : 'Auto'
+                    }
+                    hint="Auto : largeur locale du corps moins 0,5 mm de peau. Reglez pour forcer une valeur."
                     onChange={(depth) => onUpdateAnchor(anchor.id, { depth })}
                   />
                   <Segmented
@@ -196,9 +221,9 @@ export function AssemblyPanel({
                 </>
               ) : (
                 <p className="control__hint">
-                  Position {Math.round(anchor.position * 100)} % · sortie{' '}
-                  {EXIT_LABEL[anchor.exit].toLowerCase()} ·{' '}
+                  Sortie {EXIT_LABEL[anchor.exit].toLowerCase()} ·{' '}
                   {anchor.method === 'bore' ? 'alesage' : 'canal'}
+                  {plan ? ` · puits ${(plan.seatDepth * 10).toFixed(1)} mm` : ''}
                   {' — '}
                   <button
                     type="button"

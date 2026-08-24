@@ -220,6 +220,7 @@ export function sanitizeParams(input: unknown): LureParams {
     hasBib: bool(raw.hasBib, base.hasBib),
     billMode: pick(raw.billMode, BILL_MODES, base.billMode),
     billThickness: num(raw.billThickness, LIMITS.billThickness, base.billThickness),
+    billUniform: bool(raw.billUniform, base.billUniform),
     billOffset: num(raw.billOffset, LIMITS.billOffset, base.billOffset),
     billFillet: num(raw.billFillet, LIMITS.billFillet, base.billFillet),
     billProfile: pick(raw.billProfile, BILL_PROFILES, base.billProfile),

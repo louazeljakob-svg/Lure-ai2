@@ -16,7 +16,7 @@ import type {
   ShapeId,
   WaterId,
 } from './types/lure';
-import { socketPlans, suggestExit } from './lib/assembly';
+import { assemblyPlans, suggestExit } from './lib/assembly';
 import { createProfile } from './lib/profile';
 import {
   applyCalibration,
@@ -90,12 +90,17 @@ export default function App() {
   const galleryFileRef = useRef<HTMLInputElement>(null);
 
   // --- Geometrie & physique, regenerees a chaque changement ---------------
-  const geo = useMemo(() => buildLure(params), [params]);
+  // Cotes d'assemblage a resolution reduite : l'interface doit signaler un
+  // ancrage invalide des la frappe, sans reconstruire tout le maillage. La
+  // bavette fantome se pose ensuite dans la fente que ce calcul a retenue.
+  const plans = useMemo(() => assemblyPlans(createProfile(params), params), [params]);
+  const sockets = plans.sockets;
+  const geo = useMemo(
+    () => buildLure(params, undefined, plans.billPlan?.root ?? null),
+    [params, plans],
+  );
   useEffect(() => () => geo.dispose(), [geo]);
   const physics = useMemo(() => computePhysics(params, geo, water), [params, geo, water]);
-  // Portees calculees a resolution reduite : l'interface doit signaler un
-  // ancrage invalide des la frappe, sans reconstruire tout le maillage.
-  const sockets = useMemo(() => socketPlans(createProfile(params), params), [params]);
 
   // Un changement d'ecran repart du haut : sinon on arrive au milieu du panneau.
   useEffect(() => {

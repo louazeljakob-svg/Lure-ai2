@@ -10,6 +10,7 @@ import type {
   TailShape,
 } from '../types/lure';
 import { LIMITS, SHAPE_PRESETS } from '../lib/presets';
+import { billSize } from '../lib/billTemplate';
 import { Fieldset, Segmented, Slider, Switch } from './ui';
 
 interface Props {
@@ -281,19 +282,25 @@ export function ShapeEditor({
         />
         {params.billMode === 'polycarbonate' ? (
           <p className="control__hint">
-            Les deux coques recoivent la meme fente d insertion, dimensionnee sur cette
-            epaisseur, et debouchante : la plaque ressort du corps. Le gabarit plat s exporte
-            en DXF ou SVG depuis le bloc d export. La bavette affichee ici n est qu un
-            fantome d aide au placement — elle n est jamais incluse dans les STL ni les STEP.
+            Les deux coques recoivent la meme fente, taillee comme l empreinte exacte de la
+            plaque majoree du seul jeu d insertion, et debouchante par l avant de la tete.
+            Le gabarit plat s exporte en DXF ou SVG. La bavette affichee ici n est qu un
+            fantome d aide au placement — jamais incluse dans les STL ni les STEP.
           </p>
         ) : null}
+        <Switch
+          label="Echelle liee"
+          checked={params.billUniform}
+          onChange={(billUniform) => onChange({ billUniform })}
+          hint="Largeur et epaisseur suivent la longueur, aux proportions de la bavette de reference (37,1 x 18,2 x 3,0 mm). Decochez pour les regler separement."
+        />
         <Slider
           label="Epaisseur"
           value={params.billThickness}
           {...LIMITS.billThickness}
-          display={mm(params.billThickness)}
-          disabled={!params.hasBib}
-          hint="Independante de la longueur et de la largeur."
+          display={params.billUniform ? `${billSize(params).thickness.toFixed(1)} mm (liee)` : mm(params.billThickness)}
+          disabled={!params.hasBib || params.billUniform}
+          hint="Independante de la longueur et de la largeur, sauf en echelle liee."
           onChange={(billThickness) => onChange({ billThickness })}
         />
         <Slider
@@ -307,6 +314,7 @@ export function ShapeEditor({
         />
         <Segmented
           label="Profil de coupe"
+          hint="« Arrondi » est la bavette universelle de reference, relevee sur le modele fourni. Les deux autres sont des profils simples."
           value={params.billProfile}
           options={[
             { value: 'rounded' as BillProfile, label: 'Arrondi' },
@@ -358,8 +366,10 @@ export function ShapeEditor({
           label="Largeur de bavette"
           value={params.bibWidth}
           {...LIMITS.bibWidth}
-          display={mm(params.bibWidth)}
-          disabled={!params.hasBib}
+          display={
+            params.billUniform ? `${billSize(params).width.toFixed(1)} mm (liee)` : mm(params.bibWidth)
+          }
+          disabled={!params.hasBib || params.billUniform}
           onChange={(bibWidth) => onChange({ bibWidth })}
         />
       </Fieldset>

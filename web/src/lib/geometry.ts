@@ -15,7 +15,6 @@ import type { BallastWeight, ClipId, LureParams } from '../types/lure';
 import { getClip, STEEL_DENSITY } from './materials';
 import { clamp, createProfile, MM_TO_CM, type ProfileSampler } from './profile';
 import { bibShape, clipHalfPlane } from './billTemplate';
-import { buildMark } from './mark';
 
 /** Densite du plomb, conservee comme repere pour l'interface. */
 export const LEAD_DENSITY = 11.34;
@@ -70,8 +69,6 @@ export interface LureGeometry {
   bib: THREE.BufferGeometry | null;
   /** Vrai quand la bavette affichee est une plaque rapportee, hors export. */
   bibIsGhost: boolean;
-  /** Marquage SAKUMA en relief sous la queue, obligatoire sur chaque export. */
-  mark: THREE.BufferGeometry | null;
   tail: THREE.BufferGeometry | null;
   /** Quincaillerie : affichee et pesee, mais jamais exportee a l'impression. */
   clip: ClipPart | null;
@@ -265,8 +262,9 @@ export function buildBib(
   profile: ProfileSampler,
   params: LureParams,
   part: ShellPart = 'full',
+  root: THREE.Vector2 | null = null,
 ): THREE.BufferGeometry {
-  const outline = bibShape(profile, params, false);
+  const outline = bibShape(profile, params);
   // L'epaisseur est desormais un reglage a part entiere, plus une fraction
   // de l'epaisseur du corps.
   const thickness = clamp(params.billThickness * MM_TO_CM, 0.05, 0.6);
@@ -312,11 +310,18 @@ export function buildBib(
   // (plongee maximale), 90 deg = perpendiculaire (nage de sub-surface).
   geometry.rotateZ(Math.PI + THREE.MathUtils.degToRad(clamp(params.bibAngle, 5, 89)));
 
-  // Recul reglable depuis la pointe du nez.
-  const offset = clamp(params.billOffset * MM_TO_CM, 0, profile.lengthCm * 0.3);
-  const anchorP = clamp(offset / Math.max(profile.lengthCm, 1e-6) + 0.03, 0.03, 0.4);
-  const anchor = profile.section(anchorP);
-  geometry.translate(profile.xAt(0) + offset, anchor.bottom * 0.75, 0);
+  // Quand la fente existe, la plaque se pose SUR SON TALON, au fond du
+  // logement : l'apercu montre alors la bavette a l'endroit exact ou elle
+  // sera une fois enfoncee. Sans fente — bavette imprimee avec le corps —
+  // le talon reste noye sous le menton.
+  if (root) {
+    geometry.translate(root.x, root.y, 0);
+  } else {
+    const offset = clamp(params.billOffset * MM_TO_CM, 0, profile.lengthCm * 0.3);
+    const anchorP = clamp(offset / Math.max(profile.lengthCm, 1e-6) + 0.03, 0.03, 0.4);
+    const anchor = profile.section(anchorP);
+    geometry.translate(profile.xAt(0) + offset, anchor.bottom * 0.75, 0);
+  }
   geometry.computeVertexNormals();
   return geometry;
 }
@@ -532,14 +537,14 @@ export function createSurfaceSampler(
 export function buildLure(
   params: LureParams,
   resolution: Resolution = DISPLAY_RESOLUTION,
+  billRoot: THREE.Vector2 | null = null,
 ): LureGeometry {
   const profile = createProfile(params);
   const body = buildBody(profile, params, resolution);
   // La bavette rapportee est modelisee malgre tout : l'utilisateur doit voir
   // ou la plaque viendra se placer avant de la decouper.
-  const bib = params.hasBib ? buildBib(profile, params) : null;
+  const bib = params.hasBib ? buildBib(profile, params, 'full', billRoot) : null;
   const bibIsGhost = params.hasBib && params.billMode === 'polycarbonate';
-  const mark = buildMark(profile, params);
   const tail = profile.hasFin ? buildTailFin(profile, params) : null;
   const clip = buildClip(profile, params.clip);
 
@@ -557,7 +562,6 @@ export function buildLure(
     body,
     bib,
     bibIsGhost,
-    mark,
     tail,
     clip,
     ballasts: ballastMarkers(profile, params.ballasts, params.ballastDensity),
@@ -569,7 +573,6 @@ export function buildLure(
     dispose: () => {
       body.dispose();
       bib?.dispose();
-      mark?.dispose();
       tail?.dispose();
       clip?.geometry.dispose();
     },

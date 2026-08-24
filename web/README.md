@@ -104,32 +104,59 @@ la male et logements correspondants dans la femelle. **Aucun booleen CSG n'est
 utilise** : les coques sont construites directement dans la parametrisation du
 loft. Le choix est mesure, pas dogmatique — sur ce maillage, un booleen laisse
 952 aretes non appariees sur 10 643, ce qui interdit un solide STEP et fragilise
-le STL ; la construction directe en laisse **zero**, sur les onze formes, les deux
+le STL ; la construction directe en laisse **zero**, sur les neuf formes, les deux
 coques et toutes les variantes testees.
 
 Le plan de joint contient toujours l'axe longitudinal, ce qui garantit que chaque
 section est coupee en deux arcs — donc que les deux coques se referment. Son
 orientation se regle de 0 degre (joint gauche / droite) a 90 degres (dos / ventre).
 
-#### Points d'ancrage places a la main
+#### Points d'ancrage : placement automatique
 
-Le placement des goupilles est manuel : on active le mode depuis le panneau
-Assemblage, on clique sur le corps dans la vue 3D (lancer de rayon sur le
-maillage), et chaque point engendre **automatiquement** son goujon sur la coque
-male, son alesage en vis-a-vis exact sur la femelle, sa portee et sa rainure de
-sortie. Les poignees se deplacent au glisser, se reglent finement au slider et
-se suppriment. Nombre de points libre : nez, ventre, queue, ou davantage.
+Un ancrage ne se positionne pas a la main, il se **deduit de la goupille** qui
+lui est affectee. La regle est la meme pour les trois cas et se recalcule des
+qu'on change de taille :
 
-La position est stockee en coordonnees **parametriques** (position le long de
-l'axe, hauteur dans le plan de joint), pas en (x, y, z) bruts : un ancrage suit
-donc la forme quand on la retaille au slider.
+| Sortie | Position sur l'axe | Position en hauteur |
+| --- | --- | --- |
+| **Nez** | En retrait de la pointe d'une **demi-longueur de goupille** | Centree entre dos et ventre a cette abscisse |
+| **Queue** | En retrait de la pointe d'une **demi-longueur de goupille** | Centree entre dos et ventre a cette abscisse |
+| **Ventre / dos** | Pourcentage libre depuis le nez | Mesuree **depuis la face correspondante**, en retrait d'une demi-longueur de goupille |
 
-Chaque ancrage porte sa propre taille de goupille, sa methode de logement, son
-cote de sortie et sa profondeur. Une portee qui deborderait de la coque ou en
-chevaucherait une autre est **signalee en rouge** dans la vue et dans le
-panneau, et n'est pas creusee : mieux vaut une coque pleine et fermee qu'une
-coque trouee. Les portees elles-memes sont rendues en surbrillance, sans quoi
-elles resteraient invisibles puisqu'elles sont creusees dans le plan de joint.
+Une goupille plus longue recule donc le point, une plus courte le rapproche : il
+n'y a jamais de position a corriger a la main pour eviter un mauvais placement.
+Les sliders de position disparaissent pour les sorties nez et queue, ou ils
+n'auraient plus de sens.
+
+Chaque point engendre **automatiquement** son goujon sur la coque male, son
+alesage en vis-a-vis exact sur la femelle, sa portee et sa rainure de sortie.
+La position est stockee en coordonnees **parametriques**, pas en (x, y, z)
+bruts : un ancrage suit donc la forme quand on la retaille au slider.
+
+Quand la taille de goupille est laissee sur **Auto** et que la section ne peut
+pas la recevoir, le generateur **descend le catalogue** jusqu'a la premiere
+taille qui tient, et l'indique dans le panneau plutot que de renvoyer une
+erreur. Une portee qui deborderait quand meme, qui en chevaucherait une autre ou
+qui tomberait dans la fente de bavette est **signalee en rouge** dans la vue et
+dans le panneau, et n'est pas creusee : mieux vaut une coque pleine et fermee
+qu'une coque trouee. Les portees elles-memes sont rendues en surbrillance, sans
+quoi elles resteraient invisibles puisqu'elles sont creusees dans le plan de
+joint.
+
+#### Profondeur du puits et cote du canal
+
+Deux cotes qui n'ont **aucune valeur figee**, toutes deux proportionnelles :
+
+- **Profondeur du puits** = largeur locale du corps a l'aplomb de la portee,
+  moins **0,5 mm de peau**. Elle est mesuree sur toute l'emprise du puits et sur
+  la plus mince des deux coques, donc elle suit le corps au lieu de le percer.
+  Un garde-fou l'empeche de depasser sa propre largeur : sur une cuiller large,
+  la regle nue creuserait dix millimetres de puits pour un fil d'un millimetre,
+  ce qui ne loge rien de plus et ne laisse qu'une coquille.
+- **Canal de sortie** = au moins **deux fois le diametre du cable**, pour
+  chacune des cinq tailles du catalogue. Un fil de 0,6 mm sort par un canal de
+  1,2 mm, un fil de 2 mm par un canal de 4 mm. La formule est proportionnelle,
+  jamais une cote en dur.
 
 #### Passages traversants
 
@@ -189,38 +216,45 @@ centre de gravite, le volume creuse se retire de la matiere imprimee.
 
 #### Bavette imprimee ou polycarbonate
 
-En mode **polycarbonate**, les deux coques recoivent la **meme** fente
-d'insertion, taillee dans le plan de joint a l'angle de la bavette et
-**debouchante** : la plaque ressort du corps au lieu d'y rester enfermee. Sa
-profondeur est bornee par l'epaisseur reellement disponible, elle ne perce donc
-jamais le flanc. Le gabarit plat s'exporte en DXF ou SVG aux cotes reelles, et
-le meme contour sert a la piece imprimee, au gabarit et a la fente : aucune
-derive possible entre les trois.
+La bavette de reference est **une piece unique**, relevee sur un modele STL
+reel (Minnow 100 : 37,09 x 18,15 x 3,00 mm). Elle se met a l'echelle librement,
+en longueur / largeur / epaisseur separees ou liees par un rapport constant.
+
+Le maillage n'est pas embarque : une plaque plane est entierement decrite par sa
+silhouette et son epaisseur, et une silhouette de trente points pese mille fois
+moins qu'un STL tout en donnant la meme piece. Ce contour unique sert a quatre
+choses — la bavette imprimee avec le corps, le gabarit DXF / SVG a decouper, la
+piece fantome de l'apercu, et la fente creusee dans les coques.
+
+En mode **polycarbonate**, les deux coques recoivent la **meme** fente : ce
+n'est pas une approximation reglee a part, c'est **l'empreinte negative de la
+plaque**, majoree du seul jeu d'insertion (0,05 mm par defaut, reglable). La
+fente est **debouchante** — la plaque ressort du corps au lieu d'y rester
+enfermee — et son enfoncement se deduit de la plaque elle-meme : on la pousse
+jusqu'a ce que sa largeur atteigne celle du logement, exactement comme une
+bavette du commerce qui bute.
+
+Trois mesures gouvernent la fente, toutes prises sur la vraie surface :
+
+- la **profondeur** vaut l'epaisseur de matiere disponible par coque sur toute
+  la largeur de la bande, moins 0,5 mm de peau — pas la demi-largeur de la
+  section, qui surestimerait de plusieurs millimetres une fente basse dans la
+  tete ;
+- la coupe du nez est reculee jusqu'a la premiere station ou la bande tient, et
+  la plaque s'ancre **sur cette face-la**, jamais sur la pointe qu'on vient de
+  retirer ;
+- si la portee d'une goupille de nez tombe dans la fente, la plaque rentre
+  moins loin ; a defaut la goupille descend d'un cran de taille ; en dernier
+  recours c'est la fente qui l'emporte et l'ancrage est signale.
 
 La bavette rapportee reste **visible dans l'editeur** comme un modele fantome
-semi-transparent, pour voir ou la plaque viendra se placer — mais elle n'est
-**jamais** incluse dans un STL ou un STEP.
+semi-transparent, **pose dans sa fente** a l'endroit exact ou la plaque se
+trouvera une fois enfoncee — mais elle n'est **jamais** incluse dans un STL ou
+un STEP.
 
 Le trace de la fente suit l'inclinaison de la bavette dans le plan vertical : il
 n'a de sens que sur un joint vertical. Au-dela de 25 degres d'inclinaison de
 joint, aucune fente n'est creusee et la simulation le signale.
-
-#### Marquage SAKUMA
-
-Chaque leurre porte le mot **SAKUMA** en relief sous la queue. Ce n'est pas une
-texture : c'est une geometrie extrudee, six prismes dont la base est enfoncee
-sous la peau et le sommet decale de 0,45 mm le long de la normale, de sorte que
-le relief sorte a l'impression. Sa taille suit celle du corps (16,6 mm de long
-pour un leurre de 160 mm, 6,6 mm pour une cuiller), il est pose entierement d'un
-cote du plan de joint et part avec la coque qui le porte.
-
-Le marquage est **obligatoire et non desactivable** : aucun reglage de
-l'interface ne le retire.
-
-Les glyphes sont decrits dans le code plutot que charges d'une police : une
-police JSON pesait plus lourd que tout le reste de l'application, et six lettres
-suffisent. Ils sont dessines au trait, sans contre-forme fermee, pour rester
-imprimables a quelques millimetres de haut.
 
 #### Controles de bavette
 
@@ -347,18 +381,24 @@ web/src/
 │   ├── Viewport3D.tsx           # scene R3F, reperes, flottaison
 │   ├── MaterialPanel.tsx        # matiere, lests, livree
 │   ├── PhysicsSimulator.tsx     # badges, assiette, alertes
-│   ├── ExportManager.tsx        # STL / JSON / apercu imprimable
+│   ├── AssemblyPanel.tsx        # deux coques, ancrages, fabrication
+│   ├── ExportManager.tsx        # STL / STEP / DXF / SVG, JSON, apercu
 │   ├── ProjectsPanel.tsx        # projets de la session
 │   ├── LureSilhouette.tsx       # silhouette SVG procedurale
 │   └── ui.tsx                   # sliders, segments, interrupteurs
 ├── lib/
 │   ├── profile.ts               # profil parametrique partage 2D / 3D
 │   ├── geometry.ts              # loft du corps, bavette, caudale, lests
+│   ├── assembly.ts              # deux coques, portees, passages, fente
+│   ├── billTemplate.ts          # bavette universelle : piece, gabarit, fente
+│   ├── hardware.ts              # catalogue de goupilles, trace du fil
+│   ├── step.ts                  # B-rep facettee AP214
+│   ├── reference.ts             # images de reference calibrees
 │   ├── physics.ts               # volumes, CG, flottabilite, alertes
 │   ├── materials.ts             # densites PLA / LW-PLA / resine / TPU
 │   ├── paint.ts                 # texture de livree generee au canvas
-│   ├── presets.ts               # 7 gabarits + bornes des reglages
-│   ├── exporters.ts             # STL binaire, JSON, telechargements
+│   ├── presets.ts               # 9 gabarits + bornes des reglages
+│   ├── exporters.ts             # STL / STEP / DXF / SVG, JSON, telechargements
 │   ├── validation.ts            # nettoyage des projets importes
 │   └── hooks.ts                 # prefers-reduced-motion, media queries
 ├── types/lure.ts
@@ -372,20 +412,26 @@ web/tools/
 
 ## Reperes de conception
 
-Les sept gabarits sont calibres pour tomber sur des valeurs realistes :
+Les neuf gabarits sont calibres pour tomber sur des valeurs realistes :
 
 | Gabarit | Cotes (mm) | Volume | Masse | Etat | Action |
 | --- | --- | --- | --- | --- | --- |
-| Minnow | 110 x 30 x 15 | 16,1 cm3 | 14,2 g | Flotte (0,88) | serree |
-| Popper | 82 x 27 x 20 | 21,1 cm3 | 14,0 g | Flotte (0,66) | large |
-| Crankbait | 62 x 45 x 20 | 18,8 cm3 | 14,6 g | Flotte (0,78) | large |
-| Jerkbait | 120 x 26 x 13 | 15,2 cm3 | 15,2 g | Suspend (1,00) | serree |
-| Spoon | 72 x 8 x 26 | 6,6 cm3 | 10,2 g | Coule (1,54) | roulante |
-| Swimbait | 135 x 46 x 24 | 59,2 cm3 | 60,0 g | Suspend (1,01) | large |
-| Topwater | 104 x 21 x 18 | 19,7 cm3 | 16,7 g | Flotte (0,85) | large |
+| Stickbait 165 | 159 x 34 x 21 | 54,5 cm3 | 33,1 g | Flotte (0,61) | serree |
+| Ryoshi | 96 x 25 x 18 | 14,1 cm3 | 11,4 g | Flotte (0,81) | serree |
+| Modele 1 (2.5 po) | 90 x 31 x 20 | 18,4 cm3 | 10,7 g | Flotte (0,58) | large |
+| Popper | 82 x 27 x 20 | 21,0 cm3 | 13,9 g | Flotte (0,66) | large |
+| Crankbait | 73 x 46 x 17 | 18,0 cm3 | 14,3 g | Flotte (0,79) | large |
+| Jerkbait | 133 x 25 x 13 | 14,9 cm3 | 14,8 g | Suspend (0,99) | serree |
+| Spoon | 72 x 8 x 26 | 6,6 cm3 | 10,1 g | Coule (1,52) | roulante |
+| Swimbait | 135 x 46 x 24 | 58,8 cm3 | 59,5 g | Suspend (1,01) | large |
+| Topwater | 104 x 21 x 18 | 19,7 cm3 | 16,5 g | Flotte (0,84) | large |
 
-Les onze gabarits sortent sans erreur ni avertissement de coherence, et leurs
-deux coques sont fermees : **zero arete non appariee** sur chacune.
+Les neuf gabarits sortent sans erreur ni avertissement de coherence, et leurs
+deux coques sont fermees : **zero arete non appariee** sur chacune, a
+l'affichage comme a la resolution d'export STEP. La bavette polycarbonate y
+laisse une vraie fente sur les neuf (52 a 852 mm3 de matiere retiree), et la
+plaque reelle y entre sans toucher la matiere — verifie par lancer de rayon sur
+cent cinquante points par gabarit.
 
 Un leurre imprime est tres flottant : c'est le lest de plomb interne qui fait le
 reglage, exactement comme en fabrication artisanale.

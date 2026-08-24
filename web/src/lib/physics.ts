@@ -15,6 +15,7 @@ import type { LureGeometry } from './geometry';
 import { getMaterial, solidFraction, WATER_DENSITY } from './materials';
 import { clamp, createProfile } from './profile';
 import { buildAssembly, resolvePin } from './assembly';
+import type { BillSlotPlan } from './billTemplate';
 import { pinPath, pinWireLength, STAINLESS_DENSITY } from './hardware';
 
 export type Buoyancy = 'float' | 'suspend' | 'sink';
@@ -164,17 +165,24 @@ export function computePhysics(
 
   const profile = createProfile(params);
 
-  // Logements de billes : la matiere retiree n'est pas imprimee, et chaque
-  // bille inox pese. Les deux effets vont en sens contraire, il faut donc
-  // les compter tous les deux.
-  const cavities =
-    params.assembly.enabled && (params.rattles.length > 0 || params.chamber.enabled)
-      ? rattleContent(params, profile)
-      : { volume: 0, mass: 0, points: [] as PointMass[] };
+  // Les logements internes retirent de la matiere : puits de goupille, canaux
+  // de sortie, fente de bavette, billes. Plutot que de les estimer un par un,
+  // on mesure ce qui est reellement imprime — le volume des deux coques.
+  const cavities = params.assembly.enabled
+    ? shellContent(params, profile)
+    : {
+        printed: massProperties(geo.body).volume,
+        mass: 0,
+        points: [] as PointMass[],
+        bill: null as BillSlotPlan | null,
+      };
+  // Bavette imprimee et caudale ne font pas partie des coques : leur volume
+  // s'ajoute a celui des deux demi-corps.
+  const appendages = Math.max(volume - massProperties(geo.body).volume, 0);
 
   const material = getMaterial(params.material);
   const fill = solidFraction(params.material, params.infill);
-  const bodyMass = Math.max(volume - cavities.volume, volume * 0.2) * material.density * fill;
+  const bodyMass = (cavities.printed + appendages) * material.density * fill;
   const lengthCm = profile.lengthCm;
   const halfLength = lengthCm / 2;
 
@@ -292,22 +300,27 @@ export function computePhysics(
       rollMarginMm,
       ballastMass,
       totalMass,
+      bill: cavities.bill,
     }),
   };
 }
 
 /**
- * Billes mobiles : volume creuse dans le corps et masse d'inox ajoutee.
+ * Matiere reellement imprimee, et billes mobiles logees dedans.
  *
- * On passe par le generateur d'assemblage plutot que par un calcul separe :
- * c'est lui qui decide si un logement tient reellement dans la section, et
- * la physique doit compter exactement ce qui sera imprime.
+ * On mesure les deux coques telles qu'elles sortiront plutot que d'estimer
+ * chaque logement : c'est le generateur d'assemblage qui decide lesquels
+ * tiennent dans la section, et la masse doit suivre cette decision-la.
  */
-function rattleContent(
+function shellContent(
   params: LureParams,
   profile: ReturnType<typeof createProfile>,
-): { volume: number; mass: number; points: PointMass[] } {
+): { printed: number; mass: number; points: PointMass[]; bill: BillSlotPlan | null } {
   const assembly = buildAssembly(profile, params, { stations: 40, arcSamples: 10 });
+  const printed =
+    massProperties(assembly.male).volume +
+    massProperties(assembly.female).volume +
+    (assembly.tenons ? massProperties(assembly.tenons).volume : 0);
   const points = assembly.rattles.map((ball) => ({
     x: ball.position[0],
     y: ball.position[1],
@@ -319,7 +332,7 @@ function rattleContent(
   assembly.tenons?.dispose();
   assembly.socketPreview?.dispose();
   for (const pin of assembly.pins) pin.geometry.dispose();
-  return { volume: assembly.cavityVolume, mass, points };
+  return { printed, mass, points, bill: assembly.billPlan };
 }
 
 // ---------------------------------------------------------------------------
@@ -334,6 +347,8 @@ interface WarningInput {
   rollMarginMm: number;
   ballastMass: number;
   totalMass: number;
+  /** Empreinte de bavette retenue par l'assemblage, ou null s'il n'y en a pas. */
+  bill: BillSlotPlan | null;
 }
 
 function buildWarnings(
@@ -454,6 +469,27 @@ function buildWarnings(
         detail: `La petite boucle mesure ${spec.loopWidth} mm alors que la tete n offre que ${available.toFixed(1)} mm de section a cet endroit. Choisissez une taille en dessous, ou epaississez l avant du corps.`,
       });
     }
+  }
+
+  if (params.hasBib && params.billMode === 'polycarbonate' && !params.assembly.enabled) {
+    list.push({
+      id: 'bill-shells',
+      level: 'warn',
+      title: 'Fente de bavette non generee',
+      detail:
+        'La fente d insertion se creuse dans le plan de joint : elle demande le corps en deux parties. Activez « Corps en deux parties » dans l onglet Assemblage, ou imprimez la bavette avec le corps.',
+    });
+  }
+
+  const slot = r.bill;
+  if (slot?.tooWide) {
+    const maxWidth = (slot.depth * 2 - params.fabrication.billFit * 0.1) * 10;
+    list.push({
+      id: 'bill-width',
+      level: 'warn',
+      title: 'Bavette trop large pour la tete',
+      detail: `Le talon mesure ${params.bibWidth.toFixed(0)} mm alors que la tete ne peut recevoir que ${maxWidth.toFixed(1)} mm avec 0,5 mm de peau. La fente est creusee au maximum possible : reduisez la largeur de la bavette, ou epaississez l avant du corps.`,
+    });
   }
 
   if (

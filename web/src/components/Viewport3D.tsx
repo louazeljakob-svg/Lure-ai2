@@ -17,7 +17,6 @@ import type { LureParams } from '../types/lure';
 import type { LureGeometry } from '../lib/geometry';
 import { buildAssembly, worldToAnchor, type AssemblyResult } from '../lib/assembly';
 import { createSurfaceSampler } from '../lib/geometry';
-import { markOnMaleSide } from '../lib/mark';
 import { createProfile } from '../lib/profile';
 import type { ThreeEvent } from '@react-three/fiber';
 import { FINISHES } from '../lib/materials';
@@ -160,16 +159,6 @@ function LureModel({
           />
         </mesh>
       ) : null}
-
-      {geo.mark ? (
-        <mesh geometry={geo.mark}>
-          <meshStandardMaterial
-            color={params.paint.belly}
-            roughness={FINISHES[params.paint.finish].roughness}
-            metalness={FINISHES[params.paint.finish].metalness}
-          />
-        </mesh>
-      ) : null}
     </group>
   );
 }
@@ -299,27 +288,15 @@ function WaterPlane({ y, radius }: { y: number | null; radius: number }) {
  */
 function ExplodedAssembly({
   assembly,
-  geo,
   params,
   spread,
 }: {
   assembly: AssemblyResult;
-  geo: LureGeometry;
   params: LureParams;
   spread: number;
 }) {
   const offset = assembly.splitNormal.clone().multiplyScalar(spread);
   const finish = FINISHES[params.paint.finish];
-  // Le marquage part avec la coque qui le porte, comme a l'export.
-  const markOnMale = useMemo(
-    () => markOnMaleSide(createProfile(params), params),
-    [params],
-  );
-  const mark = geo.mark ? (
-    <mesh geometry={geo.mark}>
-      <meshStandardMaterial color="#101114" roughness={0.6} />
-    </mesh>
-  ) : null;
 
   return (
     <group>
@@ -337,7 +314,6 @@ function ExplodedAssembly({
             <meshStandardMaterial color="#e30613" roughness={0.5} />
           </mesh>
         ) : null}
-        {markOnMale ? mark : null}
       </group>
 
       <group position={offset.clone().negate()}>
@@ -349,7 +325,6 @@ function ExplodedAssembly({
             side={THREE.DoubleSide}
           />
         </mesh>
-        {markOnMale ? null : mark}
       </group>
 
       {assembly.pins.map((pin, index) => (
@@ -617,12 +592,7 @@ export function Viewport3D({
             }}
           >
             {exploded && assembly ? (
-              <ExplodedAssembly
-                assembly={assembly}
-                geo={geo}
-                params={params}
-                spread={radius * 0.55}
-              />
+              <ExplodedAssembly assembly={assembly} params={params} spread={radius * 0.55} />
             ) : (
               <LureModel
                 geo={geo}
