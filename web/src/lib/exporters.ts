@@ -13,11 +13,18 @@ import {
   buildBib,
   buildLure,
   buildTailFin,
+  printedBodies,
+  DISPLAY_RESOLUTION,
   STEP_RESOLUTION,
   type LureGeometry,
   type ShellPart,
 } from './geometry';
-import { ASSEMBLY_DISPLAY, ASSEMBLY_STEP, billPlanFor, buildAssembly } from './assembly';
+import {
+  ASSEMBLY_STEP,
+  assemblyExport,
+  billPlanFor,
+  buildAssembly,
+} from './assembly';
 import { bibOutline, bibShape, billHalfWidthAt, billSize } from './billTemplate';
 import { createProfile } from './profile';
 import { buildStepFile } from './step';
@@ -51,14 +58,16 @@ function collectParts(
   const printedBib = geo.bib && !geo.bibIsGhost ? geo.bib : null;
 
   if (kind === 'assembly' || !params.assembly.enabled) {
-    parts.push(geo.body);
+    // Un leurre articule sort en deux segments : ce sont eux les pieces a
+    // imprimer, avec leurs logements de quincaillerie deja creuses.
+    parts.push(...printedBodies(geo));
     if (printedBib) parts.push(printedBib);
     if (geo.tail) parts.push(geo.tail);
     return { parts, owned };
   }
 
   const profile = createProfile(params);
-  const assembly = buildAssembly(profile, params, coarse ? ASSEMBLY_STEP : ASSEMBLY_DISPLAY);
+  const assembly = buildAssembly(profile, params, coarse ? ASSEMBLY_STEP : assemblyExport(params));
   owned.push(assembly.male, assembly.female, ...assembly.pins.map((pin) => pin.geometry));
   if (assembly.socketPreview) owned.push(assembly.socketPreview);
   if (assembly.tenons) owned.push(assembly.tenons);
@@ -226,7 +235,16 @@ export async function exportSTL(
   name: string,
   kind: ExportKind = 'assembly',
 ): Promise<SaveOutcome> {
-  const { parts, owned } = collectParts(params, geo, kind, false);
+  // Le relief des ecailles est CUIT a l'export, meme si l'editeur montre une
+  // normal map : ce qui part a l'impression doit porter la matiere pour de
+  // bon. Le maillage est alors regenere assez dense pour la tenir.
+  const baked =
+    params.scales.enabled && !params.scales.baked
+      ? buildLure(params, DISPLAY_RESOLUTION, null, true)
+      : null;
+  const source = baked ?? geo;
+  const { parts, owned } = collectParts(params, source, kind, false);
+  if (baked) owned.push(baked.body);
   const placed = printableParts(parts);
   const group = new THREE.Group();
   for (const part of placed) group.add(new THREE.Mesh(part));

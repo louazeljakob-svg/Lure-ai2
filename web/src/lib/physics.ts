@@ -15,7 +15,9 @@ import type { LureGeometry } from './geometry';
 import { getMaterial, solidFraction, WATER_DENSITY } from './materials';
 import { clamp, createProfile } from './profile';
 import { buildAssembly, resolvePin } from './assembly';
+import { printedBodies } from './geometry';
 import type { BillSlotPlan } from './billTemplate';
+import type { ArticulationPlan } from './articulation';
 import { pinPath, pinWireLength, STAINLESS_DENSITY } from './hardware';
 
 export type Buoyancy = 'float' | 'suspend' | 'sink';
@@ -171,7 +173,7 @@ export function computePhysics(
   const cavities = params.assembly.enabled
     ? shellContent(params, profile)
     : {
-        printed: massProperties(geo.body).volume,
+        printed: printedBodies(geo).reduce((sum, part) => sum + massProperties(part).volume, 0),
         mass: 0,
         points: [] as PointMass[],
         bill: null as BillSlotPlan | null,
@@ -179,10 +181,15 @@ export function computePhysics(
   // Bavette imprimee et caudale ne font pas partie des coques : leur volume
   // s'ajoute a celui des deux demi-corps.
   const appendages = Math.max(volume - massProperties(geo.body).volume, 0);
+  // Quincaillerie du joint : elle s'achete, elle ne s'imprime pas, mais elle
+  // pese — a condition que l'utilisateur ait renseigne ses masses.
+  const jointMass = geo.jointPlan ? geo.jointPlan.hardwareMass : 0;
 
   const material = getMaterial(params.material);
-  const fill = solidFraction(params.material, params.infill);
-  const bodyMass = (cavities.printed + appendages) * material.density * fill;
+  // Les parois de perimetre comptent : a remplissage egal, six parois
+  // deposent bien plus de matiere qu'une seule.
+  const fill = solidFraction(params.material, params.infill, params.print.perimeters);
+  const bodyMass = (cavities.printed + appendages) * material.density * fill + jointMass;
   const lengthCm = profile.lengthCm;
   const halfLength = lengthCm / 2;
 
@@ -301,6 +308,7 @@ export function computePhysics(
       ballastMass,
       totalMass,
       bill: cavities.bill,
+      joint: geo.jointPlan,
     }),
   };
 }
@@ -349,6 +357,8 @@ interface WarningInput {
   totalMass: number;
   /** Empreinte de bavette retenue par l'assemblage, ou null s'il n'y en a pas. */
   bill: BillSlotPlan | null;
+  /** Cotes du joint articule, ou null. */
+  joint: ArticulationPlan | null;
 }
 
 function buildWarnings(
@@ -469,6 +479,26 @@ function buildWarnings(
         detail: `La petite boucle mesure ${spec.loopWidth} mm alors que la tete n offre que ${available.toFixed(1)} mm de section a cet endroit. Choisissez une taille en dessous, ou epaississez l avant du corps.`,
       });
     }
+  }
+
+  if (params.articulation.enabled && params.assembly.enabled) {
+    list.push({
+      id: 'joint-shells',
+      level: 'warn',
+      title: 'Articulation et deux coques ne se cumulent pas',
+      detail:
+        'L articulation coupe le corps en travers, l impression en deux coques le coupe dans la longueur : les deux ensemble donneraient quatre pieces dont l assemblage n est pas genere. Desactivez « Corps en deux parties » pour obtenir les segments articules.',
+    });
+  }
+
+  if (r.joint && r.joint.massUnknown) {
+    list.push({
+      id: 'joint-mass',
+      level: 'warn',
+      title: 'Poids de la quincaillerie non renseigne',
+      detail:
+        'Le verdict de flottabilite ignore les oeillets et la goupille tant que leur masse vaut zero. Pesez une piece sur une balance de cuisine et reportez la valeur : sur un swimbait, la quincaillerie pese souvent plus que le lest.',
+    });
   }
 
   if (params.hasBib && params.billMode === 'polycarbonate' && !params.assembly.enabled) {

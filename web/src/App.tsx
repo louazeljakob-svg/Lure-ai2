@@ -7,6 +7,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
+  Decal,
   LureParams,
   PaintConfig,
   PinAnchor,
@@ -24,7 +25,22 @@ import {
   type ReferenceImage,
 } from './lib/reference';
 import { ReferencePanel } from './components/ReferencePanel';
-import { buildLure } from './lib/geometry';
+import { buildLure, PREVIEW_RESOLUTION } from './lib/geometry';
+import { useHistory } from './lib/history';
+import { fitToBody } from './lib/articulation';
+import { emptyReference } from './lib/presets';
+import { Outliner, type AddKind, type NodeKind, type SceneNode } from './components/Outliner';
+import { OutlineEditor } from './components/OutlineEditor';
+import {
+  ArticulationInspector,
+  DecalInspector,
+  JointEyeInspector,
+  JointSlotInspector,
+  PrintInspector,
+  ScalesInspector,
+} from './components/Inspector';
+import { runPrintChecks } from './lib/printCheck';
+import { Fieldset } from './components/ui';
 import { computePhysics } from './lib/physics';
 import { clonePreset, getPreset } from './lib/presets';
 import {
@@ -48,7 +64,7 @@ import { ShapeGallery } from './components/ShapeGallery';
 import { Viewport3D } from './components/Viewport3D';
 
 type Route = 'gallery' | 'editor';
-type PanelTab = 'material' | 'assembly' | 'reference' | 'physics' | 'projects';
+type PanelTab = 'scene' | 'material' | 'assembly' | 'reference' | 'physics' | 'projects';
 type Pane = 'shape' | 'panel';
 
 interface Toast {
@@ -58,6 +74,7 @@ interface Toast {
 }
 
 const PANEL_META: Record<PanelTab, { title: string; subtitle: string; tab: string }> = {
+  scene: { title: 'Scene', subtitle: 'Arbre des pieces et inspecteur', tab: 'Scene' },
   material: { title: 'Matiere & finition', subtitle: 'Impression, lestage, livree', tab: 'Matiere' },
   assembly: { title: 'Assemblage', subtitle: 'Ancrages, goujons, goupilles', tab: 'Assemblage' },
   reference: { title: 'Reference', subtitle: 'Images calees a l echelle', tab: 'Reference' },
@@ -69,12 +86,16 @@ const newId = () => `p-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
 export default function App() {
   const [route, setRoute] = useState<Route>('gallery');
-  const [params, setParams] = useState<LureParams>(() => clonePreset('ryoshi'));
+  // Toute modification passe par la pile d'annulation : c'est elle qui porte
+  // l'etat courant. Les chargements complets la reinitialisent.
+  const history = useHistory<LureParams>(() => clonePreset('ryoshi'));
+  const params = history.state;
+  const setParams = history.set;
   const [name, setName] = useState('Ryoshi 86');
   const [water, setWater] = useState<WaterId>('fresh');
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [panelTab, setPanelTab] = useState<PanelTab>('material');
+  const [panelTab, setPanelTab] = useState<PanelTab>('scene');
   const [pane, setPane] = useState<Pane>('shape');
   const [toasts, setToasts] = useState<Toast[]>([]);
   // Incremente a chaque remplacement complet des parametres : le viewport recadre.
@@ -87,6 +108,15 @@ export default function App() {
   const [picks, setPicks] = useState<{ u: number; v: number }[]>([]);
   const [sculpting, setSculpting] = useState(false);
   const [selectedSculpt, setSelectedSculpt] = useState<string | null>(null);
+  // Arbre de scene : la selection pilote l'inspecteur, et l'editeur de
+  // contour s'ouvre sur la piece qui le demande.
+  const [selectedNode, setSelectedNode] = useState<string>('body');
+  const [selectedKind, setSelectedKind] = useState<NodeKind>('body');
+  const [editing, setEditing] = useState<{ kind: 'outline' | 'decal'; id?: string } | null>(null);
+  const [dark, setDark] = useState(false);
+  // Etat de sauvegarde, lu par la barre basse : « Enregistre » ne doit
+  // s'afficher que si le projet en cours correspond a ce qui est en memoire.
+  const [saveState, setSaveState] = useState<'saved' | 'dirty' | 'saving'>('saved');
   const galleryFileRef = useRef<HTMLInputElement>(null);
 
   // --- Geometrie & physique, regenerees a chaque changement ---------------
@@ -96,7 +126,15 @@ export default function App() {
   const plans = useMemo(() => assemblyPlans(createProfile(params), params), [params]);
   const sockets = plans.sockets;
   const geo = useMemo(
-    () => buildLure(params, undefined, plans.billPlan?.root ?? null),
+    () =>
+      buildLure(
+        params,
+        PREVIEW_RESOLUTION[params.print.preview],
+        plans.billPlan?.root ?? null,
+        // Ecailles cuites : le relief existe pour de bon dans le maillage, au
+        // prix d'un maillage bien plus dense. Sinon, normal map.
+        params.scales.baked,
+      ),
     [params, plans],
   );
   useEffect(() => () => geo.dispose(), [geo]);
@@ -106,6 +144,29 @@ export default function App() {
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: 'auto' });
   }, [route]);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  }, [dark]);
+
+  // Toute modification rend le projet different de ce qui est enregistre.
+  useEffect(() => {
+    setSaveState('dirty');
+  }, [params, name]);
+
+  // Annuler / retablir au clavier, partout dans l'editeur.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'z') return;
+      event.preventDefault();
+      if (event.shiftKey) history.redo();
+      else history.undo();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [history]);
 
   const pushToast = useCallback((tone: Toast['tone'], message: string) => {
     const id = Date.now() + Math.random();
@@ -119,9 +180,133 @@ export default function App() {
     setParams((current) => ({ ...current, ...patch }));
   }, []);
 
+  const updateDecal = useCallback(
+    (id: string, patch: Partial<Decal>) => {
+      setParams((current) => ({
+        ...current,
+        decals: current.decals.map((decal) =>
+          decal.id === id ? { ...decal, ...patch } : decal,
+        ),
+      }));
+    },
+    [setParams],
+  );
+
+  const addDecal = useCallback(() => {
+    const id = `decal-${Date.now().toString(36)}`;
+    setParams((current) => ({
+      ...current,
+      decals: [
+        ...current.decals,
+        {
+          id,
+          name: current.decals.length === 0 ? 'Decal' : `Decal ${current.decals.length + 1}`,
+          visible: true,
+          outline: { nodes: [], closed: true, mirror: false },
+          reference: emptyReference(),
+          style: 'engraved',
+          depth: 0.4,
+          softness: 30,
+          mirror: true,
+          previewOpacity: 100,
+          // Pose par defaut sur la joue : c'est le decal que l'on dessine en
+          // premier neuf fois sur dix.
+          position: 0.28,
+          height: 0.15,
+          rotation: 0,
+          size: Math.max(current.length * 0.12, 4),
+        },
+      ],
+    }));
+    setSelectedNode(id);
+    setSelectedKind('decal');
+    setEditing({ kind: 'decal', id });
+    return id;
+  }, [setParams]);
+
+  const duplicateDecal = useCallback(
+    (id: string) => {
+      setParams((current) => {
+        const source = current.decals.find((decal) => decal.id === id);
+        if (!source) return current;
+        const copy: Decal = {
+          ...source,
+          id: `decal-${Date.now().toString(36)}`,
+          name: `${source.name} (copie)`,
+          outline: {
+            ...source.outline,
+            nodes: source.outline.nodes.map((node) => ({ ...node })),
+          },
+          reference: { ...source.reference },
+          // Decalee, sans quoi la copie se superposerait a l'original et
+          // l'utilisateur croirait qu'il ne s'est rien passe.
+          position: Math.min(source.position + 0.06, 0.97),
+        };
+        return { ...current, decals: [...current.decals, copy] };
+      });
+    },
+    [setParams],
+  );
+
+  const removeDecal = useCallback(
+    (id: string) => {
+      setParams((current) => ({
+        ...current,
+        decals: current.decals.filter((decal) => decal.id !== id),
+      }));
+      setSelectedNode('body');
+      setSelectedKind('body');
+    },
+    [setParams],
+  );
+
+  const reorderDecal = useCallback(
+    (draggedId: string, beforeId: string) => {
+      setParams((current) => {
+        const list = [...current.decals];
+        const from = list.findIndex((decal) => decal.id === draggedId);
+        const to = list.findIndex((decal) => decal.id === beforeId);
+        if (from < 0 || to < 0 || from === to) return current;
+        const [moved] = list.splice(from, 1);
+        list.splice(to, 0, moved);
+        return { ...current, decals: list };
+      });
+    },
+    [setParams],
+  );
+
+  const addBallast = useCallback(() => {
+    setParams((current) => ({
+      ...current,
+      ballasts: [
+        ...current.ballasts,
+        {
+          id: `lest-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          // Pose bas et au milieu : c'est de la que part tout reglage
+          // d'assiette, et l'utilisateur remonte ensuite ce qu'il faut.
+          position: 0.5,
+          height: -0.7,
+          mass: 1.5,
+          shape: 'sphere' as const,
+        },
+      ],
+    }));
+    setPanelTab('material');
+  }, [setParams]);
+
+  const fitJoint = useCallback(() => {
+    setParams((current) => ({
+      ...current,
+      articulation: {
+        ...current.articulation,
+        ...fitToBody(createProfile(current), current.articulation),
+      },
+    }));
+  }, [setParams]);
+
   const loadPreset = useCallback((shape: ShapeId) => {
     const preset = getPreset(shape);
-    setParams(clonePreset(shape));
+    history.reset(clonePreset(shape));
     setName(`${preset.label} ${preset.params.length}`);
     setActiveId(null);
     setFitKey((n) => n + 1);
@@ -368,6 +553,7 @@ export default function App() {
     };
     setProjects((current) => [project, ...current]);
     setActiveId(project.id);
+    setSaveState('saved');
     pushToast('ok', `« ${cleanName} » ajoute aux projets de la session.`);
   }, [activeId, name, params, pushToast]);
 
@@ -375,7 +561,7 @@ export default function App() {
     (id: string) => {
       const project = projects.find((item) => item.id === id);
       if (!project) return;
-      setParams({
+      history.reset({
         ...project.params,
         ballasts: project.params.ballasts.map((item) => ({ ...item })),
         paint: { ...project.params.paint },
@@ -447,7 +633,7 @@ export default function App() {
     async (file: File) => {
       try {
         const imported = await readProjectFile(file);
-        setParams(imported.params);
+        history.reset(imported.params);
         setName(imported.name);
         setActiveId(null);
         setFitKey((n) => n + 1);
@@ -495,6 +681,145 @@ export default function App() {
     setPalettes((current) => current.filter((palette) => palette.id !== id));
   }, []);
 
+  /**
+   * Arbre de scene.
+   *
+   * Il est DERIVE des parametres a chaque rendu plutot que stocke : il ne
+   * peut donc pas se desynchroniser du modele, et une piece supprimee
+   * disparait de l'arbre sans code de nettoyage.
+   */
+  const sceneNodes = useMemo<SceneNode[]>(() => {
+    const jointChildren: SceneNode[] = [];
+    if (params.articulation.enabled) {
+      for (let i = 0; i < params.articulation.eyeCount; i++) {
+        jointChildren.push({
+          id: `joint-eye-${i}`,
+          kind: 'jointEye',
+          icon: '◎',
+          label: `${i + 1}. Oeillet a vis`,
+        });
+      }
+      if (params.articulation.hardware === 'pin') {
+        jointChildren.push({ id: 'joint-pin', kind: 'jointPin', icon: '│', label: 'Goupille' });
+      }
+      jointChildren.push({ id: 'joint-slot', kind: 'jointSlot', icon: '▭', label: '1. Fente' });
+    }
+
+    const bodyChildren: SceneNode[] = [
+      { id: 'outline', kind: 'outline', icon: '✎', label: 'Profil' },
+      ...params.assembly.anchors.map((anchor, index) => {
+        const plan = sockets.find((socket) => socket.anchorId === anchor.id);
+        return {
+          id: anchor.id,
+          kind: 'anchor' as const,
+          icon: '⚓',
+          label: index === 0 ? 'Attache de ligne' : `Support d hamecon ${index}`,
+          warning: plan && !plan.valid ? (plan.problem ?? undefined) : undefined,
+          onRemove: () => removeAnchor(anchor.id),
+        };
+      }),
+      { id: 'eyes', kind: 'eyes', icon: '👁', label: 'Yeux', visible: params.eyes.enabled,
+        onToggleVisible: () => updateParams({ eyes: { ...params.eyes, enabled: !params.eyes.enabled } }) },
+      { id: 'gills', kind: 'gills', icon: '≈', label: 'Branchies', visible: params.gills.enabled,
+        onToggleVisible: () => updateParams({ gills: { ...params.gills, enabled: !params.gills.enabled } }) },
+      ...params.decals.map((decal) => ({
+        id: decal.id,
+        kind: 'decal' as const,
+        icon: '◈',
+        label: decal.name,
+        visible: decal.visible,
+        warning:
+          decal.outline.nodes.length < 2
+            ? 'Aucun contour dessine : ce decal ne marque pas le corps.'
+            : undefined,
+        dragGroup: 'decal',
+        onDropBefore: (draggedId: string) => reorderDecal(draggedId, decal.id),
+        onToggleVisible: () => updateDecal(decal.id, { visible: !decal.visible }),
+        onDuplicate: () => duplicateDecal(decal.id),
+        onRemove: () => removeDecal(decal.id),
+        onRename: (name: string) => updateDecal(decal.id, { name }),
+      })),
+      { id: 'scales', kind: 'scales', icon: '⬡', label: 'Ecailles', visible: params.scales.enabled,
+        onToggleVisible: () => updateParams({ scales: { ...params.scales, enabled: !params.scales.enabled } }) },
+    ];
+
+    if (params.hasBib) {
+      bodyChildren.push({ id: 'bib', kind: 'bib', icon: '◣', label: 'Bavette' });
+    }
+    if (params.articulation.enabled) {
+      bodyChildren.push({
+        id: 'articulation',
+        kind: 'articulation',
+        icon: '⚯',
+        label: 'Articulation',
+        children: jointChildren,
+        warning:
+          params.assembly.enabled
+            ? 'Ne se cumule pas avec l impression en deux coques.'
+            : undefined,
+        onRemove: () =>
+          updateParams({ articulation: { ...params.articulation, enabled: false } }),
+      });
+    }
+    for (const ballast of params.ballasts) {
+      bodyChildren.push({
+        id: ballast.id,
+        kind: 'ballast',
+        icon: '●',
+        label: `Lest ${ballast.mass.toFixed(1)} g`,
+      });
+    }
+
+    return [
+      {
+        id: 'project',
+        kind: 'project',
+        icon: '▤',
+        label: name,
+        onRename: setName,
+        children: [
+          { id: 'environment', kind: 'environment', icon: '≋', label: 'Environnement' },
+          { id: 'body', kind: 'body', icon: '🐟', label: 'Corps', children: bodyChildren },
+        ],
+      },
+    ];
+  }, [params, sockets, name, updateParams, updateDecal, duplicateDecal, removeDecal, reorderDecal, removeAnchor]);
+
+  const onAddNode = useCallback(
+    (what: AddKind) => {
+      if (what === 'decal') return void addDecal();
+      if (what === 'scales') {
+        updateParams({ scales: { ...params.scales, enabled: true } });
+        setSelectedNode('scales');
+        setSelectedKind('scales');
+        return;
+      }
+      if (what === 'articulation') {
+        updateParams({ articulation: { ...params.articulation, enabled: true } });
+        setSelectedNode('articulation');
+        setSelectedKind('articulation');
+        return;
+      }
+      if (what === 'eyes') {
+        updateParams({ eyes: { ...params.eyes, enabled: true } });
+        setSelectedNode('eyes');
+        setSelectedKind('eyes');
+        return;
+      }
+      if (what === 'anchor') return addAnchor();
+      if (what === 'ballast') return addBallast();
+      if (what === 'bib') {
+        updateParams({ hasBib: true });
+        setSelectedNode('bib');
+        setSelectedKind('bib');
+      }
+    },
+    [addDecal, addAnchor, addBallast, params, updateParams],
+  );
+
+  const selectedDecal = params.decals.find((decal) => decal.id === selectedNode) ?? null;
+  const checks = useMemo(() => runPrintChecks(params, geo), [params, geo]);
+
   const panelMeta = PANEL_META[panelTab];
 
   return (
@@ -536,11 +861,44 @@ export default function App() {
           >
             Editeur
           </button>
+          <button
+            type="button"
+            className="navlink"
+            aria-current={route === 'editor' && panelTab === 'physics' ? 'page' : undefined}
+            onClick={() => {
+              setRoute('editor');
+              setPane('panel');
+              setPanelTab('physics');
+            }}
+          >
+            Simuler
+          </button>
+          <button
+            type="button"
+            className="navlink"
+            aria-current={route === 'editor' && panelTab === 'projects' ? 'page' : undefined}
+            onClick={() => {
+              setRoute('editor');
+              setPane('panel');
+              setPanelTab('projects');
+            }}
+          >
+            Exporter
+          </button>
         </nav>
 
         <span className="header__spacer" />
 
         <div className="header__actions">
+          <button
+            type="button"
+            className="btn btn--sm btn--ghost"
+            aria-pressed={dark}
+            title={dark ? 'Passer au theme clair' : 'Passer au theme sombre'}
+            onClick={() => setDark((value) => !value)}
+          >
+            {dark ? '☀' : '☾'}
+          </button>
           {route === 'editor' ? (
             <>
               <span
@@ -659,7 +1017,46 @@ export default function App() {
               selectedSculpt={selectedSculpt}
               onSelectSculpt={setSelectedSculpt}
               onDragSculpt={dragSculpt}
+              jointFocus={selectedKind.startsWith('joint') || selectedKind === 'articulation'}
             />
+
+            {editing ? (
+              <OutlineEditor
+                title={editing.kind === 'outline' ? 'Contour du profil' : 'Contour du decal'}
+                hint={
+                  editing.kind === 'outline'
+                    ? 'Le trace remplace le dos et le ventre calcules par les curseurs. La maquette 3D suit a chaque geste.'
+                    : 'La forme sera projetee sur le corps puis mise en relief ou gravee.'
+                }
+                outline={
+                  editing.kind === 'outline'
+                    ? params.outline
+                    : (params.decals.find((d) => d.id === editing.id)?.outline ?? {
+                        nodes: [],
+                        closed: true,
+                        mirror: false,
+                      })
+                }
+                reference={
+                  editing.kind === 'outline'
+                    ? params.outlineReference
+                    : (params.decals.find((d) => d.id === editing.id)?.reference ?? emptyReference())
+                }
+                onChange={(outline) => {
+                  if (editing.kind === 'outline') updateParams({ outline });
+                  else if (editing.id) updateDecal(editing.id, { outline });
+                }}
+                onReference={(reference) => {
+                  if (editing.kind === 'outline') updateParams({ outlineReference: reference });
+                  else if (editing.id) updateDecal(editing.id, { reference });
+                }}
+                onClose={() => setEditing(null)}
+                onUndo={history.undo}
+                onRedo={history.redo}
+                canUndo={history.canUndo}
+                canRedo={history.canRedo}
+              />
+            ) : null}
 
             <section className="panel panel--side" aria-label="Matiere, simulation et projets">
               <div className="panel__head">
@@ -685,6 +1082,153 @@ export default function App() {
               </div>
 
               <div role="tabpanel" aria-labelledby={`subtab-${panelTab}`}>
+                {panelTab === 'scene' ? (
+                  <>
+                    <Outliner
+                      nodes={sceneNodes}
+                      selected={selectedNode}
+                      params={params}
+                      onSelect={(id, kind) => {
+                        setSelectedNode(id);
+                        setSelectedKind(kind);
+                        if (kind === 'anchor') setSelectedAnchor(id);
+                      }}
+                      onAdd={onAddNode}
+                    />
+
+                    {selectedKind === 'decal' && selectedDecal ? (
+                      <DecalInspector
+                        decal={selectedDecal}
+                        onChange={(patch) => updateDecal(selectedDecal.id, patch)}
+                        onEditOutline={() => setEditing({ kind: 'decal', id: selectedDecal.id })}
+                      />
+                    ) : null}
+
+                    {selectedKind === 'scales' ? (
+                      <ScalesInspector
+                        scales={params.scales}
+                        onChange={(patch) =>
+                          updateParams({ scales: { ...params.scales, ...patch } })
+                        }
+                      />
+                    ) : null}
+
+                    {selectedKind === 'outline' ? (
+                      <Fieldset
+                        legend="Profil"
+                        hint="Silhouette dessinee a la main par-dessus une photo. Tant qu elle est vide, le dos et le ventre suivent les curseurs de forme."
+                      >
+                        <button
+                          type="button"
+                          className="btn btn--primary btn--block"
+                          onClick={() => setEditing({ kind: 'outline' })}
+                        >
+                          {params.outline.nodes.length >= 2
+                            ? 'Modifier la silhouette'
+                            : 'Dessiner la silhouette'}
+                        </button>
+                        {params.outline.nodes.length >= 2 ? (
+                          <button
+                            type="button"
+                            className="btn btn--block btn--ghost btn--danger"
+                            onClick={() =>
+                              updateParams({ outline: { nodes: [], closed: true, mirror: false } })
+                            }
+                          >
+                            Revenir aux curseurs
+                          </button>
+                        ) : null}
+                      </Fieldset>
+                    ) : null}
+
+                    {selectedKind === 'articulation' ? (
+                      <ArticulationInspector
+                        config={params.articulation}
+                        lengthMm={params.length}
+                        effectiveSwing={geo.jointPlan ? geo.jointPlan.swing : null}
+                        onChange={(patch) =>
+                          updateParams({ articulation: { ...params.articulation, ...patch } })
+                        }
+                        onFit={fitJoint}
+                      />
+                    ) : null}
+
+                    {selectedKind === 'jointEye' || selectedKind === 'jointPin' ? (
+                      <JointEyeInspector
+                        config={params.articulation}
+                        onChange={(patch) =>
+                          updateParams({ articulation: { ...params.articulation, ...patch } })
+                        }
+                      />
+                    ) : null}
+
+                    {selectedKind === 'jointSlot' ? (
+                      <JointSlotInspector
+                        config={params.articulation}
+                        onChange={(patch) =>
+                          updateParams({ articulation: { ...params.articulation, ...patch } })
+                        }
+                      />
+                    ) : null}
+
+                    <details className="advanced advanced--panel" open>
+                      <summary>Fabrication &amp; validation</summary>
+                      <PrintInspector
+                        print={params.print}
+                        params={params}
+                        onChange={(patch) =>
+                          updateParams({ print: { ...params.print, ...patch } })
+                        }
+                        onParams={updateParams}
+                      />
+
+                      <div className={`verdict verdict--${physics.buoyancy}`}>
+                        {physics.buoyancy === 'float'
+                          ? '🔵 CE LEURRE VA FLOTTER'
+                          : physics.buoyancy === 'suspend'
+                            ? '🟡 CE LEURRE SERA SUSPENDU'
+                            : '⚫ CE LEURRE VA COULER'}
+                      </div>
+                      <dl className="readout">
+                        <div>
+                          <dt>Volume</dt>
+                          <dd>{physics.volumeCm3.toFixed(2)} cm3</dd>
+                        </div>
+                        <div>
+                          <dt>Poids</dt>
+                          <dd>{physics.totalMass.toFixed(2)} g</dd>
+                        </div>
+                        <div>
+                          <dt>vs eau</dt>
+                          <dd>
+                            {Math.abs(physics.totalMass - physics.displacedMass).toFixed(2)} g
+                            {physics.totalMass < physics.displacedMass
+                              ? ' plus leger que l eau'
+                              : ' plus lourd que l eau'}
+                          </dd>
+                        </div>
+                      </dl>
+
+                      <p className="control__hint">Controle d impression</p>
+                      <ul className="checks">
+                        {checks.map((check) => (
+                          <li key={check.id} className={check.ok ? 'checks__ok' : 'checks__warn'}>
+                            <span aria-hidden="true">{check.ok ? '✅' : '⚠️'}</span>
+                            <div>
+                              <strong>{check.label}</strong>
+                              <span>{check.detail}</span>
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                      <p className={checks.every((c) => c.ok) ? 'ready ready--ok' : 'ready'}>
+                        {checks.every((c) => c.ok)
+                          ? 'Pret a imprimer.'
+                          : `${checks.filter((c) => !c.ok).length} point(s) a regarder avant d imprimer.`}
+                      </p>
+                    </details>
+                  </>
+                ) : null}
                 {panelTab === 'material' ? (
                   <MaterialPanel
                     params={params}
@@ -763,6 +1307,85 @@ export default function App() {
               />
             </section>
           </main>
+
+          {/*
+            Barre d'etat : ce qu'il faut savoir en permanence sans quitter le
+            modele des yeux — ou en est la sauvegarde, ce que pese la piece,
+            et de quoi basculer l'affichage.
+          */}
+          <footer className="statusbar">
+            <span className={`statusbar__save statusbar__save--${saveState}`}>
+              {saveState === 'saved'
+                ? 'Enregistre'
+                : saveState === 'saving'
+                  ? 'Enregistrement…'
+                  : 'Synchronisation en attente'}
+            </span>
+
+            <span className={`statusbar__buoy statusbar__buoy--${physics.buoyancy}`}>
+              {physics.buoyancy === 'float'
+                ? 'Flotte'
+                : physics.buoyancy === 'suspend'
+                  ? 'Suspend'
+                  : 'Coule'}{' '}
+              · {physics.totalMass.toFixed(1)} g
+            </span>
+
+            <span className="statusbar__spacer" />
+
+            <button
+              type="button"
+              className="statusbar__toggle"
+              onClick={history.undo}
+              disabled={!history.canUndo}
+              title="Annuler (Ctrl+Z)"
+            >
+              ↶ Annuler
+            </button>
+            <button
+              type="button"
+              className="statusbar__toggle"
+              onClick={history.redo}
+              disabled={!history.canRedo}
+              title="Retablir (Ctrl+Maj+Z)"
+            >
+              ↷ Retablir
+            </button>
+
+            <button
+              type="button"
+              className="statusbar__toggle"
+              aria-pressed={params.scales.baked}
+              disabled={!params.scales.enabled}
+              onClick={() =>
+                updateParams({ scales: { ...params.scales, baked: !params.scales.baked } })
+              }
+            >
+              Ecailles cuites
+            </button>
+            <button
+              type="button"
+              className="statusbar__toggle"
+              aria-pressed={params.print.finish === 'faceted'}
+              onClick={() =>
+                updateParams({
+                  print: {
+                    ...params.print,
+                    finish: params.print.finish === 'faceted' ? 'smooth' : 'faceted',
+                  },
+                })
+              }
+            >
+              Facette
+            </button>
+            <button
+              type="button"
+              className="statusbar__toggle"
+              onClick={() => document.documentElement.requestFullscreen?.()}
+            >
+              Plein ecran
+            </button>
+          </footer>
         </>
       )}
 

@@ -20,7 +20,7 @@ import { createSurfaceSampler } from '../lib/geometry';
 import { createProfile } from '../lib/profile';
 import type { ThreeEvent } from '@react-three/fiber';
 import { FINISHES } from '../lib/materials';
-import { createPaintTexture } from '../lib/paint';
+import { createPaintTexture, createScaleNormalMap } from '../lib/paint';
 import { useReducedMotion } from '../lib/hooks';
 import type { PhysicsResult } from '../lib/physics';
 import { waterlineY } from '../lib/physics';
@@ -80,10 +80,15 @@ function CameraRig({
   return null;
 }
 
+/** Force de la normal map d'ecailles : au-dela, le relief peint sonne faux. */
+const NORMAL_SCALE = new THREE.Vector2(1, 1);
+
 function LureModel({
   geo,
   params,
   xray,
+  jointFocus = false,
+  swingAngle = 0,
   interactive,
   onPointerDown,
   onPointerMove,
@@ -91,37 +96,84 @@ function LureModel({
   geo: LureGeometry;
   params: LureParams;
   xray: boolean;
+  /** Vrai quand l'articulation est selectionnee : le corps devient translucide. */
+  jointFocus?: boolean;
+  /** Angle d'oscillation du segment arriere, en radians. */
+  swingAngle?: number;
   interactive?: boolean;
   onPointerDown?: (event: ThreeEvent<PointerEvent>) => void;
   onPointerMove?: (event: ThreeEvent<PointerEvent>) => void;
 }) {
   const texture = useMemo(() => createPaintTexture(params), [params]);
   useEffect(() => () => texture.dispose(), [texture]);
+  // Ecailles : normal map tant que le relief n'est pas cuit dans le maillage.
+  // Les deux ensemble donneraient un relief compte deux fois.
+  const scaleMap = useMemo(
+    () => (params.scales.enabled && !params.scales.baked ? createScaleNormalMap(params) : null),
+    [params],
+  );
+  useEffect(() => () => scaleMap?.dispose(), [scaleMap]);
   const finish = FINISHES[params.paint.finish];
+
+  // Corps translucide bleute quand l'articulation est a l'etude : la
+  // quincaillerie doit se lire A TRAVERS la matiere, sinon regler un joint
+  // revient a travailler a l'aveugle.
+  const seeThrough = xray || jointFocus;
+  const bodySurface = {
+    map: texture,
+    normalMap: scaleMap,
+    normalScale: scaleMap ? NORMAL_SCALE : undefined,
+    flatShading: params.print.finish === 'faceted',
+    roughness: finish.roughness,
+    metalness: finish.metalness,
+    // Film mince : la teinte se decale avec l'angle de vue, ce qui rend la
+    // finition holographique sans texture d'environnement.
+    iridescence: finish.iridescence,
+    iridescenceIOR: 1.35,
+    iridescenceThicknessRange: [120, 520] as [number, number],
+    color: jointFocus ? '#a8c4e8' : '#ffffff',
+    transparent: seeThrough,
+    opacity: seeThrough ? (jointFocus ? 0.34 : 0.28) : 1,
+    depthWrite: !seeThrough,
+    side: seeThrough ? THREE.DoubleSide : THREE.FrontSide,
+  };
 
   return (
     <group>
-      <mesh
-        geometry={geo.body}
-        castShadow={false}
-        onPointerDown={interactive ? onPointerDown : undefined}
-        onPointerMove={interactive ? onPointerMove : undefined}
-      >
-        <meshPhysicalMaterial
-          map={texture}
-          roughness={finish.roughness}
-          metalness={finish.metalness}
-          // Film mince : la teinte se decale avec l'angle de vue, ce qui rend
-          // la finition holographique sans texture d'environnement.
-          iridescence={finish.iridescence}
-          iridescenceIOR={1.35}
-          iridescenceThicknessRange={[120, 520]}
-          transparent={xray}
-          opacity={xray ? 0.28 : 1}
-          depthWrite={!xray}
-          side={xray ? THREE.DoubleSide : THREE.FrontSide}
-        />
-      </mesh>
+      {/*
+        Corps articule : le segment arriere pivote autour de l'axe de
+        charniere pour montrer le debattement. La rotation est un simple
+        affichage — la geometrie exportee reste au repos.
+      */}
+      {geo.segments && geo.jointPlan ? (
+        <>
+          <mesh geometry={geo.segments.front} castShadow={false}>
+            <meshPhysicalMaterial {...bodySurface} />
+          </mesh>
+          <group position={[geo.jointPlan.xJoint, 0, 0]} rotation={[0, swingAngle, 0]}>
+            <group position={[-geo.jointPlan.xJoint, 0, 0]}>
+              <mesh geometry={geo.segments.rear} castShadow={false}>
+                <meshPhysicalMaterial {...bodySurface} />
+              </mesh>
+            </group>
+          </group>
+        </>
+      ) : (
+        <mesh
+          geometry={geo.body}
+          castShadow={false}
+          onPointerDown={interactive ? onPointerDown : undefined}
+          onPointerMove={interactive ? onPointerMove : undefined}
+        >
+          <meshPhysicalMaterial {...bodySurface} />
+        </mesh>
+      )}
+
+      {geo.joint ? (
+        <mesh geometry={geo.joint} renderOrder={6}>
+          <meshStandardMaterial color="#b9bec7" roughness={0.3} metalness={0.92} />
+        </mesh>
+      ) : null}
 
       {geo.tail ? (
         <mesh geometry={geo.tail}>
@@ -490,6 +542,8 @@ export interface Viewport3DProps {
   selectedSculpt: string | null;
   onSelectSculpt: (id: string | null) => void;
   onDragSculpt: (id: string, deltaMm: number) => void;
+  /** Vrai quand l'articulation est selectionnee dans l'arbre de scene. */
+  jointFocus?: boolean;
 }
 
 export function Viewport3D({
@@ -509,6 +563,7 @@ export function Viewport3D({
   selectedSculpt,
   onSelectSculpt,
   onDragSculpt,
+  jointFocus = false,
 }: Viewport3DProps) {
   const reducedMotion = useReducedMotion();
   const [view, setView] = useState<ViewId>('iso');
@@ -518,7 +573,28 @@ export function Viewport3D({
   const [floatView, setFloatView] = useState(false);
   const [exploded, setExploded] = useState(false);
   const [showSockets, setShowSockets] = useState(true);
+  // Previsualisation du debattement : le segment arriere oscille dans les
+  // limites calculees, ce qui rend le reglage lisible d'un coup d'oeil.
+  const [animateSwing, setAnimateSwing] = useState(false);
+  const [swingAngle, setSwingAngle] = useState(0);
   const dragging = useRef<string | null>(null);
+
+  const swingLimit = geo.jointPlan ? THREE.MathUtils.degToRad(geo.jointPlan.swing) / 2 : 0;
+  useEffect(() => {
+    if (!animateSwing || swingLimit <= 0 || reducedMotion) {
+      setSwingAngle(0);
+      return;
+    }
+    let frame = 0;
+    const start = performance.now();
+    const tick = () => {
+      const t = (performance.now() - start) / 1000;
+      setSwingAngle(Math.sin(t * 1.8) * swingLimit);
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [animateSwing, swingLimit, reducedMotion]);
 
   const radius =
     Math.hypot(geo.bounds.length, geo.bounds.height, geo.bounds.width) / 20 || 5;
@@ -598,6 +674,8 @@ export function Viewport3D({
                 geo={geo}
                 params={params}
                 xray={xray}
+                jointFocus={jointFocus}
+                swingAngle={swingAngle}
                 interactive={placing}
                 onPointerDown={(event) => handleSurfacePointer(event, true)}
                 onPointerMove={(event) => handleSurfacePointer(event, false)}
@@ -734,6 +812,20 @@ export function Viewport3D({
           onClick={() => setShowSockets((value) => !value)}
         >
           Portees
+        </button>
+        <button
+          type="button"
+          className="toolbtn"
+          aria-pressed={animateSwing}
+          disabled={!geo.jointPlan || geo.jointPlan.swing <= 0}
+          title={
+            geo.jointPlan
+              ? `Debat d environ ${(geo.jointPlan.swing / 2).toFixed(0)} deg de chaque cote`
+              : 'Ajoutez une articulation pour animer le debattement'
+          }
+          onClick={() => setAnimateSwing((value) => !value)}
+        >
+          Animer le joint
         </button>
       </div>
 

@@ -150,7 +150,15 @@ export interface RattleChamber {
 /** les autres ajoutent une nageoire caudale plate generee par extrusion.     */
 export type TailShape = 'taper' | 'round' | 'forked' | 'paddle' | 'fan';
 
-export type MaterialId = 'pla' | 'lwpla' | 'resin' | 'tpu';
+export type MaterialId =
+  | 'pla'
+  | 'lwpla'
+  | 'petg'
+  | 'abs'
+  | 'resin'
+  | 'tpu'
+  | 'basswood'
+  | 'cedar';
 
 export type FinishId = 'matte' | 'satin' | 'gloss' | 'chrome' | 'holo';
 
@@ -241,6 +249,187 @@ export interface DetailConfig {
   relief: number;
 }
 
+// ---------------------------------------------------------------------------
+// Contours dessines a la main (module partage : profil et decals)
+// ---------------------------------------------------------------------------
+
+/**
+ * Noeud d'un contour de Bezier cubique.
+ *
+ * Les coordonnees vivent dans un repere normalise sans unite : x vers la
+ * queue, y vers le haut, l'origine au centre. C'est le consommateur du
+ * contour — profil de corps ou decal — qui decide de l'echelle reelle. Un
+ * meme trace peut ainsi servir de silhouette de 130 mm ou d'opercule de 8 mm.
+ *
+ * Les poignees sont RELATIVES a l'ancre, ce qui rend le deplacement d'un
+ * point trivial et evite de les recalculer a chaque glisser.
+ */
+export interface OutlineNode {
+  id: string;
+  x: number;
+  y: number;
+  /** Poignee entrante (cote point precedent), relative a l'ancre. */
+  inX: number;
+  inY: number;
+  /** Poignee sortante (cote point suivant), relative a l'ancre. */
+  outX: number;
+  outY: number;
+}
+
+export interface Outline {
+  nodes: OutlineNode[];
+  /** Un contour ferme decrit une surface ; un contour ouvert, une ligne. */
+  closed: boolean;
+  /** Symetrie par rapport a l'axe horizontal : le trace se reflete en direct. */
+  mirror: boolean;
+}
+
+/**
+ * Photo de reference du dessinateur de contour.
+ *
+ * L'image vit en memoire du navigateur sous forme de data URL, ce qui permet
+ * de la sauvegarder avec le projet : un contour releve sur une photo perd la
+ * moitie de son sens si la photo ne revient pas avec lui.
+ */
+export interface OutlineReference {
+  /** Data URL de l'image, ou chaine vide si aucune. */
+  src: string;
+  opacity: number;
+  /** Position et echelle dans le repere du contour. */
+  x: number;
+  y: number;
+  scale: number;
+  visible: boolean;
+  /** Verrou : empeche de deplacer l'image par megarde en tracant. */
+  locked: boolean;
+}
+
+/** Un decal est pose en relief ou creuse dans la peau. */
+export type DecalStyle = 'raised' | 'engraved';
+
+/**
+ * Decal de surface : une forme 2D fermee deposee sur le corps, projetee sur
+ * la surface depuis la normale de la vue laterale, puis mise en relief ou
+ * gravee. C'est ainsi que se font opercules, joues, pectorales et rayons.
+ */
+export interface Decal {
+  id: string;
+  name: string;
+  visible: boolean;
+  outline: Outline;
+  reference: OutlineReference;
+  style: DecalStyle;
+  /** Profondeur ou hauteur du relief, en mm. */
+  depth: number;
+  /** Adoucissement des bords, en % de la taille du decal. */
+  softness: number;
+  /** Reprend le decal a l'identique sur l'autre flanc. */
+  mirror: boolean;
+  /** Opacite de l'apercu dans le viewport, en %. */
+  previewOpacity: number;
+  /** Position du centre : le long de l'axe (0 = nez, 1 = queue). */
+  position: number;
+  /** Hauteur du centre dans la section : -1 = ventre, 1 = dos. */
+  height: number;
+  /** Rotation dans le plan de profil, en degres. */
+  rotation: number;
+  /** Largeur du decal, en mm. La hauteur suit les proportions du trace. */
+  size: number;
+}
+
+/** Ajustement de la trame d'ecailles sur la surface. */
+export type ScaleFit = 'wrapped' | 'lateral';
+export type ScaleShape = 'diamond' | 'hex' | 'scallop';
+
+/**
+ * Trame d'ecailles carrelee sur tout le corps.
+ *
+ * Affichee en direct comme normal map — une ecaille de 1,2 mm demanderait un
+ * maillage dix fois plus dense que l'affichage pour se voir en relief — et
+ * cuite en deplacement reel dans la surface au moment de l'export.
+ */
+export interface ScalesConfig {
+  enabled: boolean;
+  /** Affiche le relief reellement cuit au lieu de la normal map. */
+  baked: boolean;
+  fit: ScaleFit;
+  shape: ScaleShape;
+  /** Largeur d'une ecaille, en mm. */
+  width: number;
+  /** Hauteur d'une ecaille, en mm. */
+  height: number;
+  /** Espacement entre ecailles, en mm. */
+  spacing: number;
+  /** Profondeur du relief, en mm. */
+  depth: number;
+  /** Arrondi du bord de l'ecaille, en %. */
+  rounding: number;
+  style: DecalStyle;
+  /** Marge sans ecailles sur le dos, en % de la hauteur. */
+  marginTop: number;
+  /** Marge sans ecailles sous le ventre, en % de la hauteur. */
+  marginBottom: number;
+}
+
+/** Quincaillerie qui relie deux segments articules. */
+export type JointHardware = 'pin' | 'twisted';
+
+/**
+ * Articulation : le corps est coupe en deux segments relies par une
+ * quincaillerie reelle, imprimable et assemblable.
+ */
+export interface ArticulationConfig {
+  enabled: boolean;
+  hardware: JointHardware;
+  /** Nombre d'oeillets qui tiennent le joint. */
+  eyeCount: number;
+  /** Position de la coupe le long du corps, en mm depuis le nez. */
+  positionMm: number;
+  /** Debattement total, en degres : la moitie de chaque cote. */
+  swing: number;
+  /** Biseau de chaque face, en degres depuis le plan transversal. */
+  faceAngle: number;
+  /** Jeu de joint, en mm. */
+  clearance: number;
+  /** Masse d'un oeillet, en g. Zero = non renseigne. */
+  eyeMass: number;
+  /** Masse de la goupille, en g. Zero = non renseigne. */
+  pinMass: number;
+  showHardware: boolean;
+  /** Oeillet a vis : cotes communes a tous les oeillets, en mm. */
+  eyeLoop: number;
+  eyeWire: number;
+  eyeLength: number;
+  /** Fente de logement : cotes communes a toutes les fentes, en mm. */
+  slotHeight: number;
+  slotDepth: number;
+  slotWidth: number;
+}
+
+/** Procede de fabrication vise : il change la liste des matieres utiles. */
+export type ProcessId = 'fdm' | 'resin' | 'wood';
+
+/** Rendu de surface a l'affichage. */
+export type FinishStyle = 'smooth' | 'faceted';
+
+/** Compromis fluidite / precision de l'apercu. */
+export type PreviewQuality = 'low' | 'medium' | 'high';
+
+/** Reglages d'atelier : ils pilotent la masse et le controle d'impression. */
+export interface PrintConfig {
+  process: ProcessId;
+  /** Nombre de parois de perimetre. */
+  perimeters: number;
+  /** Hauteur de couche, en mm. */
+  layerHeight: number;
+  /** Tolerance appliquee aux logements de quincaillerie, en mm. */
+  socketTolerance: number;
+  /** Compensation de retrait, en %. */
+  shrinkage: number;
+  finish: FinishStyle;
+  preview: PreviewQuality;
+}
+
 export interface LureParams {
   shape: ShapeId;
 
@@ -314,9 +503,27 @@ export interface LureParams {
   fabrication: FabricationConfig;
   /** Cage de sculpture : deformations locales par-dessus les sliders. */
   sculpt: SculptPoint[];
+  /** Articulation : corps coupe en segments relies par une quincaillerie. */
+  articulation: ArticulationConfig;
+
+  // --- Surface ------------------------------------------------------------
+  /**
+   * Silhouette dessinee a la main. Quand elle porte au moins deux noeuds,
+   * elle remplace le dos et le ventre calcules par les sliders — le reste du
+   * parametrique continue de s'appliquer.
+   */
+  outline: Outline;
+  /** Photo de reference du dessinateur de silhouette. */
+  outlineReference: OutlineReference;
+  /** Decals de surface, multiples et independants. */
+  decals: Decal[];
+  /** Trame d'ecailles, une seule par projet. */
+  scales: ScalesConfig;
 
   // --- Impression & lestage ---------------------------------------------
   material: MaterialId;
+  /** Reglages d'atelier : procede, parois, couche, tolerances, apercu. */
+  print: PrintConfig;
   /** Taux de remplissage en % (0 = coque seule, 100 = plein). */
   infill: number;
   /** Masse de la quincaillerie (hameçons, anneaux brises) en g. */

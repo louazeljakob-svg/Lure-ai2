@@ -11,10 +11,12 @@
  */
 
 import * as THREE from 'three';
-import type { BallastWeight, ClipId, LureParams } from '../types/lure';
+import type { BallastWeight, ClipId, LureParams, PreviewQuality } from '../types/lure';
 import { getClip, STEEL_DENSITY } from './materials';
 import { clamp, createProfile, MM_TO_CM, type ProfileSampler } from './profile';
 import { bibShape, clipHalfPlane } from './billTemplate';
+import { createSurfaceDetail } from './surfaceDetail';
+import { articulationPlan, buildJointHardware, type ArticulationPlan } from './articulation';
 
 /** Densite du plomb, conservee comme repere pour l'interface. */
 export const LEAD_DENSITY = 11.34;
@@ -37,6 +39,18 @@ export const DISPLAY_RESOLUTION: Resolution = {
 };
 
 /**
+ * Compromis fluidite / precision de l'apercu.
+ *
+ * Il ne touche QUE l'affichage : les exports partent toujours de la
+ * resolution pleine, sans quoi un reglage de confort abimerait la piece.
+ */
+export const PREVIEW_RESOLUTION: Record<PreviewQuality, Resolution> = {
+  low: { lengthSegments: 64, radialSegments: 24 },
+  medium: DISPLAY_RESOLUTION,
+  high: { lengthSegments: 200, radialSegments: 72 },
+};
+
+/**
  * Resolution reduite pour l'export STEP : chaque facette y coute une
  * vingtaine d'entites, un maillage d'affichage produirait un fichier de
  * plusieurs dizaines de mega-octets.
@@ -45,6 +59,29 @@ export const STEP_RESOLUTION: Resolution = {
   lengthSegments: 64,
   radialSegments: 32,
 };
+
+/**
+ * Resolution capable de montrer le plus petit detail demande.
+ *
+ * Une ecaille d'un millimetre sur un maillage de 0,8 mm de pas ne se voit
+ * pas : elle s'aliase en moire. On vise quatre echantillons par ecaille, et
+ * on borne le resultat — au-dela, c'est le navigateur qui rend les armes.
+ */
+export function detailResolution(
+  params: LureParams,
+  base: Resolution,
+  bakeScales: boolean,
+): Resolution {
+  if (!bakeScales || !params.scales.enabled) return base;
+  const lengthCm = params.length * MM_TO_CM;
+  const girthCm = Math.PI * ((params.maxWidth + params.thickness) / 2) * MM_TO_CM;
+  const stepU = Math.max(params.scales.width * MM_TO_CM, 0.02) / 4;
+  const stepV = Math.max(params.scales.height * MM_TO_CM, 0.02) / 4;
+  return {
+    lengthSegments: Math.min(Math.max(Math.round(lengthCm / stepU), base.lengthSegments), 900),
+    radialSegments: Math.min(Math.max(Math.round(girthCm / stepV), base.radialSegments), 320),
+  };
+}
 
 export interface BallastMarker {
   id: string;
@@ -60,7 +97,18 @@ export interface BallastMarker {
 }
 
 export interface LureGeometry {
+  /**
+   * Corps d'un seul tenant. Quand le leurre est articule, il reste calcule —
+   * l'apercu de silhouette et les cotes s'en servent — mais ce sont les
+   * `segments` qui s'impriment.
+   */
   body: THREE.BufferGeometry;
+  /** Segments articules, ou null si le corps est d'une seule piece. */
+  segments: { front: THREE.BufferGeometry; rear: THREE.BufferGeometry } | null;
+  /** Quincaillerie du joint : affichee et pesee, jamais imprimee. */
+  joint: THREE.BufferGeometry | null;
+  /** Cotes du joint, pour l'inspecteur et la simulation. */
+  jointPlan: ArticulationPlan | null;
   /**
    * Bavette. En mode polycarbonate elle n'est PAS imprimee : la geometrie
    * n'existe que comme fantome d'aide au placement dans l'editeur, jamais
@@ -95,13 +143,17 @@ const EYE_ANGLE = 1.15;
 export function createDetailField(
   profile: ProfileSampler,
   params: LureParams,
+  bakeScales = false,
 ): ((p: number, theta: number) => number) | null {
   // La cuiller n'a pas de tete distincte : aucun detail ne s'y applique.
   const allowed = params.shape !== 'spoon';
   const gills = allowed && params.gills.enabled ? params.gills : null;
   const eyes = allowed && params.eyes.enabled ? params.eyes : null;
   const sculpt = params.sculpt.filter((point) => Math.abs(point.amount) > 1e-4);
-  if (!gills && !eyes && sculpt.length === 0) return null;
+  // Decals et ecailles vivent dans le meme champ : ils deforment la peau au
+  // lieu d'ajouter des pieces, donc ils suivent partout sans effort.
+  const surface = createSurfaceDetail(profile, params, bakeScales);
+  if (!gills && !eyes && sculpt.length === 0 && !surface) return null;
 
   const lengthCm = profile.lengthCm;
 
@@ -115,7 +167,7 @@ export function createDetailField(
   const eyeRadius = eyes ? Math.max((eyes.size * MM_TO_CM) / 2, 0.05) : 1;
 
   return (p: number, theta: number): number => {
-    let displacement = 0;
+    let displacement = surface ? surface.displace(p, theta) : 0;
 
     // Cage de sculpture : chaque point tire ou repousse la peau autour de lui,
     // avec une retombee douce, par-dessus la forme des sliders.
@@ -175,12 +227,13 @@ function buildBody(
   profile: ProfileSampler,
   params: LureParams,
   resolution: Resolution,
+  bakeScales = false,
 ): THREE.BufferGeometry {
   const nStations = resolution.lengthSegments;
   const nRadial = resolution.radialSegments;
   const cols = nRadial + 1; // colonne dupliquee pour la couture UV
   const exponent = 2 / clamp(params.crossSection, 1.2, 3.6);
-  const detail = createDetailField(profile, params);
+  const detail = createDetailField(profile, params, bakeScales);
 
   const positions: number[] = [];
   const uvs: number[] = [];
@@ -235,6 +288,30 @@ function buildBody(
       if (!degenerate[i + 1]) indices.push(a, d, c);
     }
   }
+
+  // Fonds d'extremite.
+  //
+  // Le profil parametrique se ferme de lui-meme : ses sections tombent a zero
+  // au nez et a la pointe de queue, et l'anneau degenere suffit. Une
+  // silhouette DESSINEE n'a aucune raison d'en faire autant — elle peut finir
+  // sur une section pleine. On rebouche alors par un eventail, sans quoi le
+  // solide resterait ouvert aux deux bouts.
+  const cap = (index: number, front: boolean) => {
+    if (degenerate[index]) return;
+    const p = (index / nStations) * profile.bodyEnd;
+    const section = profile.section(p);
+    const centre = positions.length / 3;
+    positions.push(profile.xAt(p), (section.top + section.bottom) / 2, 0);
+    uvs.push(p, 0.5);
+    for (let j = 0; j < nRadial; j++) {
+      const a = index * cols + j;
+      const b = a + 1;
+      if (front) indices.push(centre, b, a);
+      else indices.push(centre, a, b);
+    }
+  };
+  cap(0, true);
+  cap(nStations, false);
 
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
@@ -500,12 +577,20 @@ export interface SurfaceSampler {
  * fonction : c'est ce qui garantit que le plan de joint tombe exactement sur
  * la surface, sans decrochement.
  */
+/**
+ * Pieces de corps reellement imprimees : les segments s'il y en a, sinon le
+ * corps d'un seul tenant. Volume, masse et export partent tous de la.
+ */
+export const printedBodies = (geo: LureGeometry): THREE.BufferGeometry[] =>
+  geo.segments ? [geo.segments.front, geo.segments.rear] : [geo.body];
+
 export function createSurfaceSampler(
   profile: ProfileSampler,
   params: LureParams,
+  bakeScales = false,
 ): SurfaceSampler {
   const exponent = 2 / clamp(params.crossSection, 1.2, 3.6);
-  const detail = createDetailField(profile, params);
+  const detail = createDetailField(profile, params, bakeScales);
 
   // Un vecteur neuf a chaque appel : un objet partage se ferait ecraser des
   // que l'appelant compare deux points, ce qui donne des bugs silencieux.
@@ -538,9 +623,21 @@ export function buildLure(
   params: LureParams,
   resolution: Resolution = DISPLAY_RESOLUTION,
   billRoot: THREE.Vector2 | null = null,
+  bakeScales = false,
 ): LureGeometry {
   const profile = createProfile(params);
-  const body = buildBody(profile, params, resolution);
+  const fine = detailResolution(params, resolution, bakeScales);
+  const body = buildBody(profile, params, fine, bakeScales);
+  // L'articulation coupe le corps d'un seul tenant. Elle ne se cumule pas
+  // avec l'impression en deux coques, qui coupe deja dans l'autre sens : la
+  // simulation le signale plutot que de produire quatre pieces bancales.
+  const jointPlan =
+    params.articulation.enabled && !params.assembly.enabled
+      ? articulationPlan(profile, params)
+      : null;
+  const segments = jointPlan ? buildSegments(profile, params, fine, jointPlan, bakeScales) : null;
+  const joint =
+    jointPlan && params.articulation.showHardware ? buildJointHardware(jointPlan) : null;
   // La bavette rapportee est modelisee malgre tout : l'utilisateur doit voir
   // ou la plaque viendra se placer avant de la decouper.
   const bib = params.hasBib ? buildBib(profile, params, 'full', billRoot) : null;
@@ -560,6 +657,9 @@ export function buildLure(
 
   return {
     body,
+    segments,
+    joint,
+    jointPlan,
     bib,
     bibIsGhost,
     tail,
@@ -572,9 +672,273 @@ export function buildLure(
     },
     dispose: () => {
       body.dispose();
+      segments?.front.dispose();
+      segments?.rear.dispose();
+      joint?.dispose();
       bib?.dispose();
       tail?.dispose();
       clip?.geometry.dispose();
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Segments articules
+// ---------------------------------------------------------------------------
+
+/**
+ * Corps coupe en deux segments par le joint articule.
+ *
+ * Chaque segment est un loft a part entiere : le maillage n'est pas decoupe
+ * apres coup, il est ENGENDRE jusqu'a la face de coupe. La station finale de
+ * chaque colonne tombe donc exactement sur le plan du V, ce qui evite les
+ * facettes tronquees et garde un solide ferme.
+ *
+ * La face de coupe est fermee par une bande qui va du contour de la section
+ * vers l'arete du V, en contournant la fente de logement — creusee, elle, en
+ * poche rectangulaire a fond plat.
+ */
+export function buildSegments(
+  profile: ProfileSampler,
+  params: LureParams,
+  resolution: Resolution,
+  plan: ArticulationPlan,
+  bakeScales = false,
+): { front: THREE.BufferGeometry; rear: THREE.BufferGeometry } {
+  const nStations = resolution.lengthSegments;
+  const nRadial = resolution.radialSegments;
+  const exponent = 2 / clamp(params.crossSection, 1.2, 3.6);
+  const detail = createDetailField(profile, params, bakeScales);
+
+  /** Point de peau, details compris : le meme calcul que le corps entier. */
+  const skin = (p: number, theta: number): THREE.Vector3 => {
+    const section = profile.section(p);
+    const topAbs = section.top;
+    const bottomAbs = -section.bottom;
+    const centerY = (topAbs - bottomAbs) / 2;
+    const yUnit = sgnPow(Math.cos(theta), exponent);
+    const zUnit = sgnPow(Math.sin(theta), exponent);
+    let y = yUnit * (yUnit >= 0 ? topAbs : bottomAbs);
+    let z = zUnit * section.halfWidth;
+    if (detail) {
+      const d = detail(p, theta);
+      if (d !== 0) {
+        const dy = y - centerY;
+        const radial = Math.hypot(dy, z);
+        if (radial > 1e-6) {
+          y += (dy / radial) * d;
+          z += (z / radial) * d;
+        }
+      }
+    }
+    return new THREE.Vector3(profile.xAt(p), y, z);
+  };
+
+  const pAtX = (x: number): number => {
+    let lo = 0;
+    let hi = profile.bodyEnd;
+    for (let i = 0; i < 34; i++) {
+      const mid = (lo + hi) / 2;
+      if (profile.xAt(mid) < x) lo = mid;
+      else hi = mid;
+    }
+    return (lo + hi) / 2;
+  };
+
+  const build = (front: boolean): THREE.BufferGeometry => {
+    const angle = front ? plan.faceAngle : plan.rearAngle;
+    const tan = Math.tan(angle);
+    const xApex = front ? plan.xJoint : plan.xJoint + plan.clearance;
+
+    // Abscisse de coupe pour chaque colonne : c'est le plan du V, lu a la
+    // largeur que la section presente a la charniere.
+    const cutP: number[] = [];
+    for (let j = 0; j <= nRadial; j++) {
+      const theta = (j / nRadial) * Math.PI * 2;
+      const z = sgnPow(Math.sin(theta), exponent) * plan.halfWidth;
+      cutP.push(clamp(pAtX(xApex - Math.abs(z) * tan), 0.0005, profile.bodyEnd - 0.0005));
+    }
+
+    const positions: number[] = [];
+    const uvs: number[] = [];
+    const push = (v: THREE.Vector3, u0: number, v0: number): number => {
+      positions.push(v.x, v.y, v.z);
+      uvs.push(u0, v0);
+      return positions.length / 3 - 1;
+    };
+    const indices: number[] = [];
+    /** Triangle oriente vers l'exterieur du segment courant. */
+    const tri = (a: number, b: number, c: number) => {
+      if (a === b || b === c || a === c) return;
+      indices.push(a, b, c);
+    };
+
+    // --- Peau ------------------------------------------------------------
+    // Les stations gardent l'ordre du corps entier : le sens des triangles
+    // est donc le meme, et le solide reste oriente vers l'exterieur.
+    const grid: number[][] = [];
+    for (let i = 0; i <= nStations; i++) {
+      const row: number[] = [];
+      const t = i / nStations;
+      for (let j = 0; j <= nRadial; j++) {
+        const theta = (j / nRadial) * Math.PI * 2;
+        const p = front ? t * cutP[j] : cutP[j] + (profile.bodyEnd - cutP[j]) * t;
+        row.push(push(skin(p, theta), p, j / nRadial));
+      }
+      grid.push(row);
+    }
+    for (let i = 0; i < nStations; i++) {
+      for (let j = 0; j < nRadial; j++) {
+        const a = grid[i][j];
+        const b = grid[i][j + 1];
+        const c = grid[i + 1][j];
+        const d = grid[i + 1][j + 1];
+        tri(a, b, d);
+        tri(a, d, c);
+      }
+    }
+
+    // --- Pointe libre (nez du segment avant, queue du segment arriere) ----
+    const tipIndex = front ? 0 : nStations;
+    const tipRow = grid[tipIndex];
+    const tipP = front ? 0 : profile.bodyEnd;
+    const tipSection = profile.section(tipP);
+    if (tipSection.halfWidth > 1e-4 || tipSection.top + tipSection.bottom > 1e-4) {
+      const centre = push(
+        new THREE.Vector3(profile.xAt(tipP), (tipSection.top - tipSection.bottom) / 2, 0),
+        tipP,
+        0.5,
+      );
+      for (let j = 0; j < nRadial; j++) {
+        // Le nez regarde vers -x, la queue vers +x : les deux eventails
+        // tournent donc en sens inverse l'un de l'autre.
+        if (front) tri(centre, tipRow[j + 1], tipRow[j]);
+        else tri(centre, tipRow[j], tipRow[j + 1]);
+      }
+    }
+
+    // --- Face de coupe en V, fente comprise ------------------------------
+    const cutRow = front ? grid[nStations] : grid[0];
+    const slot = plan.slot;
+    const h = Math.min(slot.halfThickness, plan.halfWidth * 0.65);
+    const faceX = (z: number) => xApex - Math.abs(z) * tan;
+    const half = Math.round(nRadial / 2);
+    const yAt = (j: number) => positions[cutRow[j] * 3 + 1];
+    const inBand = (y: number) => y >= slot.from && y <= slot.to;
+
+    // Bord interieur de la face : l'arete du V, sauf en face de la fente ou
+    // il s'ecarte jusqu'au bord de la poche. Aux transitions on ajoute un
+    // point a la meme hauteur, pour que le bord de la fente reste droit.
+    // La hauteur exacte de la fente se cale donc sur les colonnes du loft.
+    // Bord interieur de la face : l'arete du V, sauf en face de la fente ou
+    // il s'ecarte jusqu'au bord de la poche. Aux transitions on ajoute un
+    // point a la MEME hauteur, pour que le bord de la fente reste droit ; la
+    // hauteur exacte de la fente se cale donc sur les colonnes du loft.
+    // La face de coupe et la poche de la fente ne font qu'UNE surface
+    // reglee. Pour chaque colonne, le bord interieur n'est pas un point mais
+    // un petit chemin : bord de la bouche, fond de la paroi, milieu du fond.
+    // Hors de la fente ce chemin se reduit a l'arete du V, et les quadrangles
+    // correspondants s'aplatissent d'eux-memes.
+    //
+    // Tout decrire d'un seul tenant evite d'avoir a raccorder deux maillages
+    // au bord de la fente — c'est precisement la que les trous se logent.
+    const floorX = front ? xApex - slot.depth : xApex + slot.depth;
+    const path = (y: number, z: number): THREE.Vector3[] =>
+      z === 0
+        ? [
+            new THREE.Vector3(xApex, y, 0),
+            new THREE.Vector3(xApex, y, 0),
+            new THREE.Vector3(xApex, y, 0),
+          ]
+        : [
+            new THREE.Vector3(faceX(z), y, z),
+            new THREE.Vector3(floorX, y, z),
+            new THREE.Vector3(floorX, y, 0),
+          ];
+
+    // Aux deux transitions, le bord revient sur l'arete a la MEME hauteur :
+    // la fente garde ainsi des bouts droits. Entree et sortie sont traitees
+    // symetriquement, sinon les deux flancs ne couvriraient pas la meme
+    // plage et la poche ne se refermerait pas.
+    // Le bord interieur doit etre RIGOUREUSEMENT symetrique entre les deux
+    // flancs, sinon l'arete du V ne se rejoint pas et le solide s'ouvre.
+    //
+    // Or la peau, elle, ne l'est pas : une trame d'ecailles enveloppee
+    // avance avec l'angle et deplace la colonne j autrement que son miroir.
+    // On prend donc la hauteur de la colonne CANONIQUE — la premiere moitie
+    // du tour — pour les deux cotes. Le contour de section reste deplace, la
+    // ligne de coupe se contente d'etre un peu oblique.
+    const canon = (j: number) => Math.min(j, nRadial - j);
+    const canonY: number[] = [];
+    for (let k = 0; k <= half; k++) canonY.push(yAt(k));
+
+    const shape: { y: number; z: number; canon: number; role: number }[] = [];
+    const owner: number[] = [];
+    let previousBand = false;
+    let previousY = 0;
+    let previousCanon = 0;
+    for (let j = 0; j <= nRadial; j++) {
+      const key = canon(j);
+      const y = canonY[Math.min(key, canonY.length - 1)];
+      // Cote du point : positif sur la premiere moitie du tour, negatif sur
+      // la seconde. Les colonnes 0, half et nRadial sont sur l'arete meme.
+      const side = j === 0 || j === half || j === nRadial ? 0 : j < half ? 1 : -1;
+      const band = inBand(y) && side !== 0;
+      if (band && !previousBand) {
+        shape.push({ y, z: 0, canon: key, role: 1 });
+        owner.push(j);
+      } else if (!band && previousBand) {
+        shape.push({ y: previousY, z: 0, canon: previousCanon, role: 1 });
+        owner.push(j - 1);
+      }
+      shape.push({ y, z: band ? side * h : 0, canon: key, role: 0 });
+      owner.push(j);
+      previousBand = band;
+      previousY = y;
+      previousCanon = key;
+    }
+
+    // Les sommets poses sur l'arete (z = 0) sont partages entre les deux
+    // flancs : c'est ce partage qui referme la face de coupe.
+    const shared = new Map<string, number>();
+    const sharedPush = (key: string, v: THREE.Vector3): number => {
+      const found = shared.get(key);
+      if (found !== undefined) return found;
+      const index = push(v, 0, 0);
+      shared.set(key, index);
+      return index;
+    };
+
+    const rails = shape.map((point) => {
+      const trio = path(point.y, point.z);
+      return trio.map((v, r) =>
+        Math.abs(v.z) < 1e-12
+          ? sharedPush(`${point.canon}:${point.role}:${r}:${v.x.toFixed(6)}`, v)
+          : push(v, 0, 0),
+      );
+    });
+
+    for (let k = 0; k + 1 < rails.length; k++) {
+      const colA = [cutRow[owner[k]], ...rails[k]];
+      const colB = [cutRow[owner[k + 1]], ...rails[k + 1]];
+      for (let r = 0; r + 1 < colA.length; r++) {
+        if (front) {
+          tri(colA[r], colB[r], colB[r + 1]);
+          tri(colA[r], colB[r + 1], colA[r + 1]);
+        } else {
+          tri(colA[r], colB[r + 1], colB[r]);
+          tri(colA[r], colA[r + 1], colB[r + 1]);
+        }
+      }
+    }
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+    geometry.setIndex(indices);
+    geometry.computeVertexNormals();
+    return geometry;
+  };
+
+  return { front: build(true), rear: build(false) };
 }

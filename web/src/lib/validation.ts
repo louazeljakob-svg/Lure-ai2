@@ -7,6 +7,7 @@
  */
 
 import type {
+  ArticulationConfig,
   AssemblyConfig,
   BallastShape,
   BallastWeight,
@@ -16,22 +17,43 @@ import type {
   PinAnchor,
   SculptPoint,
   ClipId,
+  Decal,
+  DecalStyle,
   DetailConfig,
   EyeStyle,
   PinId,
   SocketMethod,
   FinishId,
+  FinishStyle,
+  JointHardware,
   LureParams,
   MaterialId,
+  Outline,
+  OutlineNode,
+  OutlineReference,
   PatternId,
   PinExit,
+  PreviewQuality,
+  PrintConfig,
+  ProcessId,
   RattleChamber,
   RattlePocket,
   SavedPalette,
+  ScaleFit,
+  ScaleShape,
+  ScalesConfig,
   ShapeId,
   TailShape,
 } from '../types/lure';
-import { clonePreset, LIMITS, type Range } from './presets';
+import { clonePreset, emptyReference, LIMITS, type Range } from './presets';
+
+const DECAL_STYLES: DecalStyle[] = ['raised', 'engraved'];
+const SCALE_FITS: ScaleFit[] = ['wrapped', 'lateral'];
+const SCALE_SHAPES: ScaleShape[] = ['diamond', 'hex', 'scallop'];
+const JOINT_HARDWARE: JointHardware[] = ['pin', 'twisted'];
+const PROCESSES: ProcessId[] = ['fdm', 'resin', 'wood'];
+const FINISH_STYLES: FinishStyle[] = ['smooth', 'faceted'];
+const PREVIEWS: PreviewQuality[] = ['low', 'medium', 'high'];
 
 const SHAPES: ShapeId[] = [
   'stickbait165',
@@ -45,7 +67,16 @@ const SHAPES: ShapeId[] = [
   'topwater',
 ];
 const TAILS: TailShape[] = ['taper', 'round', 'forked', 'paddle', 'fan'];
-const MATERIALS: MaterialId[] = ['pla', 'lwpla', 'resin', 'tpu'];
+const MATERIALS: MaterialId[] = [
+  'pla',
+  'lwpla',
+  'petg',
+  'abs',
+  'resin',
+  'tpu',
+  'basswood',
+  'cedar',
+];
 const FINISHES: FinishId[] = ['matte', 'satin', 'gloss', 'chrome', 'holo'];
 const PATTERNS: PatternId[] = ['none', 'stripes', 'dots', 'scales', 'camo', 'gradient'];
 const CLIP_IDS: ClipId[] = ['none', 'small', 'medium'];
@@ -196,6 +227,140 @@ function sanitizeSculpt(value: unknown, fallback: SculptPoint[]): SculptPoint[] 
   });
 }
 
+/**
+ * Une data URL d'image, ou rien.
+ *
+ * On refuse tout ce qui n'est pas une image en base64 : un projet est un
+ * fichier qui circule, et rien n'oblige celui qu'on ouvre a etre honnete.
+ */
+const dataUrl = (value: unknown): string => {
+  if (typeof value !== 'string') return '';
+  if (!/^data:image\/(png|jpeg|jpg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(value)) return '';
+  // Huit mega-octets de base64 : au-dela, c'est le navigateur qui souffre.
+  return value.length <= 8_000_000 ? value : '';
+};
+
+const FREE = { min: -1e4, max: 1e4, step: 0.0001 } as const;
+
+function sanitizeOutline(value: unknown, fallback: Outline): Outline {
+  const raw = (value ?? {}) as Partial<Outline>;
+  if (!Array.isArray(raw.nodes)) return { ...fallback, nodes: fallback.nodes.map((n) => ({ ...n })) };
+  return {
+    nodes: raw.nodes.slice(0, 400).map((item, index) => {
+      const node = (item ?? {}) as Partial<OutlineNode>;
+      return {
+        id:
+          typeof node.id === 'string' && node.id.length > 0 && node.id.length <= 64
+            ? node.id
+            : `n${index}-${Math.random().toString(36).slice(2, 8)}`,
+        x: num(node.x, FREE, 0),
+        y: num(node.y, FREE, 0),
+        inX: num(node.inX, FREE, 0),
+        inY: num(node.inY, FREE, 0),
+        outX: num(node.outX, FREE, 0),
+        outY: num(node.outY, FREE, 0),
+      };
+    }),
+    closed: bool(raw.closed, fallback.closed),
+    mirror: bool(raw.mirror, fallback.mirror),
+  };
+}
+
+function sanitizeReference(value: unknown, fallback: OutlineReference): OutlineReference {
+  const raw = (value ?? {}) as Partial<OutlineReference>;
+  return {
+    src: dataUrl(raw.src),
+    opacity: num(raw.opacity, LIMITS.decalOpacity, fallback.opacity),
+    x: num(raw.x, FREE, fallback.x),
+    y: num(raw.y, FREE, fallback.y),
+    scale: num(raw.scale, { min: 0.02, max: 40, step: 0.001 }, fallback.scale),
+    visible: bool(raw.visible, fallback.visible),
+    locked: bool(raw.locked, fallback.locked),
+  };
+}
+
+function sanitizeDecals(value: unknown, fallback: Decal[]): Decal[] {
+  if (!Array.isArray(value)) return fallback.map((decal) => ({ ...decal }));
+  return value.slice(0, 24).map((raw, index) => {
+    const item = (raw ?? {}) as Partial<Decal>;
+    return {
+      id:
+        typeof item.id === 'string' && item.id.length > 0 && item.id.length <= 64
+          ? item.id
+          : `decal-${index}-${Math.random().toString(36).slice(2, 8)}`,
+      name: sanitizeName(item.name, index === 0 ? 'Decal' : `Decal ${index + 1}`),
+      visible: bool(item.visible, true),
+      outline: sanitizeOutline(item.outline, { nodes: [], closed: true, mirror: false }),
+      reference: sanitizeReference(item.reference, emptyReference()),
+      style: pick(item.style, DECAL_STYLES, 'engraved'),
+      depth: num(item.depth, LIMITS.decalDepth, 0.4),
+      softness: num(item.softness, LIMITS.decalSoftness, 30),
+      mirror: bool(item.mirror, true),
+      previewOpacity: num(item.previewOpacity, LIMITS.decalOpacity, 100),
+      position: num(item.position, LIMITS.decalPosition, 0.35),
+      height: num(item.height, LIMITS.decalHeight, 0),
+      rotation: num(item.rotation, LIMITS.decalRotation, 0),
+      size: num(item.size, LIMITS.decalSize, 12),
+    };
+  });
+}
+
+function sanitizeScales(value: unknown, fallback: ScalesConfig): ScalesConfig {
+  const raw = (value ?? {}) as Partial<ScalesConfig>;
+  return {
+    enabled: bool(raw.enabled, fallback.enabled),
+    baked: bool(raw.baked, fallback.baked),
+    fit: pick(raw.fit, SCALE_FITS, fallback.fit),
+    shape: pick(raw.shape, SCALE_SHAPES, fallback.shape),
+    width: num(raw.width, LIMITS.scaleWidth, fallback.width),
+    height: num(raw.height, LIMITS.scaleHeight, fallback.height),
+    spacing: num(raw.spacing, LIMITS.scaleSpacing, fallback.spacing),
+    depth: num(raw.depth, LIMITS.scaleDepth, fallback.depth),
+    rounding: num(raw.rounding, LIMITS.scaleRounding, fallback.rounding),
+    style: pick(raw.style, DECAL_STYLES, fallback.style),
+    marginTop: num(raw.marginTop, LIMITS.scaleMargin, fallback.marginTop),
+    marginBottom: num(raw.marginBottom, LIMITS.scaleMargin, fallback.marginBottom),
+  };
+}
+
+function sanitizeArticulation(
+  value: unknown,
+  fallback: ArticulationConfig,
+): ArticulationConfig {
+  const raw = (value ?? {}) as Partial<ArticulationConfig>;
+  return {
+    enabled: bool(raw.enabled, fallback.enabled),
+    hardware: pick(raw.hardware, JOINT_HARDWARE, fallback.hardware),
+    eyeCount: Math.round(num(raw.eyeCount, LIMITS.eyeCount, fallback.eyeCount)),
+    positionMm: num(raw.positionMm, { min: 0, max: 260, step: 0.1 }, fallback.positionMm),
+    swing: num(raw.swing, LIMITS.jointSwing, fallback.swing),
+    faceAngle: num(raw.faceAngle, LIMITS.jointFaceAngle, fallback.faceAngle),
+    clearance: num(raw.clearance, LIMITS.jointClearance, fallback.clearance),
+    eyeMass: num(raw.eyeMass, LIMITS.jointMass, fallback.eyeMass),
+    pinMass: num(raw.pinMass, LIMITS.jointMass, fallback.pinMass),
+    showHardware: bool(raw.showHardware, fallback.showHardware),
+    eyeLoop: num(raw.eyeLoop, LIMITS.eyeLoop, fallback.eyeLoop),
+    eyeWire: num(raw.eyeWire, LIMITS.eyeWire, fallback.eyeWire),
+    eyeLength: num(raw.eyeLength, LIMITS.eyeLength, fallback.eyeLength),
+    slotHeight: num(raw.slotHeight, LIMITS.slotHeight, fallback.slotHeight),
+    slotDepth: num(raw.slotDepth, LIMITS.slotDepth, fallback.slotDepth),
+    slotWidth: num(raw.slotWidth, LIMITS.slotWidth, fallback.slotWidth),
+  };
+}
+
+function sanitizePrint(value: unknown, fallback: PrintConfig): PrintConfig {
+  const raw = (value ?? {}) as Partial<PrintConfig>;
+  return {
+    process: pick(raw.process, PROCESSES, fallback.process),
+    perimeters: Math.round(num(raw.perimeters, LIMITS.perimeters, fallback.perimeters)),
+    layerHeight: num(raw.layerHeight, LIMITS.layerHeight, fallback.layerHeight),
+    socketTolerance: num(raw.socketTolerance, LIMITS.socketTolerance, fallback.socketTolerance),
+    shrinkage: num(raw.shrinkage, LIMITS.shrinkage, fallback.shrinkage),
+    finish: pick(raw.finish, FINISH_STYLES, fallback.finish),
+    preview: pick(raw.preview, PREVIEWS, fallback.preview),
+  };
+}
+
 /** Ramene n'importe quelle entree a un jeu de parametres exploitable. */
 export function sanitizeParams(input: unknown): LureParams {
   const raw = (input ?? {}) as Partial<LureParams>;
@@ -245,7 +410,13 @@ export function sanitizeParams(input: unknown): LureParams {
     assembly: sanitizeAssembly(raw.assembly, base.assembly),
     fabrication: sanitizeFabrication(raw.fabrication, base.fabrication),
     sculpt: sanitizeSculpt(raw.sculpt, base.sculpt),
+    articulation: sanitizeArticulation(raw.articulation, base.articulation),
+    outline: sanitizeOutline(raw.outline, base.outline),
+    outlineReference: sanitizeReference(raw.outlineReference, base.outlineReference),
+    decals: sanitizeDecals(raw.decals, base.decals),
+    scales: sanitizeScales(raw.scales, base.scales),
     material: pick(raw.material, MATERIALS, base.material),
+    print: sanitizePrint(raw.print, base.print),
     infill: num(raw.infill, LIMITS.infill, base.infill),
     hardwareMass: num(raw.hardwareMass, LIMITS.hardwareMass, base.hardwareMass),
     ballastDensity: num(raw.ballastDensity, LIMITS.ballastDensity, base.ballastDensity),

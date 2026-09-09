@@ -10,7 +10,8 @@
 
 import * as THREE from 'three';
 import type { LureParams, PaintConfig } from '../types/lure';
-import { clamp, createProfile } from './profile';
+import { clamp, createProfile, MM_TO_CM } from './profile';
+import { scaleField } from './surfaceDetail';
 
 const WIDTH = 1024;
 const HEIGHT = 256;
@@ -267,6 +268,86 @@ export function createPaintTexture(params: LureParams): THREE.CanvasTexture {
 
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.anisotropy = 8;
+  return texture;
+}
+
+// ---------------------------------------------------------------------------
+// Normal map d'ecailles
+// ---------------------------------------------------------------------------
+
+/**
+ * Trame d'ecailles en carte de normales, pour l'apercu.
+ *
+ * Une ecaille de 1,2 mm demanderait un maillage dix fois plus dense que
+ * l'affichage pour se voir en relief : a l'ecran on la peint donc en
+ * normales, ce qui coute une texture et rien de plus. Le relief REEL est
+ * cuit dans la surface a l'export, ou a la demande via la bascule d'apercu.
+ *
+ * La carte est calculee dans le meme repere UV que la peinture (u le long du
+ * corps, v autour de la section), et les hauteurs viennent du meme champ
+ * `scaleField` que la geometrie : l'apercu et la piece ne peuvent pas
+ * diverger de forme, seulement de finesse.
+ */
+export function createScaleNormalMap(params: LureParams): THREE.CanvasTexture | null {
+  const scales = params.scales;
+  if (!scales.enabled) return null;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = WIDTH;
+  canvas.height = HEIGHT;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+
+  const lengthCm = params.length * MM_TO_CM;
+  const girthCm = Math.PI * ((params.maxWidth + params.thickness) / 2) * MM_TO_CM;
+  const marginTop = scales.marginTop / 100;
+  const marginBottom = scales.marginBottom / 100;
+
+  // u : 0 au nez, 1 a la queue. v : 0 au dos, 0,5 au ventre, 1 au dos.
+  const height = (px: number, py: number): number => {
+    const u = px / WIDTH;
+    const v = py / HEIGHT;
+    // Le dos est en haut de la texture, le ventre au milieu : la marge se
+    // mesure donc depuis les deux bords utiles.
+    const around = Math.abs(v - 0.5) * 2; // 1 = dos, 0 = ventre
+    const fadeTop = Math.min(Math.max((1 - marginTop * 2 - around) / 0.25, 0), 1);
+    const fadeBottom = Math.min(Math.max((around + 1 - marginBottom * 2) / 0.25, 0), 1);
+    const fade = fadeTop * fadeBottom;
+    if (fade <= 0) return 0;
+    const su = u * lengthCm;
+    const sv = v * girthCm;
+    return scaleField(scales, su, sv) * fade;
+  };
+
+  const image = ctx.createImageData(WIDTH, HEIGHT);
+  const data = image.data;
+  // Pente en unites de texel : plus l'ecaille est profonde, plus la normale
+  // s'incline. Le signe suit le style, comme pour la geometrie.
+  const strength = (scales.style === 'raised' ? 1 : -1) * scales.depth * 42;
+
+  for (let y = 0; y < HEIGHT; y++) {
+    for (let x = 0; x < WIDTH; x++) {
+      const hx = height((x + 1) % WIDTH, y) - height((x - 1 + WIDTH) % WIDTH, y);
+      const hy = height(x, Math.min(y + 1, HEIGHT - 1)) - height(x, Math.max(y - 1, 0));
+      let nx = -hx * strength;
+      let ny = -hy * strength;
+      const nz = 1;
+      const len = Math.hypot(nx, ny, nz);
+      nx /= len;
+      ny /= len;
+      const i = (y * WIDTH + x) * 4;
+      data[i] = Math.round((nx * 0.5 + 0.5) * 255);
+      data[i + 1] = Math.round((ny * 0.5 + 0.5) * 255);
+      data[i + 2] = Math.round((nz / len) * 255);
+      data[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(image, 0, 0);
+
+  const texture = new THREE.CanvasTexture(canvas);
   texture.wrapS = THREE.RepeatWrapping;
   texture.wrapT = THREE.RepeatWrapping;
   texture.anisotropy = 8;

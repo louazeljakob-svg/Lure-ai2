@@ -256,6 +256,136 @@ Le trace de la fente suit l'inclinaison de la bavette dans le plan vertical : il
 n'a de sens que sur un joint vertical. Au-dela de 25 degres d'inclinaison de
 joint, aucune fente n'est creusee et la simulation le signale.
 
+#### Arbre de scene et inspecteur
+
+L'editeur reste parametrique : il n'y a pas de graphe de scene sous le capot,
+seulement un jeu de nombres. L'arbre en donne la LECTURE que l'on attend d'un
+modeleur — `Projet > Environnement > Corps > [Profil, attaches, yeux,
+branchies, decals, ecailles, articulation, bavette, lests]` — sans introduire
+une hierarchie qui n'existerait pas dans le modele : il est **derive** des
+parametres a chaque rendu, donc il ne peut pas s'en desynchroniser.
+
+Chaque ligne se selectionne, se renomme au double-clic, se masque, se duplique
+et se supprime ; les decals se reordonnent au glisser-deposer ; un ancrage dont
+la portee ne tient pas porte son avertissement sur sa ligne.
+
+Toute modification passe par une **pile d'annulation** partagee (Ctrl+Z /
+Ctrl+Maj+Z, et les boutons de la barre d'etat). Les gestes rapproches y sont
+fusionnes : glisser un curseur de deux millimetres n'empile pas cinquante
+entrees, il en empile une.
+
+#### Editeur de contour
+
+Un panneau plein largeur s'ouvre sous le viewport pour tracer un contour a la
+plume par-dessus une **photo de reference** importee au glisser-deposer. Points
+d'ancrage et poignees tangentes, insertion d'un point sur le trace, axe de
+symetrie en pointilles, opacite et echelle de l'image, zoom et plein ecran. La
+maquette 3D se met a jour a chaque geste.
+
+Le meme composant sert a deux choses, parce que c'est le meme probleme :
+
+- **le profil du corps** — un trace d'au moins deux points remplace le dos et
+  le ventre calcules par les curseurs, le reste du parametrique continuant de
+  s'appliquer par-dessus ;
+- **les decals**.
+
+Le trace vit en coordonnees normalisees, sans unite : c'est sa BOITE qui est
+recalee sur la piece. On peut donc dessiner a n'importe quelle echelle.
+
+#### Decals de surface
+
+Une forme 2D fermee deposee sur le corps, projetee depuis la normale de la vue
+laterale, puis mise en relief ou gravee — opercules, joues, pectorales, rayons
+de nageoire. Multiples et independants.
+
+Ils ne sont pas des pieces rapportees : ils entrent dans le **champ de
+deplacement** qui porte deja les branchies, les yeux et la cage de sculpture.
+C'est ce qui fait qu'un decal se retrouve partout sans effort — a l'affichage,
+dans les deux coques imprimables, dans le STL, dans le STEP, et jusque dans le
+volume qui decide de la flottabilite. Un opercule grave de 0,8 mm retire
+227 mm3 de matiere, mesures.
+
+| Reglage | Plage | Defaut |
+| --- | --- | --- |
+| Style | Relief / Grave | Grave |
+| Profondeur ou hauteur | 0,1 - 3,0 mm | 0,4 mm |
+| Adoucissement des bords | 0 - 100 % | 30 % |
+| Miroir babord / tribord | interrupteur | active |
+| Opacite de l'apercu | 0 - 100 % | 100 % |
+
+Le contour aplati est cuit en **champ de distance signee** sur une grille : le
+test « ce sommet est-il dans le decal » devient deux interpolations, et
+l'adoucissement des bords tombe gratuitement — c'est la distance elle-meme qui
+donne la rampe.
+
+#### Ecailles
+
+Trame carrelee en quinconce sur tout le corps, en losange, hexagone ou feston.
+Affichee en direct comme **normal map** — une ecaille de 1,2 mm demanderait un
+maillage dix fois plus dense que l'affichage pour se voir en relief — et
+**cuite en deplacement reel** dans la surface a l'export, ou a la demande via
+la bascule « Afficher les ecailles cuites ».
+
+Les deux vues partent du meme champ `scaleField` : l'apercu et la piece ne
+peuvent pas diverger de forme, seulement de finesse. Quand la trame est cuite,
+le maillage est regenere assez dense pour la porter — quatre echantillons par
+ecaille, borne a 900 stations, ce qui donne 40 000 a 150 000 triangles par
+coque.
+
+Ajustement **enveloppe** (la trame suit la surface) ou **lateral** (taille
+uniforme, projetee de cote comme un tampon) ; largeur, hauteur, espacement,
+profondeur, arrondi ; style en relief ou grave ; marges haut et bas pour
+eviter l'etirement sur le dos et le ventre.
+
+#### Articulation
+
+Le corps est coupe en deux segments relies par une quincaillerie reelle. Le
+joint est une **encoche en V** vue de dessus : le segment avant se termine en
+pointe sur l'axe de charniere, le segment arriere s'ouvre en V pour la
+recevoir.
+
+```
+face avant   : x = xJoint - |z| . tan(beta)
+face arriere : x = xJoint + jeu - |z| . tan(beta - debattement / 2)
+```
+
+Il en decoule deux proprietes utiles : le debattement demande EST le
+debattement obtenu, et aucune des deux faces ne peut mordre dans l'autre —
+leur ecart vaut le jeu de joint sur l'axe et ne fait que croitre ensuite.
+
+Chaque segment est **engendre** jusqu'a sa face de coupe plutot que decoupe
+apres coup : la station finale de chaque colonne tombe exactement sur le plan
+du V. La face de coupe et la poche de la fente ne forment qu'une seule surface
+reglee — tout decrire d'un tenant evite d'avoir a raccorder deux maillages au
+bord de la fente, et c'est precisement la que les trous se logent.
+
+Quincaillerie **goupille & oeillets** ou **fils torsades**, nombre d'oeillets
+de 1 a 4 redistribues sur la hauteur utile, bouton « Ajuster au corps »,
+position de la coupe, debattement, angle de face, jeu de joint. Les fentes de
+logement sont creusees dans les DEUX faces de joint. Les masses d'oeillet et de
+goupille entrent dans la flottabilite ; tant qu'elles valent zero, un
+avertissement le dit plutot que de laisser croire au verdict.
+
+A la selection de l'articulation, le corps devient **translucide bleute** et la
+quincaillerie se lit a travers la matiere ; le bouton « Animer le joint » fait
+osciller le segment arriere dans les limites calculees.
+
+#### Fabrication & validation
+
+Procede **FDM / Resine / Bois**, avec la liste de matieres qui suit : PLA 1,26,
+PETG 1,27, ABS 1,04, resine 1,15, tilleul 0,45, cedre 0,38 g/cm3. Parois de
+perimetre de 1 a 6 — elles comptent dans la masse, la coque existe meme a
+remplissage nul, et la formule est calee pour que trois parois redonnent
+exactement la calibration des gabarits. Hauteur de couche, tolerance des
+logements et compensation de retrait dans un bloc replie.
+
+Le **controle d'impression** porte sur ce qui se voit reellement dans le
+maillage livre, pas sur des regles decoratives : etancheite mesuree arete
+dirigee par arete dirigee, epaisseur de paroi lue sur la section la plus fine,
+part de surface reellement en surplomb — relever la pente MAXIMALE ne dirait
+rien, tout corps arrondi pose a plat ayant une tangente verticale a son
+equateur — et nombre de couches. Une coche verte doit valoir quelque chose.
+
 #### Controles de bavette
 
 Position depuis le nez, epaisseur propre, profil de coupe (arrondi, droit,
@@ -381,6 +511,9 @@ web/src/
 │   ├── Viewport3D.tsx           # scene R3F, reperes, flottaison
 │   ├── MaterialPanel.tsx        # matiere, lests, livree
 │   ├── PhysicsSimulator.tsx     # badges, assiette, alertes
+│   ├── Outliner.tsx             # arbre de scene
+│   ├── OutlineEditor.tsx        # trace a la plume sur photo de reference
+│   ├── Inspector.tsx            # decal, ecailles, articulation, atelier
 │   ├── AssemblyPanel.tsx        # deux coques, ancrages, fabrication
 │   ├── ExportManager.tsx        # STL / STEP / DXF / SVG, JSON, apercu
 │   ├── ProjectsPanel.tsx        # projets de la session
@@ -388,8 +521,12 @@ web/src/
 │   └── ui.tsx                   # sliders, segments, interrupteurs
 ├── lib/
 │   ├── profile.ts               # profil parametrique partage 2D / 3D
-│   ├── geometry.ts              # loft du corps, bavette, caudale, lests
-│   ├── assembly.ts              # deux coques, portees, passages, fente
+│   ├── outline.ts               # contours Bezier, champ de distance signee
+│   ├── surfaceDetail.ts         # decals projetes, trame d'ecailles
+│   ├── articulation.ts          # joint en V, oeillets, goupille, fentes
+│   ├── history.ts               # pile d'annulation partagee
+│   ├── printCheck.ts            # controle d'impression mesure
+│   ├── geometry.ts              # loft du corps, segments, bavette, caudale
 │   ├── billTemplate.ts          # bavette universelle : piece, gabarit, fente
 │   ├── hardware.ts              # catalogue de goupilles, trace du fil
 │   ├── step.ts                  # B-rep facettee AP214
@@ -416,12 +553,12 @@ Les neuf gabarits sont calibres pour tomber sur des valeurs realistes :
 
 | Gabarit | Cotes (mm) | Volume | Masse | Etat | Action |
 | --- | --- | --- | --- | --- | --- |
-| Stickbait 165 | 159 x 34 x 21 | 54,5 cm3 | 33,1 g | Flotte (0,61) | serree |
-| Ryoshi | 96 x 25 x 18 | 14,1 cm3 | 11,4 g | Flotte (0,81) | serree |
-| Modele 1 (2.5 po) | 90 x 31 x 20 | 18,4 cm3 | 10,7 g | Flotte (0,58) | large |
-| Popper | 82 x 27 x 20 | 21,0 cm3 | 13,9 g | Flotte (0,66) | large |
-| Crankbait | 73 x 46 x 17 | 18,0 cm3 | 14,3 g | Flotte (0,79) | large |
-| Jerkbait | 133 x 25 x 13 | 14,9 cm3 | 14,8 g | Suspend (0,99) | serree |
+| Stickbait 165 | 159 x 34 x 21 | 54,5 cm3 | 33,3 g | Flotte (0,61) | serree |
+| Ryoshi | 96 x 25 x 18 | 14,1 cm3 | 11,5 g | Flotte (0,81) | serree |
+| Modele 1 (2.5 po) | 90 x 31 x 20 | 18,4 cm3 | 10,8 g | Flotte (0,59) | large |
+| Popper | 82 x 27 x 20 | 21,0 cm3 | 14,0 g | Flotte (0,67) | large |
+| Crankbait | 73 x 46 x 17 | 18,0 cm3 | 14,4 g | Flotte (0,80) | large |
+| Jerkbait | 133 x 25 x 13 | 14,9 cm3 | 14,8 g | Suspend (1,00) | serree |
 | Spoon | 72 x 8 x 26 | 6,6 cm3 | 10,1 g | Coule (1,52) | roulante |
 | Swimbait | 135 x 46 x 24 | 58,8 cm3 | 59,5 g | Suspend (1,01) | large |
 | Topwater | 104 x 21 x 18 | 19,7 cm3 | 16,5 g | Flotte (0,84) | large |
@@ -432,6 +569,12 @@ l'affichage comme a la resolution d'export STEP. La bavette polycarbonate y
 laisse une vraie fente sur les neuf (52 a 852 mm3 de matiere retiree), et la
 plaque reelle y entre sans toucher la matiere — verifie par lancer de rayon sur
 cent cinquante points par gabarit.
+
+Decals, ecailles cuites et segments articules passent le meme controle : les
+deux coques restent fermees sur les neuf gabarits avec trois decals et la
+trame d'ecailles cuite (43 000 a 150 000 triangles par coque), et les deux
+segments d'un corps articule sont des solides fermes sur trente-six
+combinaisons de debattement et d'angle de face.
 
 Un leurre imprime est tres flottant : c'est le lest de plomb interne qui fait le
 reglage, exactement comme en fabrication artisanale.

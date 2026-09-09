@@ -50,6 +50,14 @@ const LEDGE_ROOM = 0.1;
 export interface AssemblyResolution {
   stations: number;
   arcSamples: number;
+  /**
+   * Cuit la trame d'ecailles dans la surface des coques.
+   *
+   * Faux a l'affichage : une ecaille d'un millimetre demanderait un maillage
+   * dix fois plus dense, et l'editeur la montre en normal map. Vrai a
+   * l'export, ou le relief doit exister pour de bon.
+   */
+  bakeScales?: boolean;
 }
 
 export const ASSEMBLY_DISPLAY: AssemblyResolution = {
@@ -59,6 +67,24 @@ export const ASSEMBLY_DISPLAY: AssemblyResolution = {
 
 /** Resolution reduite pour l'export STEP, ou chaque facette coute cher. */
 export const ASSEMBLY_STEP: AssemblyResolution = { stations: 64, arcSamples: 24 };
+
+/**
+ * Resolution d'export STL : la trame d'ecailles y est cuite, et le maillage
+ * s'epaissit assez pour la porter. La borne haute vaut mieux qu'un fichier
+ * que la trancheuse mettra dix minutes a ouvrir.
+ */
+export function assemblyExport(params: LureParams): AssemblyResolution {
+  if (!params.scales.enabled) return { ...ASSEMBLY_DISPLAY, bakeScales: true };
+  const finest = Math.min(params.scales.width, params.scales.height) * MM_TO_CM;
+  const lengthCm = params.length * MM_TO_CM;
+  const girthCm = Math.PI * ((params.maxWidth + params.thickness) / 2) * MM_TO_CM;
+  const step = Math.max(finest, 0.02) / 4;
+  return {
+    stations: Math.min(Math.max(Math.round(lengthCm / step), STATIONS), 720),
+    arcSamples: Math.min(Math.max(Math.round(girthCm / step / 2), ARC_SAMPLES), 200),
+    bakeScales: true,
+  };
+}
 
 /** Angle de sortie du fil, en degres, pour chaque cote de sortie. */
 const EXIT_ANGLE: Record<PinExit, number> = { nose: 0, belly: 90, tail: 180, back: 270 };
@@ -1241,7 +1267,7 @@ export function buildAssembly(
   params: LureParams,
   resolution: AssemblyResolution = ASSEMBLY_DISPLAY,
 ): AssemblyResult {
-  const surface = createSurfaceSampler(profile, params);
+  const surface = createSurfaceSampler(profile, params, resolution.bakeScales === true);
   const frame = jointFrame(params.assembly.planeAngle);
   const fabrication = params.fabrication;
 

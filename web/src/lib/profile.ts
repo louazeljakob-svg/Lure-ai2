@@ -10,7 +10,8 @@
  * de la queue. Toutes les valeurs retournees sont en centimetres.
  */
 
-import type { LureParams } from '../types/lure';
+import type { LureParams, Outline } from '../types/lure';
+import { flattenOutline } from './outline';
 
 export const MM_TO_CM = 0.1;
 
@@ -103,8 +104,28 @@ export function createProfile(params: LureParams): ProfileSampler {
     return clamp(r, 0, 1);
   };
 
+  // Silhouette dessinee a la main : quand elle existe, c'est ELLE qui donne le
+  // dos et le ventre. Le reste du parametrique — largeur, section, queue —
+  // continue de s'appliquer par-dessus, sinon dessiner un profil obligerait a
+  // tout redessiner.
+  const drawn = drawnEnvelope(params.outline);
+
   const section = (p: number): Section => {
     const r = radiusFactor(p);
+    if (drawn) {
+      const envelope = drawn(p);
+      if (envelope) {
+        // La largeur suit la hauteur locale : un corps dessine plus fin a la
+        // queue doit aussi y etre moins large.
+        const reference = Math.max(drawn.reference, 1e-6);
+        const spread = (envelope.top - envelope.bottom) / (2 * reference);
+        return {
+          halfWidth: halfW * Math.min(spread, 1.4),
+          top: halfH * envelope.top * 2,
+          bottom: halfH * envelope.bottom * 2,
+        };
+      }
+    }
     const dorsal = clamp(1 + 0.5 * params.dorsalCurve * gauss(p, 0.33, 0.24), 0.3, 1.8);
     const ventral = clamp(1 + 0.5 * params.ventralCurve * gauss(p, belly, 0.26), 0.3, 1.8);
     return {
@@ -125,4 +146,96 @@ export function createProfile(params: LureParams): ProfileSampler {
   };
 
   return { lengthCm, bodyEnd, hasFin, radiusFactor, section, xAt };
+}
+
+// ---------------------------------------------------------------------------
+// Silhouette dessinee a la main
+// ---------------------------------------------------------------------------
+
+/** Enveloppe haute et basse du trace, a une station donnee. */
+interface Envelope {
+  top: number;
+  bottom: number;
+}
+
+interface DrawnSampler {
+  (p: number): Envelope | null;
+  /** Demi-hauteur maximale du trace : sert a normaliser l'echelle. */
+  reference: number;
+}
+
+/**
+ * Convertit un contour dessine en enveloppe interrogeable.
+ *
+ * On aplatit le trace, on le ramene dans [0, 1] sur l'axe du corps, puis on
+ * releve pour chaque station la valeur la plus haute et la plus basse. Le
+ * dessin peut donc etre fait a n'importe quelle echelle et dans n'importe
+ * quel sens : c'est sa BOITE qui est recalee sur le leurre, pas ses nombres.
+ */
+export function drawnEnvelope(outline: Outline | undefined): DrawnSampler | null {
+  if (!outline || outline.nodes.length < 2) return null;
+  const points = flattenOutline(outline);
+  if (points.length < 3) return null;
+
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const point of points) {
+    minX = Math.min(minX, point.x);
+    maxX = Math.max(maxX, point.x);
+    minY = Math.min(minY, point.y);
+    maxY = Math.max(maxY, point.y);
+  }
+  const spanX = maxX - minX;
+  const spanY = maxY - minY;
+  if (spanX < 1e-6 || spanY < 1e-6) return null;
+
+  // Echantillonnage regulier : plus rapide a interroger qu'un parcours du
+  // polygone a chaque station, et le corps en demande des milliers.
+  const STEPS = 240;
+  const top = new Float32Array(STEPS + 1).fill(-Infinity);
+  const bottom = new Float32Array(STEPS + 1).fill(Infinity);
+  const centre = (minY + maxY) / 2;
+
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i];
+    const b = points[(i + 1) % points.length];
+    const from = Math.min(a.x, b.x);
+    const to = Math.max(a.x, b.x);
+    const i0 = Math.max(Math.floor(((from - minX) / spanX) * STEPS), 0);
+    const i1 = Math.min(Math.ceil(((to - minX) / spanX) * STEPS), STEPS);
+    for (let k = i0; k <= i1; k++) {
+      const x = minX + (spanX * k) / STEPS;
+      if (x < from - 1e-9 || x > to + 1e-9) continue;
+      const t = Math.abs(b.x - a.x) < 1e-9 ? 0 : (x - a.x) / (b.x - a.x);
+      const y = a.y + (b.y - a.y) * t;
+      if (y > top[k]) top[k] = y;
+      if (y < bottom[k]) bottom[k] = y;
+    }
+  }
+
+  // Les stations que le trace ne couvre pas heritent de leur voisine : un
+  // contour ouvert ne doit pas creuser un trou dans le corps.
+  for (let k = 1; k <= STEPS; k++) {
+    if (top[k] === -Infinity) top[k] = top[k - 1];
+    if (bottom[k] === Infinity) bottom[k] = bottom[k - 1];
+  }
+  for (let k = STEPS - 1; k >= 0; k--) {
+    if (top[k] === -Infinity) top[k] = top[k + 1];
+    if (bottom[k] === Infinity) bottom[k] = bottom[k + 1];
+  }
+
+  const reference = spanY / 2;
+  const sampler = ((p: number): Envelope | null => {
+    if (p < 0 || p > 1) return null;
+    const f = p * STEPS;
+    const k = Math.min(Math.floor(f), STEPS - 1);
+    const t = f - k;
+    const hi = (top[k] * (1 - t) + top[k + 1] * t - centre) / spanY;
+    const lo = (bottom[k] * (1 - t) + bottom[k + 1] * t - centre) / spanY;
+    return { top: hi, bottom: lo };
+  }) as DrawnSampler;
+  sampler.reference = reference / spanY;
+  return sampler;
 }
