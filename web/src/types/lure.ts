@@ -19,7 +19,17 @@ export type ShapeId =
   | 'jerkbait'
   | 'spoon'
   | 'swimbait'
-  | 'topwater';
+  | 'topwater'
+  // Archetypes de corps (module N) : des FAMILLES de forme, pas des copies.
+  // Chacune est definie par ses parametres geometriques — elancement,
+  // position de la section maitresse, angle de nez, forme de queue — de
+  // sorte qu'on atteigne n'importe quelle silhouette de la famille au
+  // curseur.
+  | 'vibetraine'
+  | 'minnowtraine'
+  | 'chugger'
+  | 'lipless'
+  | 'minnownervure';
 
 /** Tailles du catalogue de goupilles en 8. */
 export type PinId = 'xs06' | 'xs10' | 's' | 'm' | 'l';
@@ -550,6 +560,15 @@ export interface ArticulationConfig {
   hardware: JointHardware;
   /** Nombre d'oeillets qui tiennent le joint. */
   eyeCount: number;
+  /**
+   * Nombre de segments du corps.
+   *
+   * Deux segments sont produits ; au-dela, la coupe demande une face en V a
+   * CHAQUE bout des segments intermediaires, ce que le decoupeur actuel ne
+   * sait pas faire. La valeur est acceptee et conservee, mais la generation
+   * est bloquee avec son explication plutot que produite a moitie.
+   */
+  segments: number;
   /** Position de la coupe le long du corps, en mm depuis le nez. */
   positionMm: number;
   /** Debattement total, en degres : la moitie de chaque cote. */
@@ -652,6 +671,15 @@ export interface LureParams {
   ventralCurve: number;
   /** Rondeur du nez : 0.25 = tres emousse, 1.2 = pointu. */
   noseSharpness: number;
+  /**
+   * Inclinaison de la tete par rapport a l'axe, en degres.
+   *
+   * Distinct de la rondeur : celle-ci dit si le nez est pointu, celui-la dit
+   * s'il est releve. C'est ce qui separe un popper — dont la face regarde
+   * vers le haut — d'un pencil dont la tete suit l'axe. Le decalage s'annule
+   * a la section maitresse, si bien que le reste du corps ne bouge pas.
+   */
+  noseAngle: number;
   /** Effilement arriere : 0.5 = queue pleine, 2 = queue tres fine. */
   tailTaper: number;
   /** Profil de section : 2 = ellipse, > 2 = section carree, < 2 = losange. */

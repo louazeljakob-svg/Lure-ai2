@@ -1,9 +1,20 @@
 /** Ecran d'accueil : galerie des formes de base + projets de la session. */
 
+import { useState } from 'react';
 import type { Project, ShapeId } from '../types/lure';
+import {
+  ACTION_LABEL,
+  ARCHETYPES,
+  FLOAT_LABEL,
+  HERITAGE_SHAPES,
+  slendernessOf,
+  type ActionTag,
+  type FloatTag,
+} from '../lib/archetypes';
+import { ArchetypePreview } from './ArchetypePreview';
 import { getMaterial } from '../lib/materials';
 import { GUIDED_TEMPLATES } from '../lib/templates';
-import { SHAPE_PRESETS } from '../lib/presets';
+import { SHAPE_PRESETS, getPreset } from '../lib/presets';
 import { LureSilhouette } from './LureSilhouette';
 import { ProjectsPanel } from './ProjectsPanel';
 
@@ -54,6 +65,19 @@ export function ShapeGallery({
   onExport,
   onImportClick,
 }: Props) {
+  const [fAction, setFAction] = useState('');
+  const [fBib, setFBib] = useState('');
+  const [fArt, setFArt] = useState('');
+  const [fFloat, setFFloat] = useState('');
+
+  const shown = ARCHETYPES.filter(
+    (item) =>
+      (!fAction || item.actionTag === fAction) &&
+      (!fBib || (fBib === 'oui') === item.hasBib) &&
+      (!fArt || (fArt === 'oui') === item.articulated) &&
+      (!fFloat || item.buoyancy === fFloat),
+  );
+
   return (
     <main className="gallery" id="contenu">
       <section className="hero">
@@ -72,8 +96,8 @@ export function ShapeGallery({
           <div className="hero__step">
             <span>1</span>
             <p>
-              <strong>Partir d une forme</strong> — quatre relevees sur des references
-              reelles, sept generiques. Tout reste parametrique.
+              <strong>Partir d une famille</strong> — dix archetypes parametriques, plus
+              les gabarits historiques. Chaque famille est un generateur, pas une copie.
             </p>
           </div>
           <div className="hero__step">
@@ -94,15 +118,117 @@ export function ShapeGallery({
       </section>
 
       <div className="section-head">
-        <h2>Formes de base</h2>
+        <h2>Archetypes de corps</h2>
         <span className="section-head__rule" />
         <span className="section-head__hint">
-          {SHAPE_PRESETS.length} gabarits parametriques
+          {shown.length} / {ARCHETYPES.length} familles
         </span>
       </div>
 
+      <p className="gallery__lead">
+        Dix familles de forme, chacune decrite par ses parametres reels — elancement,
+        position de la section maitresse, angle de nez, coefficient de section, forme de
+        queue. Ce sont des GENERATEURS, pas des silhouettes figees : chaque curseur
+        deplace la forme de facon continue a l interieur de sa famille.
+      </p>
+
+      <div className="filters" role="group" aria-label="Filtres de la bibliotheque">
+        <label>
+          Action
+          <select value={fAction} onChange={(e) => setFAction(e.target.value)}>
+            <option value="">Toutes</option>
+            {(Object.keys(ACTION_LABEL) as ActionTag[]).map((id) => (
+              <option key={id} value={id}>
+                {ACTION_LABEL[id]}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Bavette
+          <select value={fBib} onChange={(e) => setFBib(e.target.value)}>
+            <option value="">Indifferent</option>
+            <option value="oui">Avec bavette</option>
+            <option value="non">Sans bavette</option>
+          </select>
+        </label>
+        <label>
+          Articulation
+          <select value={fArt} onChange={(e) => setFArt(e.target.value)}>
+            <option value="">Indifferent</option>
+            <option value="oui">Articule</option>
+            <option value="non">Monobloc</option>
+          </select>
+        </label>
+        <label>
+          Flottaison
+          <select value={fFloat} onChange={(e) => setFFloat(e.target.value)}>
+            <option value="">Toutes</option>
+            {(Object.keys(FLOAT_LABEL) as FloatTag[]).map((id) => (
+              <option key={id} value={id}>
+                {FLOAT_LABEL[id]}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      {shown.length === 0 ? (
+        <p className="empty">Aucune famille ne repond a ces filtres.</p>
+      ) : null}
+
+      <div className="archetype-grid">
+        {shown.map((item) => {
+          const preset = getPreset(item.shape);
+          const ratio = slendernessOf(preset.params);
+          return (
+            <button
+              type="button"
+              className="archetype"
+              key={item.shape}
+              onClick={() => onSelect(item.shape)}
+            >
+              <ArchetypePreview params={preset.params} label={item.family} />
+              <div className="archetype__body">
+                <div className="archetype__title">
+                  <span className="archetype__rank" aria-hidden="true">
+                    {String(item.rank).padStart(2, '0')}
+                  </span>
+                  <h3>{item.family}</h3>
+                </div>
+                <p className="archetype__action">{item.action}</p>
+                <div className="shape-card__meta">
+                  <span className="tag">
+                    {item.lengths[0]}-{item.lengths[1]} mm
+                  </span>
+                  <span className="tag">elancement {ratio.toFixed(1)}</span>
+                  <span className="tag">{FLOAT_LABEL[item.buoyancy]}</span>
+                  <span className="tag">{item.hasBib ? 'Bavette' : 'Sans bavette'}</span>
+                  {item.articulated ? <span className="tag">Articule</span> : null}
+                </div>
+                <p className="archetype__tie">{item.tie}</p>
+                {item.caveat ? <p className="archetype__caveat">{item.caveat}</p> : null}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="section-head">
+        <h2>Formes historiques</h2>
+        <span className="section-head__rule" />
+        <span className="section-head__hint">
+          {HERITAGE_SHAPES.length} gabarits conserves
+        </span>
+      </div>
+
+      <p className="gallery__lead">
+        Les gabarits des versions precedentes restent disponibles a l identique : un projet
+        enregistre sur l un d eux s ouvre exactement comme avant.
+      </p>
+
       <div className="shape-grid">
-        {SHAPE_PRESETS.map((preset, index) => (
+        {SHAPE_PRESETS.filter((preset) => HERITAGE_SHAPES.includes(preset.id)).map((preset, index) => (
           <button
             type="button"
             className="shape-card"

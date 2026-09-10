@@ -25,6 +25,7 @@ export const LIMITS = {
   dorsalCurve: { min: -1, max: 1, step: 0.02 },
   ventralCurve: { min: -1, max: 1, step: 0.02 },
   noseSharpness: { min: 0.25, max: 1.4, step: 0.01 },
+  noseAngle: { min: -40, max: 40, step: 1 },
   tailTaper: { min: 0.4, max: 2.2, step: 0.01 },
   crossSection: { min: 1.4, max: 3.4, step: 0.05 },
   mouthCup: { min: 0, max: 1, step: 0.02 },
@@ -50,6 +51,7 @@ export const LIMITS = {
   ballastDensity: { min: 7, max: 11.4, step: 0.05 },
   planeAngle: { min: 0, max: 90, step: 1 },
   tenonCount: { min: 1, max: 4, step: 1 },
+  segments: { min: 2, max: 5, step: 1 },
   tenonDiameter: { min: 0, max: 8, step: 0.1 },
   tenonClearance: { min: 0, max: 0.4, step: 0.01 },
   boreClearance: { min: 0, max: 0.4, step: 0.01 },
@@ -200,6 +202,7 @@ const articulation = (
   enabled: false,
   hardware: 'pin',
   eyeCount: 2,
+  segments: 2,
   positionMm: 0,
   swing: 40,
   faceAngle: 45,
@@ -254,7 +257,14 @@ const print = (): LureParams['print'] => ({
   preview: 'medium',
 });
 
-export const SHAPE_PRESETS: ShapePreset[] = [
+/**
+ * Formes de reference historiques.
+ *
+ * Elles restent disponibles telles quelles : un projet enregistre sur l'une
+ * d'elles doit continuer a s'ouvrir a l'identique. Les archetypes du module N
+ * s'y AJOUTENT, ils ne les remplacent pas.
+ */
+const BASE_PRESETS: ShapePreset[] = [
   {
     id: 'stickbait165',
     label: 'Stickbait 165',
@@ -270,6 +280,7 @@ export const SHAPE_PRESETS: ShapePreset[] = [
       dorsalCurve: 0.12,
       ventralCurve: 0.18,
       noseSharpness: 0.45,
+      noseAngle: 0,
       tailTaper: 1.25,
       crossSection: 2.05,
       mouthCup: 0.15,
@@ -344,6 +355,7 @@ export const SHAPE_PRESETS: ShapePreset[] = [
       dorsalCurve: 0.22,
       ventralCurve: 0.25,
       noseSharpness: 0.5,
+      noseAngle: 0,
       tailTaper: 1.3,
       crossSection: 2.05,
       mouthCup: 0,
@@ -418,6 +430,7 @@ export const SHAPE_PRESETS: ShapePreset[] = [
       dorsalCurve: 0.35,
       ventralCurve: 0.35,
       noseSharpness: 0.4,
+      noseAngle: 0,
       tailTaper: 1.25,
       crossSection: 2.2,
       mouthCup: 0,
@@ -492,6 +505,7 @@ export const SHAPE_PRESETS: ShapePreset[] = [
       dorsalCurve: 0.15,
       ventralCurve: 0.35,
       noseSharpness: 0.3,
+      noseAngle: 0,
       tailTaper: 1.5,
       crossSection: 2.2,
       mouthCup: 0.85,
@@ -566,6 +580,7 @@ export const SHAPE_PRESETS: ShapePreset[] = [
       dorsalCurve: 0.3,
       ventralCurve: 0.34,
       noseSharpness: 0.4,
+      noseAngle: 0,
       tailTaper: 0.95,
       crossSection: 2.4,
       mouthCup: 0,
@@ -640,6 +655,7 @@ export const SHAPE_PRESETS: ShapePreset[] = [
       dorsalCurve: 0.2,
       ventralCurve: 0.2,
       noseSharpness: 0.6,
+      noseAngle: 0,
       tailTaper: 1.3,
       crossSection: 2,
       mouthCup: 0,
@@ -714,6 +730,7 @@ export const SHAPE_PRESETS: ShapePreset[] = [
       dorsalCurve: 0.1,
       ventralCurve: 0.1,
       noseSharpness: 0.5,
+      noseAngle: 0,
       tailTaper: 0.9,
       crossSection: 1.8,
       mouthCup: 0,
@@ -788,6 +805,7 @@ export const SHAPE_PRESETS: ShapePreset[] = [
       dorsalCurve: 0.45,
       ventralCurve: 0.4,
       noseSharpness: 0.45,
+      noseAngle: 0,
       tailTaper: 1.6,
       crossSection: 2.2,
       mouthCup: 0,
@@ -862,6 +880,7 @@ export const SHAPE_PRESETS: ShapePreset[] = [
       dorsalCurve: 0.1,
       ventralCurve: 0.15,
       noseSharpness: 0.4,
+      noseAngle: 0,
       tailTaper: 1.1,
       crossSection: 2,
       mouthCup: 0.25,
@@ -922,6 +941,183 @@ export const SHAPE_PRESETS: ShapePreset[] = [
     },
   },
 ];
+
+/**
+ * Archetypes de corps — module N.
+ *
+ * Chacun derive d'une forme de base par ses PARAMETRES, pas par un maillage
+ * fige : c'est ce qui permet d'atteindre n'importe quelle silhouette de la
+ * famille au curseur, et c'est plus utile qu'un modele copie. Aucune cote
+ * n'est relevee sur un modele du commerce ; ce sont les grandes familles de
+ * forme, qui sont fonctionnelles.
+ */
+const derive = (
+  id: ShapeId,
+  from: ShapeId,
+  label: string,
+  tagline: string,
+  description: string,
+  over: Partial<LureParams>,
+): ShapePreset => {
+  const base = BASE_PRESETS.find((preset) => preset.id === from) ?? BASE_PRESETS[0];
+  return {
+    id,
+    label,
+    tagline,
+    description,
+    params: { ...base.params, shape: id, ...over },
+  };
+};
+
+const ARCHETYPE_PRESETS: ShapePreset[] = [
+  derive(
+    'vibetraine',
+    'crankbait',
+    'Vibe de traine haute vitesse',
+    'Corps haut et court, sans bavette, attache dorsale',
+    'Corps tres haut et court, dos epais, epaules marquees loin vers l avant, queue tronquee en biseau. L attache de ligne est sur le DOS et non au nez : c est ce qui lui permet de tenir a grande vitesse sans se coucher. Elancement typique 2,5 a 3,5.',
+    {
+      length: 165,
+      thickness: 56,
+      maxWidth: 24,
+      bellyPosition: 0.26,
+      dorsalCurve: 0.55,
+      ventralCurve: 0.25,
+      noseSharpness: 0.55,
+      noseAngle: 8,
+      tailTaper: 1.7,
+      crossSection: 2.2,
+      tailShape: 'taper',
+      tailSize: 0.5,
+      hasBib: false,
+      mouthCup: 0,
+      infill: 12,
+      // Une vibe de traine est un leurre COULANT : c'est son lest bas et
+      // avance qui la fait tenir a grande vitesse au lieu de sortir de l eau.
+      // Le lest est reparti en cinq barreaux plutot qu'en trois billes : une
+      // bille de 34 g mesure 20 mm et ne tient dans aucune section.
+      ballasts: [
+        ballast(0.26, -0.7, 14, 'vib', 'cylinder'),
+        ballast(0.36, -0.72, 14, 'vib', 'cylinder'),
+        ballast(0.46, -0.68, 14, 'vib', 'cylinder'),
+        ballast(0.56, -0.6, 14, 'vib', 'cylinder'),
+        ballast(0.66, -0.5, 9.8, 'vib', 'cylinder'),
+      ],
+    },
+  ),
+  derive(
+    'minnowtraine',
+    'jerkbait',
+    'Minnow de traine a grande bavette',
+    'Corps elance, longue bavette rigide, attache sur la bavette',
+    'Corps elance a section maitresse avancee, avec une longue bavette rigide qui depasse fortement du nez. L attache de ligne se fait SUR LA BAVETTE, ce qui donne la profondeur et la tenue en traine rapide. Elancement 5 a 7.',
+    {
+      length: 180,
+      thickness: 30,
+      maxWidth: 22,
+      bellyPosition: 0.3,
+      dorsalCurve: 0.3,
+      ventralCurve: 0.2,
+      noseSharpness: 0.85,
+      noseAngle: -4,
+      tailTaper: 1.15,
+      crossSection: 2.1,
+      hasBib: true,
+      billMode: 'polycarbonate',
+      bibLength: 48,
+      bibWidth: 26,
+      bibAngle: 28,
+      tailShape: 'taper',
+      tailSize: 0.6,
+      // Traine : le leurre doit rester tout juste flottant pour remonter a
+      // l arret sans perdre sa profondeur en action.
+      ballasts: [
+        ballast(0.34, -0.72, 12, 'mtr'),
+        ballast(0.52, -0.62, 8, 'mtr'),
+      ],
+    },
+  ),
+  derive(
+    'chugger',
+    'popper',
+    'Chugger',
+    'Face plate, corps trapu a epaules rondes',
+    'Variante du popper : la face avant est plate ou faiblement creusee, le corps est trapu et le ventre plein. L action est plus sourde et plus roulante que celle d un popper a face profondement creusee.',
+    {
+      length: 92,
+      thickness: 34,
+      maxWidth: 30,
+      bellyPosition: 0.34,
+      dorsalCurve: 0.3,
+      ventralCurve: 0.55,
+      noseSharpness: 0.4,
+      noseAngle: 12,
+      mouthCup: 0.22,
+      tailTaper: 1.5,
+      crossSection: 2.4,
+      tailShape: 'taper',
+      tailSize: 0.5,
+      hasBib: false,
+      // Un chugger travaille en surface, nez legerement releve : le lest est
+      // arriere et modere, et loge la ou la section est encore pleine.
+      ballasts: [
+        ballast(0.5, -0.62, 6, 'chu', 'cylinder'),
+        ballast(0.62, -0.55, 6, 'chu', 'cylinder'),
+        ballast(0.72, -0.45, 3.6, 'chu', 'cylinder'),
+      ],
+    },
+  ),
+  derive(
+    'lipless',
+    'crankbait',
+    'Vibe coulant (lipless)',
+    'Corps haut, dos rectiligne, attache dorsale, lest bas et avant',
+    'Corps haut a dos rectiligne ou faiblement bombe et ventre arrondi. L attache est dorsale et la chambre de lest est basse et avancee : c est ce lestage qui donne la vibration serree a la descente comme a la recuperation. Elancement 2,5 a 3,5.',
+    {
+      length: 72,
+      thickness: 27,
+      maxWidth: 13,
+      bellyPosition: 0.3,
+      dorsalCurve: 0.05,
+      ventralCurve: 0.5,
+      noseSharpness: 0.7,
+      noseAngle: -6,
+      tailTaper: 1.35,
+      crossSection: 1.9,
+      tailShape: 'forked',
+      tailSize: 0.7,
+      hasBib: false,
+      infill: 18,
+    },
+  ),
+  derive(
+    'minnownervure',
+    'jerkbait',
+    'Minnow a corps nervure',
+    'Meme famille que le jerkbait, avec des anneaux en relief',
+    'Meme famille que le jerkbait a bavette courte, mais le corps porte une texture de nervures transversales sur toute sa longueur : des anneaux reguliers perpendiculaires a l axe. Voir les nervures dans l onglet Scene.',
+    {
+      length: 112,
+      thickness: 21,
+      maxWidth: 17,
+      bellyPosition: 0.36,
+      dorsalCurve: 0.22,
+      ventralCurve: 0.18,
+      noseSharpness: 0.95,
+      noseAngle: -2,
+      tailTaper: 1.1,
+      crossSection: 2.1,
+      hasBib: true,
+      bibLength: 16,
+      bibWidth: 14,
+      bibAngle: 42,
+      tailShape: 'taper',
+      tailSize: 0.55,
+    },
+  ),
+];
+
+export const SHAPE_PRESETS: ShapePreset[] = [...BASE_PRESETS, ...ARCHETYPE_PRESETS];
 
 export const getPreset = (id: ShapeId): ShapePreset =>
   SHAPE_PRESETS.find((preset) => preset.id === id) ?? SHAPE_PRESETS[0];

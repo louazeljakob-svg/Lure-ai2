@@ -270,7 +270,10 @@ function buildBody(
         }
       }
 
-      positions.push(x, y, z);
+      // L'inclinaison de tete s'applique EN DERNIER : la forme et le relief
+      // sont calcules dans le repere droit, puis la section entiere est
+      // translatee. Un angle nul laisse donc le maillage au sommet pres.
+      positions.push(x, y + section.offset, z);
       uvs.push(p, j / nRadial);
     }
   }

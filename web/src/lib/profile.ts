@@ -16,6 +16,16 @@ import { flattenOutline } from './outline';
 export const MM_TO_CM = 0.1;
 
 export interface Section {
+  /**
+   * Decalage vertical de la section entiere, en cm.
+   *
+   * L'inclinaison de tete est une TRANSLATION, pas une deformation : si on
+   * la baissait en modifiant `top` et `bottom`, une tete fortement piquee
+   * ferait passer les deux du meme cote de zero et la superellipse se
+   * retournerait. En la gardant a part, la forme reste exactement celle d'un
+   * angle nul et ne fait que se deplacer.
+   */
+  offset: number;
   /** Demi-largeur laterale (axe Z). */
   halfWidth: number;
   /** Ordonnee du dos (positive). */
@@ -110,6 +120,17 @@ export function createProfile(params: LureParams): ProfileSampler {
   // tout redessiner.
   const drawn = drawnEnvelope(params.outline);
 
+  // Inclinaison de tete : la silhouette avant se releve ou pique en bloc,
+  // sans changer d'epaisseur. Le decalage s'eteint a la section maitresse —
+  // au-dela, le corps est exactement celui d'avant, ce qui garantit qu'un
+  // angle nul ne change rien du tout.
+  const noseRad = (clamp(params.noseAngle ?? 0, -45, 45) * Math.PI) / 180;
+  const rake = (p: number): number => {
+    if (noseRad === 0 || p >= belly) return 0;
+    const u = 1 - p / belly;
+    return Math.tan(noseRad) * lengthCm * belly * 0.5 * u * u;
+  };
+
   const section = (p: number): Section => {
     const r = radiusFactor(p);
     if (drawn) {
@@ -123,6 +144,7 @@ export function createProfile(params: LureParams): ProfileSampler {
           halfWidth: halfW * Math.min(spread, 1.4),
           top: halfH * envelope.top * 2,
           bottom: halfH * envelope.bottom * 2,
+          offset: rake(p),
         };
       }
     }
@@ -132,6 +154,7 @@ export function createProfile(params: LureParams): ProfileSampler {
       halfWidth: halfW * r,
       top: halfH * r * dorsal,
       bottom: -halfH * r * ventral,
+      offset: rake(p),
     };
   };
 

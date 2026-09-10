@@ -114,13 +114,25 @@ export function ShapeEditor({
           onChange={(thickness) => onChange({ thickness })}
         />
         <Slider
-          label="Position du ventre"
+          label="Section maitresse"
           value={params.bellyPosition}
           {...LIMITS.bellyPosition}
           display={pct(params.bellyPosition)}
-          hint="Point le plus large, en % de la longueur depuis le nez."
+          hint="Point le plus large, en % de la longueur depuis le nez. C est lui qui separe un corps a epaules avant d un corps a ventre arriere."
           onChange={(bellyPosition) => onChange({ bellyPosition })}
         />
+        <div className="control">
+          <div className="control__row">
+            <span className="control__label">Elancement</span>
+            <output className="control__value">
+              {(params.length / Math.max(params.thickness, 1)).toFixed(2)}
+            </output>
+          </div>
+          <p className="control__hint">
+            Longueur / hauteur, recalcule et non saisi. Un vibe tient entre 2,5 et 3,5, un
+            minnow de traine entre 5 et 7, un pencil monte a 9.
+          </p>
+        </div>
         <Slider
           label="Courbure dorsale"
           value={params.dorsalCurve}
@@ -173,6 +185,14 @@ export function ShapeEditor({
           display={params.noseSharpness.toFixed(2)}
           hint="Bas : nez emousse. Haut : nez pointu."
           onChange={(noseSharpness) => onChange({ noseSharpness })}
+        />
+        <Slider
+          label="Angle de nez"
+          value={params.noseAngle}
+          {...LIMITS.noseAngle}
+          display={`${params.noseAngle > 0 ? '+' : ''}${params.noseAngle.toFixed(0)} deg`}
+          hint="Inclinaison de la tete par rapport a l axe. Positif : nez releve, comme sur un popper. Le reste du corps ne bouge pas."
+          onChange={(noseAngle) => onChange({ noseAngle })}
         />
         <Slider
           label="Creux de bouche"

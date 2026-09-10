@@ -78,6 +78,11 @@ const SHAPES: ShapeId[] = [
   'spoon',
   'swimbait',
   'topwater',
+  'vibetraine',
+  'minnowtraine',
+  'chugger',
+  'lipless',
+  'minnownervure',
 ];
 const TAILS: TailShape[] = ['taper', 'round', 'forked', 'paddle', 'fan'];
 const MATERIALS: MaterialId[] = [
@@ -345,6 +350,7 @@ function sanitizeArticulation(
     enabled: bool(raw.enabled, fallback.enabled),
     hardware: pick(raw.hardware, JOINT_HARDWARE, fallback.hardware),
     eyeCount: Math.round(num(raw.eyeCount, LIMITS.eyeCount, fallback.eyeCount)),
+    segments: Math.round(num(raw.segments, LIMITS.segments, fallback.segments)),
     positionMm: num(raw.positionMm, { min: 0, max: 260, step: 0.1 }, fallback.positionMm),
     swing: num(raw.swing, LIMITS.jointSwing, fallback.swing),
     faceAngle: num(raw.faceAngle, LIMITS.jointFaceAngle, fallback.faceAngle),
@@ -563,6 +569,7 @@ export function sanitizeParams(input: unknown): LureParams {
     dorsalCurve: num(raw.dorsalCurve, LIMITS.dorsalCurve, base.dorsalCurve),
     ventralCurve: num(raw.ventralCurve, LIMITS.ventralCurve, base.ventralCurve),
     noseSharpness: num(raw.noseSharpness, LIMITS.noseSharpness, base.noseSharpness),
+    noseAngle: num(raw.noseAngle, LIMITS.noseAngle, base.noseAngle),
     tailTaper: num(raw.tailTaper, LIMITS.tailTaper, base.tailTaper),
     crossSection: num(raw.crossSection, LIMITS.crossSection, base.crossSection),
     mouthCup: num(raw.mouthCup, LIMITS.mouthCup, base.mouthCup),
