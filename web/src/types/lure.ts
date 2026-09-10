@@ -435,6 +435,38 @@ export interface PopperFaceConfig {
   offset: number;
 }
 
+
+/**
+ * Queue souple rapportee — module O.4.
+ *
+ * Une piece mince generee SEPAREMENT du corps, avec son propre materiau et
+ * sa propre densite. Elle n'est pas une nageoire moulee dans le corps : elle
+ * s'insere dans une fente ou s'emmanche sur un tenon, elle s'exporte sous
+ * son propre nom, et sa masse comme son volume comptent dans la flottaison.
+ */
+export type SoftTailMount = 'slot' | 'tenon';
+
+export interface SoftTailConfig {
+  enabled: boolean;
+  /** Longueur de la piece, en mm. */
+  length: number;
+  /** Hauteur au niveau de la base, en mm. */
+  height: number;
+  /** Epaisseur a la base, en mm. */
+  baseThickness: number;
+  /** Epaisseur a l'extremite, en mm : elle s'affine pour onduler. */
+  tipThickness: number;
+  /** Evasement de l'extremite par rapport a la base : 1 = parallele. */
+  spread: number;
+  method: SoftTailMount;
+  /** Profondeur d'insertion dans le corps, en mm. */
+  insertion: number;
+  /** Jeu de montage, en mm. */
+  clearance: number;
+  /** Materiau de la piece : il a sa propre densite. */
+  material: MaterialId;
+}
+
 export interface PaintConfig {
   dorsal: string;
   flank: string;
@@ -868,6 +900,8 @@ export interface LureParams {
   ribs: RibConfig;
   /** Face de popper : cuvette avant parametrique. */
   popperFace: PopperFaceConfig;
+  /** Queue souple rapportee, exportee comme piece distincte. */
+  softTail: SoftTailConfig;
   /** Coque a paroi mince : la cavite interne devient une donnee mesuree. */
   shell: ShellConfig;
   /** Insert interne, exporte comme piece distincte. */

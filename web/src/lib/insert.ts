@@ -272,3 +272,184 @@ export function insertBlocker(params: LureParams, cavity: CavityMeasure): string
   }
   return null;
 }
+
+
+// ---------------------------------------------------------------------------
+// Queue souple rapportee — module O.4
+// ---------------------------------------------------------------------------
+
+
+/**
+ * Ou la queue souple prend appui.
+ *
+ * Une fente ne se creuse pas dans la pointe : sur un corps effile, il n'y a
+ * la qu'un millimetre de matiere. On remonte donc le long du pedoncule
+ * jusqu'a trouver la premiere section assez large pour la lame ET son jeu,
+ * et c'est CETTE section qui devient la racine. La profondeur d'insertion
+ * reellement obtenue en decoule, et elle est affichee telle quelle.
+ */
+export interface SoftTailRoot {
+  /** Station de la racine, dans le repere parametrique du corps. */
+  p: number;
+  x: number;
+  y: number;
+  /** Largeur disponible a cette station, en mm. */
+  widthMm: number;
+  /** Profondeur d'insertion reellement obtenue, en mm. */
+  insertionMm: number;
+}
+
+export function softTailRoot(
+  profile: ProfileSampler,
+  params: LureParams,
+): SoftTailRoot | null {
+  const cfg = params.softTail;
+  // Le montage sur tenon n'a pas besoin de largeur : le tenon est un plot
+  // rond, il tient dans n'importe quelle section. Seule la fente en demande.
+  const need = cfg.method === 'slot' ? (cfg.baseThickness + cfg.clearance * 2) / 0.6 : 0;
+  const tipX = profile.xAt(profile.bodyEnd);
+  // On cherche jusqu'a la borne du reglage, pas jusqu'a la valeur courante :
+  // l'insertion demandee est un MINIMUM, et sur un corps effile il faut
+  // parfois s'enfoncer davantage pour trouver de la matiere. La profondeur
+  // reellement obtenue est renvoyee et affichee.
+  const maxInsertCm = 20 * MM_TO_CM;
+  const minInsertCm = cfg.insertion * MM_TO_CM;
+
+  const steps = 96;
+  for (let i = 0; i <= steps; i++) {
+    const p = profile.bodyEnd * (1 - (i / steps) * 0.45);
+    const insertionCm = tipX - profile.xAt(p);
+    if (insertionCm > maxInsertCm) break;
+    if (insertionCm < minInsertCm) continue;
+    const section = profile.section(p);
+    const widthMm = section.halfWidth * 20;
+    if (widthMm < need) continue;
+    return {
+      p,
+      x: profile.xAt(p),
+      y: (section.top + section.bottom) / 2 + section.offset,
+      widthMm,
+      insertionMm: insertionCm * 10,
+    };
+  }
+  return null;
+}
+
+export interface SoftTailPart {
+  geometry: THREE.BufferGeometry;
+  volumeCm3: number;
+  massG: number;
+  /** Centre de la piece, dans le repere du leurre, en cm. */
+  centre: { x: number; y: number };
+  /** Cotes reelles, en mm. */
+  size: { length: number; height: number; base: number; tip: number };
+  /** Longueur reellement visible, hors partie inseree, en mm. */
+  freeLength: number;
+}
+
+/**
+ * Nageoire caudale rapportee.
+ *
+ * Piece MINCE et distincte : elle s'amincit de la base vers l'extremite,
+ * ce qui est exactement ce qui la fait onduler, et s'evase ou se resserre
+ * selon le reglage. Sa base est enfoncee dans le corps sur la profondeur
+ * d'insertion demandee — c'est cette partie-la qui disparait dans la fente
+ * ou sur le tenon, et qui ne compte donc pas dans la longueur visible.
+ */
+export function buildSoftTail(
+  profile: ProfileSampler,
+  params: LureParams,
+): SoftTailPart | null {
+  const cfg = params.softTail;
+  if (!cfg.enabled) return null;
+
+  const root = softTailRoot(profile, params);
+  if (!root) return null;
+
+  const lengthCm = cfg.length * MM_TO_CM;
+  const insertCm = Math.min(root.insertionMm * MM_TO_CM, lengthCm * 0.6);
+  const halfBase = (cfg.height * MM_TO_CM) / 2;
+  const halfTip = halfBase * Math.max(cfg.spread, 0.1);
+  const tBase = (cfg.baseThickness * MM_TO_CM) / 2;
+  const tTip = Math.min((cfg.tipThickness * MM_TO_CM) / 2, tBase);
+
+  // La base part de la racine trouvee, la ou il y a de la matiere.
+  const rootX = root.x;
+  const rootY = root.y;
+
+  const nU = 20;
+  const nV = 12;
+  const cols = nV + 1;
+  const positions: number[] = [];
+  const indices: number[] = [];
+
+  for (const side of [1, -1]) {
+    for (let i = 0; i <= nU; i++) {
+      const u = i / nU;
+      const x = rootX + u * lengthCm;
+      const half = halfBase + (halfTip - halfBase) * u;
+      const thick = tBase + (tTip - tBase) * u;
+      for (let j = 0; j <= nV; j++) {
+        const v = (j / nV) * 2 - 1;
+        // Bord arrondi : la piece n'a pas d'arete vive sur son pourtour.
+        const round = Math.sqrt(Math.max(1 - v * v, 0));
+        positions.push(x, rootY + v * half, side * thick * (0.35 + 0.65 * round));
+      }
+    }
+  }
+
+  const back = (nU + 1) * cols;
+  for (let i = 0; i < nU; i++) {
+    for (let j = 0; j < nV; j++) {
+      const a = i * cols + j;
+      const b = a + 1;
+      const c = (i + 1) * cols + j;
+      const d = c + 1;
+      indices.push(a, b, d, a, d, c);
+      indices.push(back + a, back + d, back + b, back + a, back + c, back + d);
+    }
+  }
+  // Meme regle que pour l'insert : le chant emet chaque arete de bord de la
+  // face avant a l'envers, sinon la piece n'est pas fermee.
+  const edge = (a: number, b: number) => {
+    indices.push(a, back + a, back + b, a, back + b, b);
+  };
+  for (let j = nV; j > 0; j--) edge(nU * cols + j, nU * cols + j - 1);
+  for (let i = nU; i > 0; i--) edge(i * cols, (i - 1) * cols);
+  for (let j = 0; j < nV; j++) edge(j, j + 1);
+  for (let i = 0; i < nU; i++) edge(i * cols + nV, (i + 1) * cols + nV);
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+
+  const volumeCm3 = meshVolume(geometry);
+  return {
+    geometry,
+    volumeCm3,
+    massG: volumeCm3 * getMaterial(cfg.material).density,
+    centre: { x: rootX + lengthCm * 0.55, y: rootY },
+    size: {
+      length: cfg.length,
+      height: cfg.height,
+      base: cfg.baseThickness,
+      tip: cfg.tipThickness,
+    },
+    freeLength: cfg.length - insertCm * 10,
+  };
+}
+
+/** Raison pour laquelle la queue souple ne peut pas etre montee, ou null. */
+export function softTailBlocker(profile: ProfileSampler, params: LureParams): string | null {
+  const cfg = params.softTail;
+  if (!cfg.enabled) return null;
+  if (profile.hasFin) {
+    return "Le corps porte deja une nageoire caudale moulee. Une queue souple rapportee la doublerait : reglez la forme de queue sur « effilee » avant de la monter.";
+  }
+  if (!softTailRoot(profile, params)) {
+    const need = cfg.baseThickness + cfg.clearance * 2;
+    return `La fente demandee (${need.toFixed(2)} mm avec son jeu) ne trouve pas de section assez large sur les ${cfg.insertion.toFixed(1)} mm de pedoncule autorises : le corps s'y effile trop. Amincissez la lame, augmentez la profondeur d'insertion, ou passez au montage sur tenon, qui n'a pas besoin de largeur.`;
+  }
+  return null;
+}

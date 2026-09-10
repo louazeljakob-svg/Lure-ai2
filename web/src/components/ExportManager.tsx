@@ -47,7 +47,22 @@ export function ExportManager({
   const material = getMaterial(params.material);
   const [kind, setKind] = useState<ExportKind>('assembly');
   const split = assemblyActive(params);
-  const piece: ExportKind = split ? kind : 'assembly';
+  // Pieces rapportees : elles s'ajoutent a la liste des choix des qu'elles
+  // existent, que le corps soit en une ou en deux parties.
+  const extras: { value: ExportKind; label: string }[] = [
+    ...(params.shell.enabled && params.insert.enabled
+      ? [{ value: 'insert' as ExportKind, label: 'Insert' }]
+      : []),
+    ...(params.softTail.enabled
+      ? [{ value: 'softTail' as ExportKind, label: 'Queue souple' }]
+      : []),
+  ];
+  const allowed = new Set<ExportKind>([
+    'assembly',
+    ...(split ? (['male', 'female'] as ExportKind[]) : []),
+    ...extras.map((item) => item.value),
+  ]);
+  const piece: ExportKind = allowed.has(kind) ? kind : 'assembly';
 
   return (
     <div className="export-dock">
@@ -72,17 +87,30 @@ export function ExportManager({
         </div>
       </div>
 
-      {split ? (
+      {split || extras.length > 0 ? (
         <Segmented
           label="Piece a exporter"
           value={piece}
           options={[
             { value: 'assembly' as ExportKind, label: 'Assemble' },
-            { value: 'male' as ExportKind, label: 'Male' },
-            { value: 'female' as ExportKind, label: 'Femelle' },
+            ...(split
+              ? [
+                  { value: 'male' as ExportKind, label: 'Male' },
+                  { value: 'female' as ExportKind, label: 'Femelle' },
+                ]
+              : []),
+            ...extras,
           ]}
           onChange={setKind}
         />
+      ) : null}
+
+      {extras.length > 0 ? (
+        <p className="control__hint">
+          Les pieces rapportees sortent SEULES, sous leur propre nom : elles sont d un autre
+          materiau, souvent decoupees plutot qu imprimees, et les fusionner au corps donnerait
+          un fichier inutilisable.
+        </p>
       ) : null}
 
       <div className="export-dock__name">

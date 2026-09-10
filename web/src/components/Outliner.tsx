@@ -26,6 +26,7 @@ export type NodeKind =
   | 'ribs'
   | 'shell'
   | 'popperFace'
+  | 'softTail'
   | 'inlay'
   | 'dowels'
   | 'articulation'
@@ -72,6 +73,7 @@ export type AddKind =
   | 'ribs'
   | 'shell'
   | 'popperFace'
+  | 'softTail'
   | 'articulation'
   | 'eyes'
   | 'anchor'
@@ -86,6 +88,7 @@ const ADD_MENU: { kind: AddKind; label: string; hint: string }[] = [
   { kind: 'ribs', label: 'Nervures', hint: 'Anneaux en relief perpendiculaires a l axe' },
   { kind: 'shell', label: 'Coque et insert', hint: 'Paroi mince et piece reflechissante interne' },
   { kind: 'popperFace', label: 'Face de popper', hint: 'Cuvette avant : diametre, profondeur, angle' },
+  { kind: 'softTail', label: 'Queue souple', hint: 'Nageoire rapportee, piece distincte a monter' },
   { kind: 'inlay', label: 'Rainure de collant', hint: 'Creux plat pour un collant reflechissant' },
   { kind: 'dowels', label: 'Goupilles d assemblage', hint: 'Barreaux imprimes qui alignent les deux coques' },
   { kind: 'eyes', label: 'Oeil', hint: 'Cuvette et iris graves dans la tete' },

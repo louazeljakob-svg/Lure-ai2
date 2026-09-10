@@ -20,7 +20,13 @@ import type { BillSlotPlan } from './billTemplate';
 import type { ArticulationPlan } from './articulation';
 import { dowelVolumes, type DowelPlacement } from './dowels';
 import { planThroughWire, throughWireBlocker } from './throughWire';
-import { buildInsert, insertBlocker, measureCavity } from './insert';
+import {
+  buildInsert,
+  buildSoftTail,
+  insertBlocker,
+  measureCavity,
+  softTailBlocker,
+} from './insert';
 
 /**
  * Resolution de MESURE de la cavite.
@@ -95,6 +101,11 @@ export interface PhysicsResult {
   /** Masse et volume de l'insert interne. */
   insertMass: number;
   insertVolumeCm3: number;
+  /** Masse et volume de la queue souple rapportee. */
+  softTailMass: number;
+  softTailVolumeCm3: number;
+  /** Profondeur d'insertion reellement obtenue, en mm. */
+  softTailInsertionMm: number;
   /** Masse des hamecons et anneaux affectes depuis le catalogue. */
   tackleMass: number;
   hookMass: number;
@@ -292,6 +303,14 @@ export function computePhysics(
     ? buildInsert(profile, params, cavity)
     : null;
   const insertMass = insertPart?.massG ?? 0;
+  // Queue souple rapportee : une piece a part, dans un autre materiau. Elle
+  // pese ET elle deplace de l'eau, donc elle compte deux fois dans le verdict.
+  const softTailPart = softTailBlocker(profile, params) ? null : buildSoftTail(profile, params);
+  const softTailMass = softTailPart?.massG ?? 0;
+  const softTailVolume = softTailPart?.volumeCm3 ?? 0;
+  const softTailCentre = softTailPart?.centre ?? null;
+  const softTailInsertion = softTailPart ? softTailPart.size.length - softTailPart.freeLength : 0;
+  softTailPart?.geometry.dispose();
   const insertVolume = insertPart?.volumeCm3 ?? 0;
   const insertCentre = insertPart?.centre ?? null;
   insertPart?.geometry.dispose();
@@ -343,6 +362,7 @@ export function computePhysics(
   const totalMass =
     bodyMass +
     insertMass +
+    softTailMass +
     ballastMass +
     hardwareMass +
     clipMass +
@@ -365,6 +385,9 @@ export function computePhysics(
     ...(insertMass > 0 && insertCentre
       ? [{ x: insertCentre.x, y: insertCentre.y, mass: insertMass }]
       : []),
+    ...(softTailMass > 0 && softTailCentre
+      ? [{ x: softTailCentre.x, y: softTailCentre.y, mass: softTailMass }]
+      : []),
     ...cavities.points,
     ...tackle,
   ];
@@ -377,6 +400,9 @@ export function computePhysics(
     }
   }
 
+  // La queue souple deplace son propre volume : l'oublier ferait couler le
+  // leurre sur le papier alors qu'il flotte dans le seau.
+  volume += softTailVolume;
   const displacedMass = volume * WATER_DENSITY[water];
   const ratio = displacedMass > 1e-9 ? totalMass / displacedMass : 0;
   const density = volume > 1e-9 ? totalMass / volume : 0;
@@ -486,12 +512,18 @@ export function computePhysics(
     {
       key: 'insert',
       label: 'Insert / pieces rapportees',
-      massG: insertMass,
+      massG: insertMass + softTailMass,
       provenance: 'geometrie',
-      detail:
+      detail: [
         insertMass > 0
-          ? `${getMaterial(params.insert.material).label}, ${insertVolume.toFixed(2)} cm3 mesures`
-          : 'Aucun insert',
+          ? `insert ${getMaterial(params.insert.material).label} ${insertVolume.toFixed(2)} cm3`
+          : null,
+        softTailMass > 0
+          ? `queue souple ${getMaterial(params.softTail.material).label} ${softTailVolume.toFixed(2)} cm3`
+          : null,
+      ]
+        .filter(Boolean)
+        .join(', ') || 'Aucune piece rapportee',
     },
     {
       key: 'manual',
@@ -518,6 +550,9 @@ export function computePhysics(
     cavityCm3: cavity.volumeCm3,
     insertMass,
     insertVolumeCm3: insertVolume,
+    softTailMass,
+    softTailVolumeCm3: softTailVolume,
+    softTailInsertionMm: softTailInsertion,
     tackleMass,
     hookMass,
     ringMass,

@@ -45,6 +45,7 @@ import {
   RibsInspector,
   ScalesInspector,
   ShellInspector,
+  SoftTailInspector,
 } from './components/Inspector';
 import { runPrintChecks } from './lib/printCheck';
 import { Fieldset } from './components/ui';
@@ -881,6 +882,9 @@ export default function App() {
         onToggleVisible: () => updateParams({ scales: { ...params.scales, enabled: !params.scales.enabled } }) },
       { id: 'ribs', kind: 'ribs', icon: '≣', label: 'Nervures', visible: params.ribs.enabled,
         onToggleVisible: () => updateParams({ ribs: { ...params.ribs, enabled: !params.ribs.enabled } }) },
+      { id: 'softTail', kind: 'softTail', icon: '⌇', label: 'Queue souple',
+        visible: params.softTail.enabled,
+        onToggleVisible: () => updateParams({ softTail: { ...params.softTail, enabled: !params.softTail.enabled } }) },
       { id: 'popperFace', kind: 'popperFace', icon: '◗', label: 'Face de popper',
         visible: params.popperFace.enabled,
         onToggleVisible: () => updateParams({ popperFace: { ...params.popperFace, enabled: !params.popperFace.enabled } }) },
@@ -947,6 +951,16 @@ export default function App() {
         updateParams({ ribs: { ...params.ribs, enabled: true } });
         setSelectedNode('ribs');
         setSelectedKind('ribs');
+        return;
+      }
+      if (what === 'softTail') {
+        updateParams({
+          softTail: { ...params.softTail, enabled: true },
+          // Une queue moulee et une queue rapportee feraient double emploi.
+          tailShape: 'taper',
+        });
+        setSelectedNode('softTail');
+        setSelectedKind('softTail');
         return;
       }
       if (what === 'popperFace') {
@@ -1357,6 +1371,9 @@ export default function App() {
 
                     {selectedKind === 'ribs' ? (
                       <RibsInspector params={params} onChange={updateParams} />
+                    ) : null}
+                    {selectedKind === 'softTail' ? (
+                      <SoftTailInspector params={params} physics={physics} onChange={updateParams} />
                     ) : null}
                     {selectedKind === 'popperFace' ? (
                       <PopperFaceInspector params={params} onChange={updateParams} />

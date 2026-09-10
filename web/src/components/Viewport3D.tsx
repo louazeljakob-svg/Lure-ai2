@@ -23,7 +23,13 @@ import {
 } from '../lib/assembly';
 import { createSurfaceSampler } from '../lib/geometry';
 import { createProfile } from '../lib/profile';
-import { buildInsert, insertBlocker, measureCavity } from '../lib/insert';
+import {
+  buildInsert,
+  buildSoftTail,
+  insertBlocker,
+  measureCavity,
+  softTailBlocker,
+} from '../lib/insert';
 import { mountTrails, resolveMount } from '../lib/tackle';
 import type { ThreeEvent } from '@react-three/fiber';
 import { FINISHES } from '../lib/materials';
@@ -320,6 +326,7 @@ function LureModel({
       )}
 
       <InsertPart params={params} />
+      <SoftTailPartView params={params} />
 
       {geo.joint ? (
         <mesh geometry={geo.joint} renderOrder={6}>
@@ -476,6 +483,38 @@ function TackleMarkers({ params, visible }: { params: LureParams; visible: boole
   );
 }
 
+
+/**
+ * Queue souple rapportee — module O.4.
+ *
+ * Piece distincte, rendue dans une matiere visiblement differente du corps :
+ * on doit voir d'un coup d'oeil que ce n'est pas la meme impression.
+ */
+function SoftTailPartView({ params }: { params: LureParams }) {
+  const part = useMemo(() => {
+    if (!params.softTail.enabled) return null;
+    const profile = createProfile(params);
+    if (softTailBlocker(profile, params)) return null;
+    return buildSoftTail(profile, params);
+  }, [params]);
+  useEffect(() => () => part?.geometry.dispose(), [part]);
+  if (!part) return null;
+
+  return (
+    <mesh geometry={part.geometry} renderOrder={3}>
+      <meshPhysicalMaterial
+        color={params.paint.tail}
+        roughness={0.55}
+        metalness={0.02}
+        transmission={0.35}
+        thickness={0.4}
+        transparent
+        opacity={0.88}
+        side={THREE.DoubleSide}
+      />
+    </mesh>
+  );
+}
 
 /**
  * Insert interne — module O.2.

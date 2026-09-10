@@ -19,7 +19,7 @@ import {
   type LureGeometry,
   type ShellPart,
 } from './geometry';
-import { buildInsert, measureCavity } from './insert';
+import { buildInsert, buildSoftTail, measureCavity, softTailBlocker } from './insert';
 import { assemblyActive } from './assembly';
 import {
   ASSEMBLY_STEP,
@@ -32,11 +32,12 @@ import { createProfile } from './profile';
 import { buildStepFile } from './step';
 
 /** Piece a exporter : ensemble assemble, ou l'une des deux coques. */
-export type ExportKind = 'assembly' | 'male' | 'female' | 'insert';
+export type ExportKind = 'assembly' | 'male' | 'female' | 'insert' | 'softTail';
 
 export const EXPORT_LABEL: Record<ExportKind, string> = {
   assembly: 'assemble',
   insert: 'insert',
+  softTail: 'queue-souple',
   male: 'male',
   female: 'femelle',
 };
@@ -59,6 +60,18 @@ function collectParts(
   // L'insert sort SEUL, sous son propre nom : c'est une piece d'un autre
   // materiau, souvent decoupee plutot qu'imprimee, et la fusionner au corps
   // par megarde donnerait un fichier inutilisable.
+  if (kind === 'softTail') {
+    const profile = createProfile(params);
+    if (!softTailBlocker(profile, params)) {
+      const part = buildSoftTail(profile, params);
+      if (part) {
+        owned.push(part.geometry);
+        parts.push(part.geometry);
+      }
+    }
+    return { parts, owned };
+  }
+
   if (kind === 'insert') {
     const profile = createProfile(params);
     const cavity = measureCavity(profile, params, { lengthSegments: 96, radialSegments: 48 });

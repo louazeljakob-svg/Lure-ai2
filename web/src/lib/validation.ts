@@ -33,6 +33,8 @@ import type {
   InsertForm,
   PopperFaceConfig,
   RibConfig,
+  SoftTailConfig,
+  SoftTailMount,
   RibProfile,
   ShellConfig,
   TackleFamily,
@@ -591,6 +593,24 @@ function sanitizePopperFace(value: unknown, fallback: PopperFaceConfig): PopperF
   };
 }
 
+/** Queue souple : absente d'un projet anterieur au module O. */
+function sanitizeSoftTail(value: unknown, fallback: SoftTailConfig): SoftTailConfig {
+  const raw = (value ?? {}) as Partial<SoftTailConfig>;
+  const methods: SoftTailMount[] = ['slot', 'tenon'];
+  return {
+    enabled: bool(raw.enabled, fallback.enabled),
+    length: num(raw.length, LIMITS.softTailLength, fallback.length),
+    height: num(raw.height, LIMITS.softTailHeight, fallback.height),
+    baseThickness: num(raw.baseThickness, LIMITS.softTailBase, fallback.baseThickness),
+    tipThickness: num(raw.tipThickness, LIMITS.softTailTip, fallback.tipThickness),
+    spread: num(raw.spread, LIMITS.softTailSpread, fallback.spread),
+    method: pick(raw.method, methods, fallback.method),
+    insertion: num(raw.insertion, LIMITS.softTailInsertion, fallback.insertion),
+    clearance: num(raw.clearance, LIMITS.softTailClearance, fallback.clearance),
+    material: pick(raw.material, MATERIALS, fallback.material),
+  };
+}
+
 /** Coque a paroi mince et insert : absents d'un projet anterieur au module O. */
 function sanitizeShell(value: unknown, fallback: ShellConfig): ShellConfig {
   const raw = (value ?? {}) as Partial<ShellConfig>;
@@ -685,6 +705,7 @@ export function sanitizeParams(input: unknown): LureParams {
     chamber: sanitizeChamber(raw.chamber, base.chamber),
     ribs: sanitizeRibs(raw.ribs, base.ribs),
     popperFace: sanitizePopperFace(raw.popperFace, base.popperFace),
+    softTail: sanitizeSoftTail(raw.softTail, base.softTail),
     shell: sanitizeShell(raw.shell, base.shell),
     insert: sanitizeInsert(raw.insert, base.insert),
     throughWire: sanitizeThroughWire(raw.throughWire, base.throughWire),

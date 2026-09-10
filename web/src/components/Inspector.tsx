@@ -17,6 +17,7 @@ import type {
   PopperFaceConfig,
   RibConfig,
   ScalesConfig,
+  SoftTailConfig,
   ShellConfig,
 } from '../types/lure';
 import { LIMITS, type Range } from '../lib/presets';
@@ -521,6 +522,150 @@ export function PopperFaceInspector({
             Le volume retire est deduit de la flottabilite en direct, et la section frontale
             resultante alimente le calcul de trainee de l onglet Simuler.
           </p>
+        </>
+      ) : null}
+    </Fieldset>
+  );
+}
+
+
+/**
+ * Queue souple rapportee — module O.4.
+ *
+ * Une piece a part entiere, pas une nageoire moulee : son propre materiau,
+ * sa propre densite, son propre fichier a l'export, et sa masse comme son
+ * volume dans la flottaison.
+ */
+export function SoftTailInspector({
+  params,
+  physics,
+  onChange,
+}: {
+  params: LureParams;
+  physics: { softTailMass: number; softTailVolumeCm3: number; softTailInsertionMm: number };
+  onChange: (patch: Partial<LureParams>) => void;
+}) {
+  const tail = params.softTail;
+  const set = (patch: Partial<SoftTailConfig>) => onChange({ softTail: { ...tail, ...patch } });
+  const moulded = params.tailShape !== 'taper';
+
+  return (
+    <Fieldset
+      legend="Queue souple rapportee"
+      hint="Piece mince generee separement du corps. Elle sort de l export sous son propre nom, dans son propre materiau."
+    >
+      <Switch label="Queue rapportee" checked={tail.enabled} onChange={(enabled) => set({ enabled })} />
+
+      {tail.enabled && moulded ? (
+        <div className="notice notice--warn">
+          <span className="notice__icon" aria-hidden="true">
+            !
+          </span>
+          <div>
+            <h4>Deux queues sur le meme corps</h4>
+            <p>
+              Le corps porte deja une nageoire caudale moulee. Reglez la forme de queue sur
+              « effilee » dans l onglet Forme, sinon les deux se superposent.
+            </p>
+          </div>
+        </div>
+      ) : null}
+
+      {tail.enabled ? (
+        <>
+          <Segmented
+            label="Fixation"
+            value={tail.method}
+            options={[
+              { value: 'slot', label: 'Dans une fente' },
+              { value: 'tenon', label: 'Sur un tenon' },
+            ]}
+            onChange={(method) => set({ method: method as SoftTailConfig['method'] })}
+          />
+          <div className="control">
+            <label className="control__label" htmlFor="softtail-material">
+              Materiau
+            </label>
+            <select
+              id="softtail-material"
+              value={tail.material}
+              onChange={(event) =>
+                set({ material: event.target.value as SoftTailConfig['material'] })
+              }
+            >
+              {MATERIALS.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.label} — {item.density.toFixed(2)} g/cm3
+                </option>
+              ))}
+            </select>
+          </div>
+          <RangeSlider
+            label="Longueur"
+            value={tail.length}
+            range={LIMITS.softTailLength}
+            format={(v) => `${v.toFixed(0)} mm`}
+            onChange={(length) => set({ length })}
+          />
+          <RangeSlider
+            label="Hauteur a la base"
+            value={tail.height}
+            range={LIMITS.softTailHeight}
+            format={(v) => `${v.toFixed(0)} mm`}
+            onChange={(height) => set({ height })}
+          />
+          <RangeSlider
+            label="Evasement"
+            value={tail.spread}
+            range={LIMITS.softTailSpread}
+            format={(v) => (v > 1.05 ? `evase x${v.toFixed(2)}` : v < 0.95 ? `resserre x${v.toFixed(2)}` : 'parallele')}
+            onChange={(spread) => set({ spread })}
+          />
+          <RangeSlider
+            label="Epaisseur a la base"
+            value={tail.baseThickness}
+            range={LIMITS.softTailBase}
+            format={(v) => `${v.toFixed(2)} mm`}
+            onChange={(baseThickness) => set({ baseThickness })}
+          />
+          <RangeSlider
+            label="Epaisseur a l extremite"
+            value={tail.tipThickness}
+            range={LIMITS.softTailTip}
+            format={(v) => `${v.toFixed(2)} mm`}
+            hint="C est l amincissement de la base vers la pointe qui fait onduler la piece."
+            onChange={(tipThickness) => set({ tipThickness })}
+          />
+          <RangeSlider
+            label="Profondeur d insertion"
+            value={tail.insertion}
+            range={LIMITS.softTailInsertion}
+            format={(v) => `${v.toFixed(1)} mm au minimum`}
+            hint={
+              physics.softTailInsertionMm > tail.insertion + 0.4
+                ? `Portee a ${physics.softTailInsertionMm.toFixed(1)} mm : c est la que le pedoncule est enfin assez large pour la lame. Une fente ne se creuse pas dans la pointe.`
+                : 'Profondeur minimale. Sur un corps effile, elle est augmentee automatiquement jusqu a trouver de la matiere.'
+            }
+            onChange={(insertion) => set({ insertion })}
+          />
+          <RangeSlider
+            label="Jeu de montage"
+            value={tail.clearance}
+            range={LIMITS.softTailClearance}
+            format={(v) => `${v.toFixed(2)} mm`}
+            onChange={(clearance) => set({ clearance })}
+          />
+          <div className="stat" style={{ border: '1px solid var(--line)' }}>
+            <span className="stat__label">Queue souple</span>
+            <div className="stat__value">
+              {physics.softTailMass.toFixed(2)}
+              <span className="stat__unit">g</span>
+            </div>
+            <span className="stat__sub">
+              {physics.softTailVolumeCm3.toFixed(2)} cm3 — comptes dans la masse ET dans l eau
+              deplacee
+            </span>
+          </div>
         </>
       ) : null}
     </Fieldset>
