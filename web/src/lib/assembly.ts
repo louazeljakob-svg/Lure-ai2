@@ -2119,11 +2119,48 @@ export function buildAssembly(
  * Cotes de l'assemblage sans les maillages : de quoi renseigner l'interface
  * a chaque frappe, et placer la bavette fantome exactement dans sa fente.
  */
+
+/**
+ * Raison pour laquelle le corps ne peut pas etre coupe en deux coques, ou
+ * null s'il le peut.
+ *
+ * Le decoupeur en deux coques repose sur deux invariants, et deux
+ * nouveautes du module O les cassent chacune de leur cote. Plutot que de
+ * produire des coques qui ne se refermeraient pas — le test montre huit a
+ * deux cent soixante-quatre aretes libres selon le cas — on refuse la
+ * combinaison et on dit pourquoi.
+ */
+export const assemblyActive = (params: LureParams): boolean =>
+  params.assembly.enabled && assemblyBlocker(params) === null;
+
+export function assemblyBlocker(params: LureParams): string | null {
+  if (!params.assembly.enabled) return null;
+
+  // Invariant 1 : chaque section est coupee en deux par le plan de joint.
+  // Un joint horizontal partage le corps dos / ventre ; l'inclinaison de
+  // tete deplace justement les sections vers le haut ou vers le bas, donc a
+  // travers ce plan. Au-dela d'un certain angle, le plan ne traverse plus la
+  // section du nez et la coque s'ouvre.
+  if (Math.abs(params.noseAngle) > 0.5 && params.assembly.planeAngle > 45) {
+    return `Un joint horizontal partage le corps dos / ventre, et l'inclinaison de tete (${params.noseAngle.toFixed(0)} deg) deplace les sections avant en travers de ce plan : le plan ne coupe plus chaque section en deux et les coques ne se referment pas. Passez le joint en vertical, ou ramenez l'angle de nez a zero.`;
+  }
+
+  // Invariant 2 : une station est un anneau a X constant. La face de popper
+  // recule la peau SELON X, et d'une valeur qui depend de la position du
+  // point dans la section : l'anneau n'est plus plan, et tout le contour du
+  // plan de joint est construit dessus.
+  if (params.popperFace.enabled && params.popperFace.depth > 0.05) {
+    return "La face de popper recule la peau selon l'axe du leurre, d'une valeur qui change d'un point a l'autre de la section. Le decoupeur en deux coques suppose au contraire des sections planes : il ne sait pas construire le plan de joint sur une section creusee. Imprimez ce corps en une piece, ou desactivez la face de popper.";
+  }
+
+  return null;
+}
+
 export function assemblyPlans(
   profile: ProfileSampler,
   params: LureParams,
 ): { sockets: SocketPlan[]; billPlan: BillSlotPlan | null } {
-  if (!params.assembly.enabled) return { sockets: [], billPlan: null };
+  if (!assemblyActive(params)) return { sockets: [], billPlan: null };
   const result = buildAssembly(profile, params, { stations: 40, arcSamples: 10 });
   result.male.dispose();
   result.female.dispose();

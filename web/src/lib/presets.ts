@@ -41,6 +41,11 @@ export const LIMITS = {
   patternScale: { min: 3, max: 26, step: 1 },
   ribPitch: { min: 0.8, max: 6, step: 0.1 },
   shellWall: { min: 0.8, max: 4, step: 0.1 },
+  popperDiameter: { min: 0.25, max: 0.95, step: 0.01 },
+  popperDepth: { min: 0.5, max: 12, step: 0.1 },
+  popperAngle: { min: -30, max: 60, step: 1 },
+  popperLip: { min: 0, max: 3, step: 0.05 },
+  popperOffset: { min: -1, max: 1, step: 0.05 },
   insertLength: { min: 0.1, max: 0.9, step: 0.01 },
   insertHeight: { min: 0.1, max: 0.95, step: 0.01 },
   insertThickness: { min: 0.2, max: 3, step: 0.05 },
@@ -194,6 +199,15 @@ export const defaultRibs = (): LureParams['ribs'] => ({
   from: 0.15,
   to: 0.9,
   slant: 0,
+});
+
+export const defaultPopperFace = (): LureParams['popperFace'] => ({
+  enabled: false,
+  diameter: 0.62,
+  depth: 4,
+  angle: 18,
+  lipRadius: 0.8,
+  offset: 0.1,
 });
 
 export const defaultShell = (): LureParams['shell'] => ({
@@ -362,6 +376,7 @@ const BASE_PRESETS: ShapePreset[] = [
       rattles: [],
       chamber: chamber(),
       ribs: defaultRibs(),
+      popperFace: defaultPopperFace(),
       shell: defaultShell(),
       insert: defaultInsert(),
       throughWire: defaultThroughWire(),
@@ -440,6 +455,7 @@ const BASE_PRESETS: ShapePreset[] = [
       rattles: [],
       chamber: chamber(),
       ribs: defaultRibs(),
+      popperFace: defaultPopperFace(),
       shell: defaultShell(),
       insert: defaultInsert(),
       throughWire: defaultThroughWire(),
@@ -518,6 +534,7 @@ const BASE_PRESETS: ShapePreset[] = [
       rattles: [],
       chamber: chamber(),
       ribs: defaultRibs(),
+      popperFace: defaultPopperFace(),
       shell: defaultShell(),
       insert: defaultInsert(),
       throughWire: defaultThroughWire(),
@@ -596,6 +613,7 @@ const BASE_PRESETS: ShapePreset[] = [
       rattles: [],
       chamber: chamber(),
       ribs: defaultRibs(),
+      popperFace: defaultPopperFace(),
       shell: defaultShell(),
       insert: defaultInsert(),
       throughWire: defaultThroughWire(),
@@ -674,6 +692,7 @@ const BASE_PRESETS: ShapePreset[] = [
       rattles: [],
       chamber: chamber(),
       ribs: defaultRibs(),
+      popperFace: defaultPopperFace(),
       shell: defaultShell(),
       insert: defaultInsert(),
       throughWire: defaultThroughWire(),
@@ -752,6 +771,7 @@ const BASE_PRESETS: ShapePreset[] = [
       rattles: [],
       chamber: chamber(),
       ribs: defaultRibs(),
+      popperFace: defaultPopperFace(),
       shell: defaultShell(),
       insert: defaultInsert(),
       throughWire: defaultThroughWire(),
@@ -830,6 +850,7 @@ const BASE_PRESETS: ShapePreset[] = [
       rattles: [],
       chamber: chamber(),
       ribs: defaultRibs(),
+      popperFace: defaultPopperFace(),
       shell: defaultShell(),
       insert: defaultInsert(),
       throughWire: defaultThroughWire(),
@@ -908,6 +929,7 @@ const BASE_PRESETS: ShapePreset[] = [
       rattles: [],
       chamber: chamber(),
       ribs: defaultRibs(),
+      popperFace: defaultPopperFace(),
       shell: defaultShell(),
       insert: defaultInsert(),
       throughWire: defaultThroughWire(),
@@ -986,6 +1008,7 @@ const BASE_PRESETS: ShapePreset[] = [
       rattles: [],
       chamber: chamber(),
       ribs: defaultRibs(),
+      popperFace: defaultPopperFace(),
       shell: defaultShell(),
       insert: defaultInsert(),
       throughWire: defaultThroughWire(),
@@ -1122,6 +1145,9 @@ const ARCHETYPE_PRESETS: ShapePreset[] = [
       noseSharpness: 0.4,
       noseAngle: 12,
       mouthCup: 0.22,
+      // La face FAIT cette famille : elle est montee des le chargement, plate
+      // ou faiblement creusee, ce qui donne le bruit sourd du chugger.
+      popperFace: { ...defaultPopperFace(), enabled: true, diameter: 0.7, depth: 2.4, angle: 8, lipRadius: 1.2, offset: 0.15 },
       tailTaper: 1.5,
       crossSection: 2.4,
       tailShape: 'taper',
@@ -1215,6 +1241,7 @@ export const clonePreset = (id: ShapeId): LureParams => {
     // La livree porte des sous-objets : une copie superficielle les ferait
     // partager entre tous les projets ouverts.
     ribs: { ...params.ribs },
+    popperFace: { ...params.popperFace },
     shell: { ...params.shell },
     insert: { ...params.insert },
     throughWire: { ...params.throughWire, bellyPositions: [...params.throughWire.bellyPositions] },

@@ -14,6 +14,7 @@ import type {
   LureParams,
   PrintConfig,
   InsertConfig,
+  PopperFaceConfig,
   RibConfig,
   ScalesConfig,
   ShellConfig,
@@ -445,6 +446,84 @@ export function ShellInspector({
         ) : null}
       </Fieldset>
     </>
+  );
+}
+
+
+/**
+ * Face de popper — module O.3.
+ *
+ * Quatre reglages, quatre sons differents. Le volume retire entre dans la
+ * flottabilite et la section frontale alimente le simulateur de nage : ce
+ * n'est pas un decor de nez.
+ */
+export function PopperFaceInspector({
+  params,
+  onChange,
+}: {
+  params: LureParams;
+  onChange: (patch: Partial<LureParams>) => void;
+}) {
+  const face = params.popperFace;
+  const set = (patch: Partial<PopperFaceConfig>) =>
+    onChange({ popperFace: { ...face, ...patch } });
+
+  return (
+    <Fieldset
+      legend="Face de popper"
+      hint="Cuvette avant parametrique. C est cette geometrie qui fait le bruit et la gerbe."
+    >
+      <Switch
+        label="Face creusee"
+        checked={face.enabled}
+        onChange={(enabled) => set({ enabled })}
+      />
+      {face.enabled ? (
+        <>
+          <RangeSlider
+            label="Diametre de coupe"
+            value={face.diameter}
+            range={LIMITS.popperDiameter}
+            format={(v) => `${Math.round(v * 100)} % de la hauteur`}
+            onChange={(diameter) => set({ diameter })}
+          />
+          <RangeSlider
+            label="Profondeur"
+            value={face.depth}
+            range={LIMITS.popperDepth}
+            format={(v) => `${v.toFixed(1)} mm`}
+            onChange={(depth) => set({ depth })}
+          />
+          <RangeSlider
+            label="Angle de la face"
+            value={face.angle}
+            range={LIMITS.popperAngle}
+            format={(v) => `${v > 0 ? '+' : ''}${v.toFixed(0)} deg`}
+            hint="Par rapport a la verticale. Positif : la face regarde vers le haut et projette la gerbe devant."
+            onChange={(angle) => set({ angle })}
+          />
+          <RangeSlider
+            label="Rayon du bord d attaque"
+            value={face.lipRadius}
+            range={LIMITS.popperLip}
+            format={(v) => (v < 0.03 ? 'arete franche' : `${v.toFixed(2)} mm`)}
+            hint="Une levre franche claque, une levre arrondie chuinte. A zero, l arete sort telle quelle du trancheur."
+            onChange={(lipRadius) => set({ lipRadius })}
+          />
+          <RangeSlider
+            label="Decentrement vertical"
+            value={face.offset}
+            range={LIMITS.popperOffset}
+            format={(v) => (v < -0.05 ? 'vers le ventre' : v > 0.05 ? 'vers le dos' : 'centre')}
+            onChange={(offset) => set({ offset })}
+          />
+          <p className="control__hint">
+            Le volume retire est deduit de la flottabilite en direct, et la section frontale
+            resultante alimente le calcul de trainee de l onglet Simuler.
+          </p>
+        </>
+      ) : null}
+    </Fieldset>
   );
 }
 

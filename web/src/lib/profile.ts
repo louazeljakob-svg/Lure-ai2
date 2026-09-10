@@ -35,6 +35,15 @@ export interface Section {
 }
 
 export interface ProfileSampler {
+  /**
+   * Recul axial de la face de popper, en cm, pour un point de peau donne.
+   *
+   * Positif = la matiere recule vers la queue, donc la face se creuse. Le
+   * calcul depend de la position du point DANS la section, pas seulement de
+   * son abscisse : c'est ce qui donne une cuvette de diametre defini et non
+   * un simple cone.
+   */
+  popperCut: (p: number, y: number, z: number) => number;
   /** Longueur hors-tout en cm. */
   lengthCm: number;
   /** Fraction de la longueur occupee par le corps tubulaire. */
@@ -168,7 +177,42 @@ export function createProfile(params: LureParams): ProfileSampler {
     return x + cupDepth * Math.pow(1 - p / CUP_REGION, 1.4);
   };
 
-  return { lengthCm, bodyEnd, hasFin, radiusFactor, section, xAt };
+  // --- Face de popper (module O.3) -----------------------------------------
+  //
+  // La cuvette est un paraboloide de revolution, d'axe decale verticalement,
+  // dont la face est inclinee par rapport a la verticale. Le bord d'attaque
+  // s'adoucit sur une couronne de largeur egale a son rayon : une levre
+  // franche ne s'imprime pas et fait un son different de celui qu'on croit.
+  const face = params.popperFace;
+  const faceOn = face?.enabled === true && face.depth > 0.05;
+  const faceDepth = faceOn ? face.depth * MM_TO_CM : 0;
+  const faceTan = faceOn ? Math.tan((Math.min(Math.max(face.angle, -30), 60) * Math.PI) / 180) : 0;
+  const faceLip = faceOn ? Math.max(face.lipRadius * MM_TO_CM, 1e-4) : 1;
+  // Portee longitudinale de la cuvette : elle s'eteint avant la section
+  // maitresse, sinon elle creuserait tout l'avant du corps.
+  const faceReach = Math.min(belly * 0.9, 0.34);
+
+  const popperCut = (p: number, y: number, z: number): number => {
+    if (!faceOn || p >= faceReach) return 0;
+    const sec = section(p);
+    const halfLocal = Math.max((sec.top - sec.bottom) / 2, 1e-4);
+    const radius = Math.max((face.diameter * halfH * 2) / 2, 1e-4);
+    const centre = (sec.top + sec.bottom) / 2 + sec.offset + face.offset * halfLocal * 0.5;
+    const rr = Math.hypot(y - centre, z) / radius;
+    if (rr >= 1) return 0;
+    // Paraboloide : profond au centre, nul au bord.
+    const bowl = faceDepth * (1 - rr * rr);
+    // Face inclinee : un point haut recule davantage qu'un point bas.
+    const rake = -faceTan * (y - centre);
+    // Levre adoucie : la cuvette s'eteint sur la derniere couronne.
+    const lipFrac = Math.min(faceLip / radius, 0.9);
+    const lip = rr > 1 - lipFrac ? (1 - rr) / lipFrac : 1;
+    // Extinction longitudinale : la cuvette est une empreinte de nez.
+    const along = Math.pow(1 - p / faceReach, 1.6);
+    return Math.max(bowl + rake, 0) * lip * along;
+  };
+
+  return { lengthCm, bodyEnd, hasFin, radiusFactor, section, xAt, popperCut };
 }
 
 // ---------------------------------------------------------------------------

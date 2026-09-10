@@ -31,6 +31,7 @@ import type {
   LiveryConfig,
   InsertConfig,
   InsertForm,
+  PopperFaceConfig,
   RibConfig,
   RibProfile,
   ShellConfig,
@@ -577,6 +578,19 @@ function sanitizeRibs(value: unknown, fallback: RibConfig): RibConfig {
 }
 
 
+/** Face de popper : absente d'un projet anterieur au module O. */
+function sanitizePopperFace(value: unknown, fallback: PopperFaceConfig): PopperFaceConfig {
+  const raw = (value ?? {}) as Partial<PopperFaceConfig>;
+  return {
+    enabled: bool(raw.enabled, fallback.enabled),
+    diameter: num(raw.diameter, LIMITS.popperDiameter, fallback.diameter),
+    depth: num(raw.depth, LIMITS.popperDepth, fallback.depth),
+    angle: num(raw.angle, LIMITS.popperAngle, fallback.angle),
+    lipRadius: num(raw.lipRadius, LIMITS.popperLip, fallback.lipRadius),
+    offset: num(raw.offset, LIMITS.popperOffset, fallback.offset),
+  };
+}
+
 /** Coque a paroi mince et insert : absents d'un projet anterieur au module O. */
 function sanitizeShell(value: unknown, fallback: ShellConfig): ShellConfig {
   const raw = (value ?? {}) as Partial<ShellConfig>;
@@ -670,6 +684,7 @@ export function sanitizeParams(input: unknown): LureParams {
     rattles: sanitizeRattles(raw.rattles, base.rattles),
     chamber: sanitizeChamber(raw.chamber, base.chamber),
     ribs: sanitizeRibs(raw.ribs, base.ribs),
+    popperFace: sanitizePopperFace(raw.popperFace, base.popperFace),
     shell: sanitizeShell(raw.shell, base.shell),
     insert: sanitizeInsert(raw.insert, base.insert),
     throughWire: sanitizeThroughWire(raw.throughWire, base.throughWire),

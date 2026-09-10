@@ -14,7 +14,7 @@ import type { LureParams, WaterId } from '../types/lure';
 import type { LureGeometry } from './geometry';
 import { getMaterial, solidFraction, WATER_DENSITY } from './materials';
 import { clamp, createProfile, MM_TO_CM, type ProfileSampler } from './profile';
-import { buildAssembly, resolvePin } from './assembly';
+import { assemblyActive, assemblyBlocker, buildAssembly, resolvePin } from './assembly';
 import { printedBodies } from './geometry';
 import type { BillSlotPlan } from './billTemplate';
 import type { ArticulationPlan } from './articulation';
@@ -265,7 +265,7 @@ export function computePhysics(
   // Les logements internes retirent de la matiere : puits de goupille, canaux
   // de sortie, fente de bavette, billes. Plutot que de les estimer un par un,
   // on mesure ce qui est reellement imprime — le volume des deux coques.
-  const cavities = params.assembly.enabled
+  const cavities = assemblyActive(params)
     ? shellContent(params, profile)
     : {
         printed: printedBodies(geo).reduce((sum, part) => sum + massProperties(part).volume, 0),
@@ -321,7 +321,7 @@ export function computePhysics(
   const clipMass = geo.clip?.mass ?? 0;
   // La goupille traverse le corps : sa masse se deduit de la longueur de fil
   // developpee, comme pour l'agrafe.
-  const pinSpec = params.assembly.enabled ? resolvePin(params) : null;
+  const pinSpec = assemblyActive(params) ? resolvePin(params) : null;
   const pinMass = pinSpec ? pinWireLength(pinPath(pinSpec)) * Math.PI * ((pinSpec.wire * 0.05) ** 2) * STAINLESS_DENSITY : 0;
   // Montage traversant : la masse du fil se DEDUIT de sa longueur developpee,
   // comme celle d'une goupille. Elle ne se saisit pas.
@@ -634,6 +634,16 @@ function buildWarnings(
   r: WarningInput,
 ): PhysicsWarning[] {
   const list: PhysicsWarning[] = [];
+
+  const block = assemblyBlocker(params);
+  if (block) {
+    list.push({
+      id: 'assembly-blocked',
+      level: 'error',
+      title: 'Deux coques impossibles avec cette combinaison',
+      detail: block,
+    });
+  }
 
   // Q.4 : le champ « masse de quincaillerie » d'avant le catalogue n'a pas
   // disparu — il sert encore pour ce qu'on ne detaille pas. Mais s'il reste

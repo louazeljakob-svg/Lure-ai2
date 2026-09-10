@@ -20,6 +20,7 @@ import {
   type ShellPart,
 } from './geometry';
 import { buildInsert, measureCavity } from './insert';
+import { assemblyActive } from './assembly';
 import {
   ASSEMBLY_STEP,
   assemblyExport,
@@ -73,7 +74,9 @@ function collectParts(
   // decoupee a part, son modele 3D n'est qu'une aide au placement.
   const printedBib = geo.bib && !geo.bibIsGhost ? geo.bib : null;
 
-  if (kind === 'assembly' || !params.assembly.enabled) {
+  // Combinaison bloquee : on sort la piece entiere plutot que deux coques
+  // qui ne se refermeraient pas.
+  if (kind === 'assembly' || !assemblyActive(params)) {
     // Un leurre articule sort en deux segments : ce sont eux les pieces a
     // imprimer, avec leurs logements de quincaillerie deja creuses.
     parts.push(...printedBodies(geo));

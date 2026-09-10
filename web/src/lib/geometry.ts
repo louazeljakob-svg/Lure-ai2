@@ -296,7 +296,11 @@ function buildBody(
       // L'inclinaison de tete s'applique EN DERNIER : la forme et le relief
       // sont calcules dans le repere droit, puis la section entiere est
       // translatee. Un angle nul laisse donc le maillage au sommet pres.
-      positions.push(x, y + section.offset, z);
+      const yFinal = y + section.offset;
+      // Face de popper : recul AXIAL, une fois le point de peau connu. Elle
+      // ne peut pas s'exprimer plus tot, puisqu'elle depend de la position du
+      // point dans la section et pas seulement de son abscisse.
+      positions.push(x + profile.popperCut(p, yFinal, z), yFinal, z);
       uvs.push(p, j / nRadial);
     }
   }
@@ -641,7 +645,11 @@ export function createSurfaceSampler(
         }
       }
     }
-    return new THREE.Vector3(profile.xAt(p), y, z);
+    // Meme regle que dans le maillage du corps : l'inclinaison de tete est
+    // une translation appliquee en dernier, et la face de popper un recul
+    // axial qui depend de la position du point dans la section.
+    const yFinal = y + section.offset;
+    return new THREE.Vector3(profile.xAt(p) + profile.popperCut(p, yFinal, z), yFinal, z);
   };
 }
 
@@ -757,7 +765,11 @@ export function buildSegments(
         }
       }
     }
-    return new THREE.Vector3(profile.xAt(p), y, z);
+    // Meme peau que le corps entier, decalage de tete et face de popper
+    // compris : un segment qui ne les porterait pas ne serait plus le meme
+    // corps, et la face de coupe ne raccorderait plus.
+    const yFinal = y + section.offset;
+    return new THREE.Vector3(profile.xAt(p) + profile.popperCut(p, yFinal, z), yFinal, z);
   };
 
   const pAtX = (x: number): number => {

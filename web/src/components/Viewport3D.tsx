@@ -15,7 +15,12 @@ import { ReferencePlanes } from './ReferencePlanes';
 import * as THREE from 'three';
 import type { LureParams, PreviewEnv } from '../types/lure';
 import type { LureGeometry } from '../lib/geometry';
-import { buildAssembly, worldToAnchor, type AssemblyResult } from '../lib/assembly';
+import {
+  assemblyActive,
+  buildAssembly,
+  worldToAnchor,
+  type AssemblyResult,
+} from '../lib/assembly';
 import { createSurfaceSampler } from '../lib/geometry';
 import { createProfile } from '../lib/profile';
 import { buildInsert, insertBlocker, measureCavity } from '../lib/insert';
@@ -901,7 +906,7 @@ export function Viewport3D({
   // portees ou placement d'ancrages.
   const hasCavity = params.rattles.length > 0 || params.chamber.enabled;
   const needsAssembly =
-    params.assembly.enabled && (exploded || showSockets || placing || hasCavity);
+    assemblyActive(params) && (exploded || showSockets || placing || hasCavity);
   const assembly = useMemo(
     () => (needsAssembly ? buildAssembly(createProfile(params), params) : null),
     [needsAssembly, params],

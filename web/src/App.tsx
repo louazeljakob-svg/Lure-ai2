@@ -41,6 +41,7 @@ import {
   JointEyeInspector,
   JointSlotInspector,
   PrintInspector,
+  PopperFaceInspector,
   RibsInspector,
   ScalesInspector,
   ShellInspector,
@@ -880,6 +881,9 @@ export default function App() {
         onToggleVisible: () => updateParams({ scales: { ...params.scales, enabled: !params.scales.enabled } }) },
       { id: 'ribs', kind: 'ribs', icon: '≣', label: 'Nervures', visible: params.ribs.enabled,
         onToggleVisible: () => updateParams({ ribs: { ...params.ribs, enabled: !params.ribs.enabled } }) },
+      { id: 'popperFace', kind: 'popperFace', icon: '◗', label: 'Face de popper',
+        visible: params.popperFace.enabled,
+        onToggleVisible: () => updateParams({ popperFace: { ...params.popperFace, enabled: !params.popperFace.enabled } }) },
       { id: 'shell', kind: 'shell', icon: '◎', label: 'Coque et insert',
         visible: params.shell.enabled,
         warning: params.insert.enabled && !params.shell.enabled
@@ -943,6 +947,12 @@ export default function App() {
         updateParams({ ribs: { ...params.ribs, enabled: true } });
         setSelectedNode('ribs');
         setSelectedKind('ribs');
+        return;
+      }
+      if (what === 'popperFace') {
+        updateParams({ popperFace: { ...params.popperFace, enabled: true } });
+        setSelectedNode('popperFace');
+        setSelectedKind('popperFace');
         return;
       }
       if (what === 'shell') {
@@ -1347,6 +1357,9 @@ export default function App() {
 
                     {selectedKind === 'ribs' ? (
                       <RibsInspector params={params} onChange={updateParams} />
+                    ) : null}
+                    {selectedKind === 'popperFace' ? (
+                      <PopperFaceInspector params={params} onChange={updateParams} />
                     ) : null}
                     {selectedKind === 'shell' ? (
                       <ShellInspector params={params} physics={physics} onChange={updateParams} />

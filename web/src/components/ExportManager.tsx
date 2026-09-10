@@ -7,6 +7,7 @@
 import { useRef, useState } from 'react';
 import type { LureParams } from '../types/lure';
 import type { ExportKind } from '../lib/exporters';
+import { assemblyActive } from '../lib/assembly';
 import { Segmented } from './ui';
 import type { LureGeometry } from '../lib/geometry';
 import { getMaterial } from '../lib/materials';
@@ -45,7 +46,7 @@ export function ExportManager({
   const fileRef = useRef<HTMLInputElement>(null);
   const material = getMaterial(params.material);
   const [kind, setKind] = useState<ExportKind>('assembly');
-  const split = params.assembly.enabled;
+  const split = assemblyActive(params);
   const piece: ExportKind = split ? kind : 'assembly';
 
   return (

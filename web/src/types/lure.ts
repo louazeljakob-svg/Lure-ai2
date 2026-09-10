@@ -411,6 +411,30 @@ export interface InsertConfig {
   material: MaterialId;
 }
 
+
+/**
+ * Face de popper parametrique — module O.3.
+ *
+ * C'est cette geometrie qui fait le bruit et la gerbe, et elle ne se resume
+ * pas a « creuser le nez » : le diametre de la coupe, sa profondeur, l'angle
+ * de la face et le rayon du bord d'attaque changent chacun le son obtenu.
+ * Le volume retire entre dans la flottabilite, et la section frontale
+ * alimente le simulateur de nage.
+ */
+export interface PopperFaceConfig {
+  enabled: boolean;
+  /** Diametre de la coupe, en fraction de la hauteur locale du corps. */
+  diameter: number;
+  /** Profondeur de la coupe, en mm. */
+  depth: number;
+  /** Angle de la face par rapport a la verticale, en degres. */
+  angle: number;
+  /** Rayon du bord d'attaque, en mm : adoucit la levre. */
+  lipRadius: number;
+  /** Decentrement vertical de la coupe : -1 = ventre, 1 = dos. */
+  offset: number;
+}
+
 export interface PaintConfig {
   dorsal: string;
   flank: string;
@@ -842,6 +866,8 @@ export interface LureParams {
   // --- Details de corps (module O) ----------------------------------------
   /** Nervures transversales en relief. */
   ribs: RibConfig;
+  /** Face de popper : cuvette avant parametrique. */
+  popperFace: PopperFaceConfig;
   /** Coque a paroi mince : la cavite interne devient une donnee mesuree. */
   shell: ShellConfig;
   /** Insert interne, exporte comme piece distincte. */

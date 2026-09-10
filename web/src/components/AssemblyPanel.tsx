@@ -12,7 +12,13 @@ import type {
 } from '../types/lure';
 import { CLIPS } from '../lib/materials';
 import { PINS, autoPin } from '../lib/hardware';
-import { EXIT_LABEL, anchorPin, resolvePin, type SocketPlan } from '../lib/assembly';
+import {
+  EXIT_LABEL,
+  anchorPin,
+  assemblyBlocker,
+  resolvePin,
+  type SocketPlan,
+} from '../lib/assembly';
 import { LIMITS } from '../lib/presets';
 import {
   THROUGH_WIRE_LIMITS,
@@ -74,6 +80,7 @@ export function AssemblyPanel({
   const setWire = (patch: Partial<ThroughWireConfig>) =>
     onChange({ throughWire: { ...wire, ...patch } });
   const blocker = throughWireBlocker(params);
+  const assemblyBlock = assemblyBlocker(params);
 
   return (
     <div className="panel__body">
@@ -86,6 +93,22 @@ export function AssemblyPanel({
           checked={assembly.enabled}
           onChange={(enabled) => setAssembly({ enabled })}
         />
+
+        {assemblyBlock ? (
+          <div className="notice notice--error">
+            <span className="notice__icon" aria-hidden="true">
+              !
+            </span>
+            <div>
+              <h4>Deux coques impossibles avec cette combinaison</h4>
+              <p>{assemblyBlock}</p>
+              <p>
+                Le corps reste exporte en UNE piece tant que la combinaison dure : mieux vaut
+                une piece entiere que deux coques qui ne se refermeraient pas.
+              </p>
+            </div>
+          </div>
+        ) : null}
         <Slider
           label="Orientation du joint"
           value={assembly.planeAngle}
