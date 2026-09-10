@@ -18,6 +18,7 @@ import type { LureGeometry } from '../lib/geometry';
 import { buildAssembly, worldToAnchor, type AssemblyResult } from '../lib/assembly';
 import { createSurfaceSampler } from '../lib/geometry';
 import { createProfile } from '../lib/profile';
+import { buildInsert, insertBlocker, measureCavity } from '../lib/insert';
 import { mountTrails, resolveMount } from '../lib/tackle';
 import type { ThreeEvent } from '@react-three/fiber';
 import { FINISHES } from '../lib/materials';
@@ -242,7 +243,11 @@ function LureModel({
   // Corps translucide bleute quand l'articulation est a l'etude : la
   // quincaillerie doit se lire A TRAVERS la matiere, sinon regler un joint
   // revient a travailler a l'aveugle.
-  const seeThrough = xray || jointFocus;
+  // Coque a paroi mince : le corps devient translucide pour laisser voir
+  // l'insert, exactement comme le leurre fini. C'est du rendu, pas de la
+  // geometrie — aucune masse, aucun volume, aucun verdict n'en depend.
+  const shellView = params.shell.enabled && params.shell.transparency > 0.02;
+  const seeThrough = xray || jointFocus || shellView;
   const bodySurface = {
     map: texture,
     normalMap: scaleMap,
@@ -269,7 +274,11 @@ function LureModel({
     sheenColor: new THREE.Color('#ffdada'),
     color: jointFocus ? '#a8c4e8' : '#ffffff',
     transparent: seeThrough,
-    opacity: seeThrough ? (jointFocus ? 0.34 : 0.28) : 1,
+    opacity: xray || jointFocus
+      ? (jointFocus ? 0.34 : 0.28)
+      : shellView
+        ? 1 - livery.varnish.thickness * 0 - params.shell.transparency * 0.72
+        : 1,
     depthWrite: !seeThrough,
     side: seeThrough ? THREE.DoubleSide : THREE.FrontSide,
   };
@@ -304,6 +313,8 @@ function LureModel({
           <meshPhysicalMaterial {...bodySurface} />
         </mesh>
       )}
+
+      <InsertPart params={params} />
 
       {geo.joint ? (
         <mesh geometry={geo.joint} renderOrder={6}>
@@ -457,6 +468,38 @@ function TackleMarkers({ params, visible }: { params: LureParams; visible: boole
         );
       })}
     </group>
+  );
+}
+
+
+/**
+ * Insert interne — module O.2.
+ *
+ * Il se voit A TRAVERS la coque translucide : c'est tout le point de cette
+ * famille de leurres, et c'est aussi le seul moyen de verifier d'un coup
+ * d'oeil qu'il tient dans la cavite.
+ */
+function InsertPart({ params }: { params: LureParams }) {
+  const part = useMemo(() => {
+    if (!params.shell.enabled || !params.insert.enabled) return null;
+    const profile = createProfile(params);
+    const cavity = measureCavity(profile, params, { lengthSegments: 96, radialSegments: 48 });
+    if (insertBlocker(params, cavity)) return null;
+    return buildInsert(profile, params, cavity);
+  }, [params]);
+  useEffect(() => () => part?.geometry.dispose(), [part]);
+  if (!part) return null;
+
+  return (
+    <mesh geometry={part.geometry} renderOrder={4}>
+      <meshPhysicalMaterial
+        color="#d7dee6"
+        roughness={0.12}
+        metalness={0.94}
+        clearcoat={0.6}
+        side={THREE.DoubleSide}
+      />
+    </mesh>
   );
 }
 

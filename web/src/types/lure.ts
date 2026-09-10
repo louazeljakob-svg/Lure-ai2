@@ -344,6 +344,73 @@ export interface ThroughWireConfig {
 /** Materiaux de fil, partages entre le montage traversant et le simulateur. */
 export type WireMaterialId = 'inox304' | 'inox316' | 'ressort' | 'laiton';
 
+
+/**
+ * Nervures transversales — module O.1.
+ *
+ * Des anneaux en relief perpendiculaires a l'axe, sur tout ou partie du
+ * corps. Elles vivent dans le MEME champ de deplacement que les ecailles,
+ * les decals et la sculpture : c'est ce qui garantit qu'elles suivent
+ * partout — affichage, coques d'assemblage, exports et calcul de volume —
+ * sans un seul chemin de code special.
+ */
+export type RibProfile = 'round' | 'triangle' | 'square';
+
+export interface RibConfig {
+  enabled: boolean;
+  /** Pas entre deux nervures, en mm. */
+  pitch: number;
+  /** Hauteur de nervure, en mm. */
+  height: number;
+  profile: RibProfile;
+  /** Debut de la zone couverte, en fraction de la longueur. */
+  from: number;
+  /** Fin de la zone couverte, en fraction de la longueur. */
+  to: number;
+  /** Inclinaison par rapport a la perpendiculaire, en degres. */
+  slant: number;
+}
+
+
+/**
+ * Coque a paroi mince et insert interne — module O.2.
+ *
+ * Plusieurs references montrent un corps translucide laissant voir une piece
+ * reflechissante a l'interieur. L'insert est une PIECE A PART : il sort de
+ * l'export sous son propre nom, avec son propre materiau et sa propre
+ * densite, et sa masse entre dans la flottaison et dans le centre de masse.
+ */
+export interface ShellConfig {
+  enabled: boolean;
+  /** Epaisseur de paroi visee, en mm. */
+  wallMm: number;
+  /** Transparence du materiau, pour le rendu seul. */
+  transparency: number;
+}
+
+export type InsertForm = 'plate' | 'curved' | 'volume';
+
+export interface InsertConfig {
+  enabled: boolean;
+  form: InsertForm;
+  /** Longueur, en fraction de la longueur du corps. */
+  length: number;
+  /** Hauteur, en fraction de la hauteur locale de la cavite. */
+  height: number;
+  /** Epaisseur, en mm. */
+  thickness: number;
+  /** Position du centre sur l'axe : 0 = nez, 1 = queue. */
+  position: number;
+  /** Decalage vertical dans la cavite : -1 = ventre, 1 = dos. */
+  offset: number;
+  /** Rotation dans le plan de profil, en degres. */
+  rotation: number;
+  /** Jeu entre l'insert et la cavite, en mm. */
+  clearance: number;
+  /** Materiau de l'insert : il a sa propre densite. */
+  material: MaterialId;
+}
+
 export interface PaintConfig {
   dorsal: string;
   flank: string;
@@ -771,6 +838,14 @@ export interface LureParams {
   rattles: RattlePocket[];
   /** Chambre a billes tubulaire. */
   chamber: RattleChamber;
+
+  // --- Details de corps (module O) ----------------------------------------
+  /** Nervures transversales en relief. */
+  ribs: RibConfig;
+  /** Coque a paroi mince : la cavite interne devient une donnee mesuree. */
+  shell: ShellConfig;
+  /** Insert interne, exporte comme piece distincte. */
+  insert: InsertConfig;
 
   // --- Montage traversant (module P) --------------------------------------
   /** Fil unique de bout en bout, en plus des modes d'ancrage existants. */

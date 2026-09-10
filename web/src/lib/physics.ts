@@ -20,6 +20,16 @@ import type { BillSlotPlan } from './billTemplate';
 import type { ArticulationPlan } from './articulation';
 import { dowelVolumes, type DowelPlacement } from './dowels';
 import { planThroughWire, throughWireBlocker } from './throughWire';
+import { buildInsert, insertBlocker, measureCavity } from './insert';
+
+/**
+ * Resolution de MESURE de la cavite.
+ *
+ * Elle n'a pas besoin d'etre celle de l'affichage : on integre un volume, pas
+ * une surface a regarder. Cette densite donne le volume au millieme de cm3
+ * pres pour une fraction du cout.
+ */
+const CAVITY_RESOLUTION = { lengthSegments: 96, radialSegments: 48 };
 import {
   checkMounts,
   findTackle,
@@ -80,6 +90,11 @@ export interface PhysicsResult {
   pinMass: number;
   /** Masse des billes mobiles (rattle ponctuel et chambre). */
   rattleMass: number;
+  /** Volume interne mesure de la coque a paroi mince, en cm3. */
+  cavityCm3: number;
+  /** Masse et volume de l'insert interne. */
+  insertMass: number;
+  insertVolumeCm3: number;
   /** Masse des hamecons et anneaux affectes depuis le catalogue. */
   tackleMass: number;
   hookMass: number;
@@ -267,14 +282,34 @@ export function computePhysics(
   // pese — a condition que l'utilisateur ait renseigne ses masses.
   const jointMass = geo.jointPlan ? geo.jointPlan.hardwareMass : 0;
 
+  // --- Coque a paroi mince et insert (module O.2) ---------------------------
+  //
+  // Quand la coque est active, la matiere n'est plus « le volume fois un taux
+  // de remplissage » : c'est la PAROI, mesuree comme la difference entre le
+  // corps et sa cavite. Un chiffre mesure remplace une estimation.
+  const cavity = measureCavity(profile, params, CAVITY_RESOLUTION);
+  const insertPart = params.shell.enabled && !insertBlocker(params, cavity)
+    ? buildInsert(profile, params, cavity)
+    : null;
+  const insertMass = insertPart?.massG ?? 0;
+  const insertVolume = insertPart?.volumeCm3 ?? 0;
+  const insertCentre = insertPart?.centre ?? null;
+  insertPart?.geometry.dispose();
+
   const material = getMaterial(params.material);
   // Les parois de perimetre comptent : a remplissage egal, six parois
   // deposent bien plus de matiere qu'une seule.
   const fill = solidFraction(params.material, params.infill, params.print.perimeters);
   // Les barreaux d'assemblage sont pleins : ils ne suivent pas le taux de
   // remplissage du corps.
+  const wallVolume = params.shell.enabled
+    ? Math.max(cavities.printed - cavity.volumeCm3, cavities.printed * 0.05)
+    : null;
   const bodyMass =
-    (cavities.printed + appendages) * material.density * fill +
+    (wallVolume !== null
+      ? // Une paroi est pleine : elle ne suit pas le taux de remplissage.
+        wallVolume * material.density + appendages * material.density * fill
+      : (cavities.printed + appendages) * material.density * fill) +
     cavities.dowelAdded * material.density +
     jointMass;
   const lengthCm = profile.lengthCm;
@@ -307,6 +342,7 @@ export function computePhysics(
   const ringMass = tackleMass - hookMass;
   const totalMass =
     bodyMass +
+    insertMass +
     ballastMass +
     hardwareMass +
     clipMass +
@@ -325,6 +361,10 @@ export function computePhysics(
     ...(pinMass > 0 ? [{ x: profile.xAt(0.07), y: 0, mass: pinMass }] : []),
     // Le fil traversant est reparti sur toute la longueur, donc centre.
     ...(wireMass > 0 ? [{ x: profile.xAt(0.5), y: 0, mass: wireMass }] : []),
+    // L'insert pese a SA place : c'est ce qui en fait une piece et non un decor.
+    ...(insertMass > 0 && insertCentre
+      ? [{ x: insertCentre.x, y: insertCentre.y, mass: insertMass }]
+      : []),
     ...cavities.points,
     ...tackle,
   ];
@@ -444,6 +484,16 @@ export function computePhysics(
       detail: ringMass > 0 ? 'Catalogue, au point d accrochage' : 'Aucun anneau affecte',
     },
     {
+      key: 'insert',
+      label: 'Insert / pieces rapportees',
+      massG: insertMass,
+      provenance: 'geometrie',
+      detail:
+        insertMass > 0
+          ? `${getMaterial(params.insert.material).label}, ${insertVolume.toFixed(2)} cm3 mesures`
+          : 'Aucun insert',
+    },
+    {
       key: 'manual',
       label: 'Quincaillerie non detaillee',
       massG: hardwareMass,
@@ -465,6 +515,9 @@ export function computePhysics(
     clipMass,
     pinMass,
     rattleMass,
+    cavityCm3: cavity.volumeCm3,
+    insertMass,
+    insertVolumeCm3: insertVolume,
     tackleMass,
     hookMass,
     ringMass,

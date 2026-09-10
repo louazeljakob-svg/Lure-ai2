@@ -13,10 +13,14 @@ import type {
   Inlay,
   LureParams,
   PrintConfig,
+  InsertConfig,
+  RibConfig,
   ScalesConfig,
+  ShellConfig,
 } from '../types/lure';
 import { LIMITS, type Range } from '../lib/presets';
-import { getMaterial, materialsFor } from '../lib/materials';
+import { ribSlantEffective } from '../lib/surfaceDetail';
+import { MATERIALS, getMaterial, materialsFor } from '../lib/materials';
 import { autoDowels, type DowelPlacement } from '../lib/dowels';
 import { Fieldset, Segmented, Slider, Switch } from './ui';
 
@@ -166,6 +170,283 @@ export function DecalInspector({
 // ---------------------------------------------------------------------------
 // Ecailles
 // ---------------------------------------------------------------------------
+
+
+/**
+ * Nervures transversales — module O.1.
+ *
+ * Le relief est cuit dans le maillage des qu'il est actif : contrairement aux
+ * ecailles, il n'y a pas d'apercu en normal map, parce qu'un anneau de 0,4 mm
+ * a 2 mm de pas se voit deja a la densite d'affichage.
+ */
+export function RibsInspector({
+  params,
+  onChange,
+}: {
+  params: LureParams;
+  onChange: (patch: Partial<LureParams>) => void;
+}) {
+  const ribs = params.ribs;
+  const set = (patch: Partial<RibConfig>) => onChange({ ribs: { ...ribs, ...patch } });
+  const effective = ribSlantEffective(params);
+
+  return (
+    <Fieldset
+      legend="Nervures transversales"
+      hint="Anneaux en relief perpendiculaires a l axe, cuits dans le maillage et presents dans le STL."
+    >
+      <Switch
+        label="Nervures"
+        checked={ribs.enabled}
+        onChange={(enabled) => set({ enabled })}
+      />
+
+      {ribs.enabled ? (
+        <>
+          <RangeSlider
+            label="Pas"
+            value={ribs.pitch}
+            range={LIMITS.ribPitch}
+            format={(v) => `${v.toFixed(1)} mm`}
+            hint="Distance d une nervure a la suivante. Le maillage se densifie tout seul pour la tenir."
+            onChange={(pitch) => set({ pitch })}
+          />
+          <RangeSlider
+            label="Hauteur"
+            value={ribs.height}
+            range={LIMITS.ribHeight}
+            format={(v) => `${v.toFixed(2)} mm`}
+            onChange={(height) => set({ height })}
+          />
+          <Segmented
+            label="Profil"
+            value={ribs.profile}
+            options={[
+              { value: 'round', label: 'Arrondi' },
+              { value: 'triangle', label: 'Triangulaire' },
+              { value: 'square', label: 'Carre' },
+            ]}
+            onChange={(profile) => set({ profile: profile as RibConfig['profile'] })}
+          />
+          <RangeSlider
+            label="Debut de zone"
+            value={ribs.from}
+            range={LIMITS.ribZone}
+            format={(v) => `${Math.round(v * 100)} %`}
+            onChange={(from) => set({ from: Math.min(from, ribs.to - 0.02) })}
+          />
+          <RangeSlider
+            label="Fin de zone"
+            value={ribs.to}
+            range={LIMITS.ribZone}
+            format={(v) => `${Math.round(v * 100)} %`}
+            onChange={(to) => set({ to: Math.max(to, ribs.from + 0.02) })}
+          />
+          <RangeSlider
+            label="Inclinaison"
+            value={ribs.slant}
+            range={LIMITS.ribSlant}
+            format={(v) => `${v > 0 ? '+' : ''}${v.toFixed(0)} deg`}
+            hint={`Angle obtenu : ${effective > 0 ? '+' : ''}${effective.toFixed(1)} deg. Une nervure inclinee est une helice, et une helice sur un corps ferme doit avancer d un nombre entier de pas par tour, sinon le motif ne raccorde pas et la surface s ouvre. L angle demande est donc arrondi au plus proche angle qui ferme.`}
+            onChange={(slant) => set({ slant })}
+          />
+          {params.scales.enabled ? (
+            <p className="control__hint">
+              Ecailles actives : sur une crete de nervure elles s aplatissent au quart de leur
+              relief. Deux reliefs cumules ne donnent pas une surface plus riche, ils donnent du
+              bruit.
+            </p>
+          ) : null}
+        </>
+      ) : null}
+    </Fieldset>
+  );
+}
+
+
+/**
+ * Coque a paroi mince et insert — module O.2.
+ *
+ * La cavite affichee est MESUREE sur la surface reelle decalee vers
+ * l'interieur, pas estimee depuis un taux de remplissage. C'est elle qui
+ * decide si l'insert tient, et c'est elle qui porte la flottaison.
+ */
+export function ShellInspector({
+  params,
+  physics,
+  onChange,
+}: {
+  params: LureParams;
+  physics: { cavityCm3: number; insertMass: number; insertVolumeCm3: number };
+  onChange: (patch: Partial<LureParams>) => void;
+}) {
+  const shell = params.shell;
+  const insert = params.insert;
+  const setShell = (patch: Partial<ShellConfig>) => onChange({ shell: { ...shell, ...patch } });
+  const setInsert = (patch: Partial<InsertConfig>) =>
+    onChange({ insert: { ...insert, ...patch } });
+
+  return (
+    <>
+      <Fieldset
+        legend="Coque a paroi mince"
+        hint="Le corps devient une coque translucide a cavite interne. La paroi est declaree au trancheur par le nombre de perimetres ; c est son VOLUME qui est calcule ici."
+      >
+        <Switch
+          label="Coque a paroi mince"
+          checked={shell.enabled}
+          onChange={(enabled) => setShell({ enabled })}
+        />
+        {shell.enabled ? (
+          <>
+            <RangeSlider
+              label="Epaisseur de paroi"
+              value={shell.wallMm}
+              range={LIMITS.shellWall}
+              format={(v) => `${v.toFixed(1)} mm`}
+              onChange={(wallMm) => setShell({ wallMm })}
+            />
+            <RangeSlider
+              label="Transparence"
+              value={shell.transparency}
+              range={{ min: 0, max: 1, step: 0.02 }}
+              format={(v) => `${Math.round(v * 100)} %`}
+              hint="Rendu seul : la transparence ne change ni la masse ni le verdict."
+              onChange={(transparency) => setShell({ transparency })}
+            />
+            <div className="stat" style={{ border: '1px solid var(--line)' }}>
+              <span className="stat__label">Cavite mesuree</span>
+              <div className="stat__value">
+                {physics.cavityCm3.toFixed(2)}
+                <span className="stat__unit">cm3</span>
+              </div>
+              <span className="stat__sub">
+                surface reelle decalee de {shell.wallMm.toFixed(1)} mm vers l interieur
+              </span>
+            </div>
+          </>
+        ) : null}
+      </Fieldset>
+
+      <Fieldset
+        legend="Insert interne"
+        hint="Piece distincte, dans son propre materiau. Elle sort de l export sous son propre nom et sa masse entre dans la flottaison."
+      >
+        <Switch
+          label="Insert"
+          checked={insert.enabled}
+          onChange={(enabled) => setInsert({ enabled })}
+        />
+        {!shell.enabled && insert.enabled ? (
+          <div className="notice notice--warn">
+            <span className="notice__icon" aria-hidden="true">
+              !
+            </span>
+            <div>
+              <h4>Pas de cavite ou le loger</h4>
+              <p>
+                L insert demande une coque a paroi mince : sans cavite definie, il n y a nulle
+                part ou le placer. Activez la coque ci-dessus.
+              </p>
+            </div>
+          </div>
+        ) : null}
+
+        {insert.enabled && shell.enabled ? (
+          <>
+            <Segmented
+              label="Forme"
+              value={insert.form}
+              options={[
+                { value: 'plate', label: 'Plaque' },
+                { value: 'curved', label: 'Feuille galbee' },
+                { value: 'volume', label: 'Volume' },
+              ]}
+              onChange={(form) => setInsert({ form: form as InsertConfig['form'] })}
+            />
+            <div className="control">
+              <label className="control__label" htmlFor="insert-material">
+                Materiau
+              </label>
+              <select
+                id="insert-material"
+                value={insert.material}
+                onChange={(event) =>
+                  setInsert({ material: event.target.value as InsertConfig['material'] })
+                }
+              >
+                {MATERIALS.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.label} — {item.density.toFixed(2)} g/cm3
+                  </option>
+                ))}
+              </select>
+            </div>
+            <RangeSlider
+              label="Longueur"
+              value={insert.length}
+              range={LIMITS.insertLength}
+              format={(v) => `${Math.round(v * 100)} % du corps`}
+              onChange={(length) => setInsert({ length })}
+            />
+            <RangeSlider
+              label="Hauteur"
+              value={insert.height}
+              range={LIMITS.insertHeight}
+              format={(v) => `${Math.round(v * 100)} % de la cavite`}
+              onChange={(height) => setInsert({ height })}
+            />
+            <RangeSlider
+              label="Epaisseur"
+              value={insert.thickness}
+              range={LIMITS.insertThickness}
+              format={(v) => `${v.toFixed(2)} mm`}
+              onChange={(thickness) => setInsert({ thickness })}
+            />
+            <RangeSlider
+              label="Position"
+              value={insert.position}
+              range={LIMITS.insertPosition}
+              format={(v) => `${Math.round(v * 100)} %`}
+              onChange={(position) => setInsert({ position })}
+            />
+            <RangeSlider
+              label="Decalage vertical"
+              value={insert.offset}
+              range={LIMITS.insertOffset}
+              format={(v) => (v < -0.05 ? 'vers le ventre' : v > 0.05 ? 'vers le dos' : 'centre')}
+              onChange={(offset) => setInsert({ offset })}
+            />
+            <RangeSlider
+              label="Rotation"
+              value={insert.rotation}
+              range={LIMITS.insertRotation}
+              format={(v) => `${v > 0 ? '+' : ''}${v.toFixed(0)} deg`}
+              onChange={(rotation) => setInsert({ rotation })}
+            />
+            <RangeSlider
+              label="Jeu insert / cavite"
+              value={insert.clearance}
+              range={LIMITS.insertClearance}
+              format={(v) => `${v.toFixed(2)} mm`}
+              onChange={(clearance) => setInsert({ clearance })}
+            />
+            <div className="stat" style={{ border: '1px solid var(--line)' }}>
+              <span className="stat__label">Insert</span>
+              <div className="stat__value">
+                {physics.insertMass.toFixed(2)}
+                <span className="stat__unit">g</span>
+              </div>
+              <span className="stat__sub">
+                {physics.insertVolumeCm3.toFixed(3)} cm3 — exporte separement sous « insert »
+              </span>
+            </div>
+          </>
+        ) : null}
+      </Fieldset>
+    </>
+  );
+}
 
 export function ScalesInspector({
   scales,

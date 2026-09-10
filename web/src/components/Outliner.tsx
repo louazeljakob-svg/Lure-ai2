@@ -23,6 +23,8 @@ export type NodeKind =
   | 'outline'
   | 'decal'
   | 'scales'
+  | 'ribs'
+  | 'shell'
   | 'inlay'
   | 'dowels'
   | 'articulation'
@@ -66,6 +68,8 @@ export type AddKind =
   | 'dowels'
   | 'decal'
   | 'scales'
+  | 'ribs'
+  | 'shell'
   | 'articulation'
   | 'eyes'
   | 'anchor'
@@ -77,6 +81,8 @@ const ADD_MENU: { kind: AddKind; label: string; hint: string }[] = [
   { kind: 'template', label: 'Modele guide 2 parties', hint: 'Un articule complet, deja regle et flottant' },
   { kind: 'decal', label: 'Decal', hint: 'Forme deposee sur le corps, en relief ou gravee' },
   { kind: 'scales', label: 'Ecailles', hint: 'Trame carrelee sur tout le corps' },
+  { kind: 'ribs', label: 'Nervures', hint: 'Anneaux en relief perpendiculaires a l axe' },
+  { kind: 'shell', label: 'Coque et insert', hint: 'Paroi mince et piece reflechissante interne' },
   { kind: 'inlay', label: 'Rainure de collant', hint: 'Creux plat pour un collant reflechissant' },
   { kind: 'dowels', label: 'Goupilles d assemblage', hint: 'Barreaux imprimes qui alignent les deux coques' },
   { kind: 'eyes', label: 'Oeil', hint: 'Cuvette et iris graves dans la tete' },

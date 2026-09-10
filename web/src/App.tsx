@@ -41,7 +41,9 @@ import {
   JointEyeInspector,
   JointSlotInspector,
   PrintInspector,
+  RibsInspector,
   ScalesInspector,
+  ShellInspector,
 } from './components/Inspector';
 import { runPrintChecks } from './lib/printCheck';
 import { Fieldset } from './components/ui';
@@ -876,6 +878,14 @@ export default function App() {
         onToggleVisible: () => updateParams({ dowels: { ...params.dowels, enabled: !params.dowels.enabled } }) },
       { id: 'scales', kind: 'scales', icon: '⬡', label: 'Ecailles', visible: params.scales.enabled,
         onToggleVisible: () => updateParams({ scales: { ...params.scales, enabled: !params.scales.enabled } }) },
+      { id: 'ribs', kind: 'ribs', icon: '≣', label: 'Nervures', visible: params.ribs.enabled,
+        onToggleVisible: () => updateParams({ ribs: { ...params.ribs, enabled: !params.ribs.enabled } }) },
+      { id: 'shell', kind: 'shell', icon: '◎', label: 'Coque et insert',
+        visible: params.shell.enabled,
+        warning: params.insert.enabled && !params.shell.enabled
+          ? 'L insert demande une coque a paroi mince.'
+          : undefined,
+        onToggleVisible: () => updateParams({ shell: { ...params.shell, enabled: !params.shell.enabled } }) },
     ];
 
     if (params.hasBib) {
@@ -927,6 +937,21 @@ export default function App() {
         updateParams({ scales: { ...params.scales, enabled: true } });
         setSelectedNode('scales');
         setSelectedKind('scales');
+        return;
+      }
+      if (what === 'ribs') {
+        updateParams({ ribs: { ...params.ribs, enabled: true } });
+        setSelectedNode('ribs');
+        setSelectedKind('ribs');
+        return;
+      }
+      if (what === 'shell') {
+        updateParams({
+          shell: { ...params.shell, enabled: true },
+          insert: { ...params.insert, enabled: true },
+        });
+        setSelectedNode('shell');
+        setSelectedKind('shell');
         return;
       }
       if (what === 'articulation') {
@@ -1320,6 +1345,12 @@ export default function App() {
                       />
                     ) : null}
 
+                    {selectedKind === 'ribs' ? (
+                      <RibsInspector params={params} onChange={updateParams} />
+                    ) : null}
+                    {selectedKind === 'shell' ? (
+                      <ShellInspector params={params} physics={physics} onChange={updateParams} />
+                    ) : null}
                     {selectedKind === 'scales' ? (
                       <ScalesInspector
                         scales={params.scales}

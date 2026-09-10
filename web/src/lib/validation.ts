@@ -29,6 +29,11 @@ import type {
   FinishStyle,
   Inlay,
   LiveryConfig,
+  InsertConfig,
+  InsertForm,
+  RibConfig,
+  RibProfile,
+  ShellConfig,
   TackleFamily,
   TackleItem,
   TackleMount,
@@ -551,6 +556,54 @@ function sanitizeThroughWire(value: unknown, fallback: ThroughWireConfig): Throu
   };
 }
 
+
+/** Nervures transversales : absentes d'un projet anterieur au module O. */
+function sanitizeRibs(value: unknown, fallback: RibConfig): RibConfig {
+  const raw = (value ?? {}) as Partial<RibConfig>;
+  const profiles: RibProfile[] = ['round', 'triangle', 'square'];
+  const from = num(raw.from, LIMITS.ribZone, fallback.from);
+  const to = num(raw.to, LIMITS.ribZone, fallback.to);
+  return {
+    enabled: bool(raw.enabled, fallback.enabled),
+    pitch: num(raw.pitch, LIMITS.ribPitch, fallback.pitch),
+    height: num(raw.height, LIMITS.ribHeight, fallback.height),
+    profile: pick(raw.profile, profiles, fallback.profile),
+    // Une zone inversee ne veut rien dire : on la remet a l'endroit plutot
+    // que de generer une bande vide sans le dire.
+    from: Math.min(from, to),
+    to: Math.max(from, to),
+    slant: num(raw.slant, LIMITS.ribSlant, fallback.slant),
+  };
+}
+
+
+/** Coque a paroi mince et insert : absents d'un projet anterieur au module O. */
+function sanitizeShell(value: unknown, fallback: ShellConfig): ShellConfig {
+  const raw = (value ?? {}) as Partial<ShellConfig>;
+  return {
+    enabled: bool(raw.enabled, fallback.enabled),
+    wallMm: num(raw.wallMm, LIMITS.shellWall, fallback.wallMm),
+    transparency: num(raw.transparency, { min: 0, max: 1, step: 0.01 }, fallback.transparency),
+  };
+}
+
+function sanitizeInsert(value: unknown, fallback: InsertConfig): InsertConfig {
+  const raw = (value ?? {}) as Partial<InsertConfig>;
+  const forms: InsertForm[] = ['plate', 'curved', 'volume'];
+  return {
+    enabled: bool(raw.enabled, fallback.enabled),
+    form: pick(raw.form, forms, fallback.form),
+    length: num(raw.length, LIMITS.insertLength, fallback.length),
+    height: num(raw.height, LIMITS.insertHeight, fallback.height),
+    thickness: num(raw.thickness, LIMITS.insertThickness, fallback.thickness),
+    position: num(raw.position, LIMITS.insertPosition, fallback.position),
+    offset: num(raw.offset, LIMITS.insertOffset, fallback.offset),
+    rotation: num(raw.rotation, LIMITS.insertRotation, fallback.rotation),
+    clearance: num(raw.clearance, LIMITS.insertClearance, fallback.clearance),
+    material: pick(raw.material, MATERIALS, fallback.material),
+  };
+}
+
 /** Ramene n'importe quelle entree a un jeu de parametres exploitable. */
 export function sanitizeParams(input: unknown): LureParams {
   const raw = (input ?? {}) as Partial<LureParams>;
@@ -616,6 +669,9 @@ export function sanitizeParams(input: unknown): LureParams {
     ballasts: sanitizeBallasts(raw.ballasts, base.ballasts),
     rattles: sanitizeRattles(raw.rattles, base.rattles),
     chamber: sanitizeChamber(raw.chamber, base.chamber),
+    ribs: sanitizeRibs(raw.ribs, base.ribs),
+    shell: sanitizeShell(raw.shell, base.shell),
+    insert: sanitizeInsert(raw.insert, base.insert),
     throughWire: sanitizeThroughWire(raw.throughWire, base.throughWire),
     catalogue: sanitizeCatalogue(raw.catalogue, base.catalogue),
     mounts: sanitizeMounts(raw.mounts, base.mounts),

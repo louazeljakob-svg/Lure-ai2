@@ -204,6 +204,97 @@ export interface SurfaceDetail {
  * courant elle est rendue en normal map, bien moins couteuse qu'un maillage
  * capable de porter une ecaille d'un millimetre.
  */
+
+// ---------------------------------------------------------------------------
+// Nervures transversales — module O.1
+// ---------------------------------------------------------------------------
+
+/**
+ * Champ de nervures : des anneaux en relief perpendiculaires a l'axe.
+ *
+ * La hauteur est une fonction PERIODIQUE de la distance parcourue le long du
+ * corps, ce qui donne un pas constant en millimetres quelle que soit la
+ * longueur du leurre — et non un nombre fixe d'anneaux qui s'ecarteraient sur
+ * un grand modele. L'inclinaison ajoute simplement un terme proportionnel a
+ * la position autour de la section, exactement comme une helice.
+ *
+ * Les nervures DOMINENT les ecailles : la ou les deux existent, l'ecaille se
+ * plaque sur la nervure au lieu de s'y ajouter, sinon les deux reliefs se
+ * cumuleraient et la surface deviendrait du bruit.
+ */
+/**
+ * Angle d'inclinaison REELLEMENT obtenu, en degres.
+ *
+ * Une helice sur un corps ferme doit avancer d'un nombre entier de pas par
+ * tour ; l'angle demande est donc arrondi au plus proche angle qui ferme.
+ * L'interface affiche celui-la, pas celui du curseur.
+ */
+export function ribSlantEffective(params: LureParams): number {
+  const ribs = params.ribs;
+  const pitchCm = Math.max(ribs.pitch * MM_TO_CM, 0.02);
+  const meanRadius = Math.max(((params.thickness + params.maxWidth) * MM_TO_CM) / 4, 0.05);
+  const turnCm = 2 * Math.PI * meanRadius;
+  const wanted = Math.tan((Math.min(Math.max(ribs.slant, -45), 45) * Math.PI) / 180);
+  const turns = Math.round((wanted * turnCm) / pitchCm);
+  return (Math.atan((turns * pitchCm) / turnCm) * 180) / Math.PI;
+}
+
+export function ribField(
+  params: LureParams,
+  lengthCm: number,
+): ((p: number, theta: number) => number) | null {
+  const ribs = params.ribs;
+  if (!ribs.enabled || ribs.height <= 0.005 || ribs.to - ribs.from <= 0.01) return null;
+
+  const pitchCm = Math.max(ribs.pitch * MM_TO_CM, 0.02);
+  const heightCm = ribs.height * MM_TO_CM;
+  // Rayon moyen : convertit un angle de section en distance parcourue, ce qui
+  // donne a l'inclinaison le meme sens qu'une helice sur un cylindre.
+  const meanRadius = Math.max(((params.thickness + params.maxWidth) * MM_TO_CM) / 4, 0.05);
+
+  // Inclinaison QUANTIFIEE.
+  //
+  // Une nervure inclinee est une helice, et une helice sur un corps ferme
+  // doit se refermer sur elle-meme : en un tour complet de section, elle doit
+  // avancer d'un nombre ENTIER de pas. Autrement le motif ne raccorde pas a
+  // la couture theta = 0, et le maillage s'ouvre — c'est exactement ce que le
+  // test a montre. On arrondit donc l'angle demande au plus proche angle qui
+  // ferme, et l'interface affiche l'angle reellement obtenu.
+  const turnCm = 2 * Math.PI * meanRadius;
+  const wanted = Math.tan((Math.min(Math.max(ribs.slant, -45), 45) * Math.PI) / 180);
+  const turns = Math.round((wanted * turnCm) / pitchCm);
+  const slant = (turns * pitchCm) / turnCm;
+
+  /** Profil d'une nervure sur un cycle : u dans [0, 1). */
+  const shape = (u: number): number => {
+    // Centre le motif : la crete tombe au milieu du cycle.
+    const t = Math.abs(u - 0.5) * 2; // 0 a la crete, 1 dans le creux
+    switch (ribs.profile) {
+      case 'triangle':
+        return Math.max(1 - t, 0);
+      case 'square':
+        // Creneau adouci sur un dixieme de pas : une arete franche ne
+        // s'imprime pas et fait exploser le maillage en pointes.
+        return t < 0.5 ? 1 : t > 0.6 ? 0 : (0.6 - t) / 0.1;
+      default:
+        return 0.5 * (1 + Math.cos(Math.PI * Math.min(t, 1)));
+    }
+  };
+
+  return (p: number, theta: number): number => {
+    if (p < ribs.from || p > ribs.to) return 0;
+    // Fondu aux deux bouts de la zone : une nervure qui s'arrete net laisse
+    // une marche que l'impression rend visible.
+    const fade = Math.min(
+      1,
+      Math.min(p - ribs.from, ribs.to - p) / Math.max((ribs.to - ribs.from) * 0.08, 1e-4),
+    );
+    const along = p * lengthCm + slant * theta * meanRadius;
+    const u = ((along / pitchCm) % 1 + 1) % 1;
+    return heightCm * shape(u) * fade;
+  };
+}
+
 export function createSurfaceDetail(
   profile: ProfileSampler,
   params: LureParams,
@@ -220,7 +311,9 @@ export function createSurfaceDetail(
     .filter((baked): baked is BakedInlay => baked !== null);
 
   const scales = params.scales.enabled && bakeScales ? params.scales : null;
-  if (decals.length === 0 && inlays.length === 0 && !scales) return null;
+  const ribs = ribField(params, profile.lengthCm);
+  const ribHeightCm = ribs ? params.ribs.height * MM_TO_CM : 0;
+  if (decals.length === 0 && inlays.length === 0 && !scales && !ribs) return null;
 
   const lengthCm = profile.lengthCm;
   const scaleAmplitude = scales
@@ -242,6 +335,11 @@ export function createSurfaceDetail(
     const lateral = Math.abs(Math.sin(theta));
 
     let total = 0;
+
+    // Nervures d'abord : elles portent le relief, et les ecailles viendront se
+    // plaquer PAR-DESSUS au lieu de s'y ajouter.
+    const rib = ribs ? ribs(p, theta) : 0;
+    total += rib;
 
     if (decals.length > 0) {
       // Le decal est projete depuis le flanc : il ne mord plus quand la peau
@@ -283,8 +381,13 @@ export function createSurfaceDetail(
           v = (theta / (Math.PI * 2)) * Math.max(perimeter, 1e-3);
         }
         const height01 = scaleField(scales, u, v);
+        // Les nervures dominent : sur une crete l'ecaille s'aplatit au quart
+        // de son relief, dans un creux elle reste entiere. Deux reliefs
+        // cumules ne donnent pas une surface plus riche, ils donnent du bruit.
+        const crest = ribHeightCm > 0 ? Math.min(rib / ribHeightCm, 1) : 0;
+        const under = 1 - 0.75 * crest;
         if (height01 > 0) {
-          total += scaleAmplitude * height01 * fade;
+          total += scaleAmplitude * height01 * fade * under;
         } else if (scales.style === 'engraved') {
           // En grave, ce sont les interstices qui descendent : hors ecaille,
           // la peau reste a son niveau et l'ecaille ressort en creux.

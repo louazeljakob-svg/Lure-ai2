@@ -19,6 +19,7 @@ import {
   type LureGeometry,
   type ShellPart,
 } from './geometry';
+import { buildInsert, measureCavity } from './insert';
 import {
   ASSEMBLY_STEP,
   assemblyExport,
@@ -30,10 +31,11 @@ import { createProfile } from './profile';
 import { buildStepFile } from './step';
 
 /** Piece a exporter : ensemble assemble, ou l'une des deux coques. */
-export type ExportKind = 'assembly' | 'male' | 'female';
+export type ExportKind = 'assembly' | 'male' | 'female' | 'insert';
 
 export const EXPORT_LABEL: Record<ExportKind, string> = {
   assembly: 'assemble',
+  insert: 'insert',
   male: 'male',
   female: 'femelle',
 };
@@ -52,6 +54,20 @@ function collectParts(
 ): { parts: THREE.BufferGeometry[]; owned: THREE.BufferGeometry[] } {
   const owned: THREE.BufferGeometry[] = [];
   const parts: THREE.BufferGeometry[] = [];
+
+  // L'insert sort SEUL, sous son propre nom : c'est une piece d'un autre
+  // materiau, souvent decoupee plutot qu'imprimee, et la fusionner au corps
+  // par megarde donnerait un fichier inutilisable.
+  if (kind === 'insert') {
+    const profile = createProfile(params);
+    const cavity = measureCavity(profile, params, { lengthSegments: 96, radialSegments: 48 });
+    const part = buildInsert(profile, params, cavity);
+    if (part) {
+      owned.push(part.geometry);
+      parts.push(part.geometry);
+    }
+    return { parts, owned };
+  }
 
   // La bavette polycarbonate n'est jamais exportee : c'est une plaque
   // decoupee a part, son modele 3D n'est qu'une aide au placement.

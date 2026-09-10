@@ -72,14 +72,37 @@ export function detailResolution(
   base: Resolution,
   bakeScales: boolean,
 ): Resolution {
-  if (!bakeScales || !params.scales.enabled) return base;
+  const scales = bakeScales && params.scales.enabled ? params.scales : null;
+  const ribs = params.ribs.enabled ? params.ribs : null;
+  if (!scales && !ribs) return base;
+
   const lengthCm = params.length * MM_TO_CM;
   const girthCm = Math.PI * ((params.maxWidth + params.thickness) / 2) * MM_TO_CM;
-  const stepU = Math.max(params.scales.width * MM_TO_CM, 0.02) / 4;
-  const stepV = Math.max(params.scales.height * MM_TO_CM, 0.02) / 4;
+
+  // Quatre stations par motif : en dessous, le relief est echantillonne trop
+  // grossierement et sort aplati — present dans le code, absent de la piece.
+  let stepU = Infinity;
+  let stepV = Infinity;
+  if (scales) {
+    stepU = Math.min(stepU, Math.max(scales.width * MM_TO_CM, 0.02) / 4);
+    stepV = Math.min(stepV, Math.max(scales.height * MM_TO_CM, 0.02) / 4);
+  }
+  if (ribs) {
+    // Une nervure est un anneau : elle ne demande de la finesse que le long
+    // de l'axe. Sauf inclinaison, ou elle en demande aussi autour.
+    stepU = Math.min(stepU, Math.max(ribs.pitch * MM_TO_CM, 0.02) / 4);
+    if (Math.abs(ribs.slant) > 5) {
+      stepV = Math.min(stepV, Math.max(ribs.pitch * MM_TO_CM, 0.02) / 3);
+    }
+  }
+
   return {
-    lengthSegments: Math.min(Math.max(Math.round(lengthCm / stepU), base.lengthSegments), 900),
-    radialSegments: Math.min(Math.max(Math.round(girthCm / stepV), base.radialSegments), 320),
+    lengthSegments: Number.isFinite(stepU)
+      ? Math.min(Math.max(Math.round(lengthCm / stepU), base.lengthSegments), 900)
+      : base.lengthSegments,
+    radialSegments: Number.isFinite(stepV)
+      ? Math.min(Math.max(Math.round(girthCm / stepV), base.radialSegments), 320)
+      : base.radialSegments,
   };
 }
 
