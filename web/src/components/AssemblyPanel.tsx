@@ -8,11 +8,17 @@ import type {
   PinAnchor,
   PinExit,
   PinId,
+  ThroughWireConfig,
 } from '../types/lure';
 import { CLIPS } from '../lib/materials';
 import { PINS, autoPin } from '../lib/hardware';
 import { EXIT_LABEL, anchorPin, resolvePin, type SocketPlan } from '../lib/assembly';
 import { LIMITS } from '../lib/presets';
+import {
+  THROUGH_WIRE_LIMITS,
+  WIRE_MATERIAL_LABEL,
+  throughWireBlocker,
+} from '../lib/throughWire';
 import { Fieldset, Segmented, Slider, Switch } from './ui';
 
 interface Props {
@@ -64,6 +70,11 @@ export function AssemblyPanel({
   const setFabrication = (patch: Partial<FabricationConfig>) =>
     onChange({ fabrication: { ...fabrication, ...patch } });
 
+  const wire = params.throughWire;
+  const setWire = (patch: Partial<ThroughWireConfig>) =>
+    onChange({ throughWire: { ...wire, ...patch } });
+  const blocker = throughWireBlocker(params);
+
   return (
     <div className="panel__body">
       <Fieldset
@@ -90,6 +101,112 @@ export function AssemblyPanel({
           hint="0 deg : joint gauche / droite, le plus courant. 90 deg : joint dos / ventre."
           onChange={(planeAngle) => setAssembly({ planeAngle })}
         />
+      </Fieldset>
+
+      <Fieldset
+        legend="Montage traversant"
+        hint="Un fil unique traverse le corps de bout en bout et forme lui-meme ses boucles de nez et de queue. C est ce qui change le mode de rupture."
+      >
+        <Switch
+          label="Fil traversant"
+          checked={wire.enabled}
+          onChange={(enabled) => setWire({ enabled })}
+          hint="S ajoute aux modes existants : les goupilles en 8 et les goujons d assemblage restent disponibles."
+        />
+
+        {blocker ? (
+          <div className="notice notice--warn">
+            <span className="notice__icon" aria-hidden="true">
+              !
+            </span>
+            <div>
+              <h4>Montage traversant impossible ici</h4>
+              <p>{blocker}</p>
+            </div>
+          </div>
+        ) : null}
+
+        <Slider
+          label="Diametre du fil"
+          value={wire.wireMm}
+          {...THROUGH_WIRE_LIMITS.wireMm}
+          display={`${wire.wireMm.toFixed(1)} mm`}
+          disabled={!wire.enabled}
+          onChange={(wireMm) => setWire({ wireMm })}
+        />
+        <div className="control">
+          <label className="control__label" htmlFor="wire-material">
+            Materiau du fil
+          </label>
+          <select
+            id="wire-material"
+            value={wire.material}
+            disabled={!wire.enabled}
+            onChange={(event) =>
+              setWire({ material: event.target.value as ThroughWireConfig['material'] })
+            }
+          >
+            {(Object.keys(WIRE_MATERIAL_LABEL) as ThroughWireConfig['material'][]).map((id) => (
+              <option key={id} value={id}>
+                {WIRE_MATERIAL_LABEL[id]}
+              </option>
+            ))}
+          </select>
+        </div>
+        <Slider
+          label="Diametre des boucles"
+          value={wire.loopMm}
+          {...THROUGH_WIRE_LIMITS.loopMm}
+          display={`${wire.loopMm.toFixed(1)} mm`}
+          disabled={!wire.enabled}
+          onChange={(loopMm) => setWire({ loopMm })}
+        />
+        <Slider
+          label="Jeu du canal"
+          value={wire.clearanceMm}
+          {...THROUGH_WIRE_LIMITS.clearanceMm}
+          display={`${wire.clearanceMm.toFixed(2)} mm`}
+          disabled={!wire.enabled}
+          hint={`Canal de ${(wire.wireMm + wire.clearanceMm).toFixed(2)} mm de diametre, creuse pour moitie dans chaque coque.`}
+          onChange={(clearanceMm) => setWire({ clearanceMm })}
+        />
+        <Slider
+          label="Sorties ventrales"
+          value={wire.bellyExits}
+          {...THROUGH_WIRE_LIMITS.bellyExits}
+          display={`${wire.bellyExits}`}
+          disabled={!wire.enabled}
+          onChange={(bellyExits) => setWire({ bellyExits })}
+        />
+        {wire.bellyExits > 0 && wire.enabled ? (
+          <>
+            {wire.bellyPositions.slice(0, wire.bellyExits).map((position, index) => (
+              <Slider
+                key={index}
+                label={`Position de la sortie ${index + 1}`}
+                value={position}
+                min={0.12}
+                max={0.9}
+                step={0.01}
+                display={`${Math.round(position * 100)} %`}
+                onChange={(value) =>
+                  setWire({
+                    bellyPositions: wire.bellyPositions.map((p, i) =>
+                      i === index ? value : p,
+                    ),
+                  })
+                }
+              />
+            ))}
+            <p className="control__hint">
+              Une boucle ventrale <strong>n est pas formee sur le fil</strong> : sortie du plan de
+              joint, elle fendrait l assemblage sur toute sa hauteur. Chaque sortie pose donc un
+              oeillet ventral a part entiere, a la cote du fil. Son mode de rupture reste
+              l arrachement, et le simulateur le nomme ancrage par ancrage plutot que de promettre
+              un montage uniformement traversant.
+            </p>
+          </>
+        ) : null}
       </Fieldset>
 
       <Fieldset

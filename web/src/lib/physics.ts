@@ -13,12 +13,20 @@ import * as THREE from 'three';
 import type { LureParams, WaterId } from '../types/lure';
 import type { LureGeometry } from './geometry';
 import { getMaterial, solidFraction, WATER_DENSITY } from './materials';
-import { clamp, createProfile } from './profile';
+import { clamp, createProfile, MM_TO_CM, type ProfileSampler } from './profile';
 import { buildAssembly, resolvePin } from './assembly';
 import { printedBodies } from './geometry';
 import type { BillSlotPlan } from './billTemplate';
 import type { ArticulationPlan } from './articulation';
 import { dowelVolumes, type DowelPlacement } from './dowels';
+import { planThroughWire, throughWireBlocker } from './throughWire';
+import {
+  checkMounts,
+  findTackle,
+  mountTrails,
+  resolveMount,
+  type MountWarning,
+} from './tackle';
 import { pinPath, pinWireLength, STAINLESS_DENSITY } from './hardware';
 
 export type Buoyancy = 'float' | 'suspend' | 'sink';
@@ -39,6 +47,24 @@ export interface Vec3 {
   z: number;
 }
 
+/**
+ * Une ligne du bilan de masse — module Q.5.
+ *
+ * `provenance` n'est pas decoratif : il dit a l'utilisateur si le chiffre
+ * vient d'une geometrie CALCULEE, d'une ligne de catalogue VERIFIEE ou d'une
+ * simple ESTIMATION. Un total qui melange les trois sans le dire serait une
+ * fausse precision.
+ */
+export interface MassLine {
+  key: string;
+  label: string;
+  massG: number;
+  /** Part du total, en %. */
+  share: number;
+  provenance: 'geometrie' | 'verifie' | 'estimation';
+  detail: string;
+}
+
 export interface PhysicsResult {
   /** Volume exterieur total en cm3 (corps + bavette + caudale). */
   volumeCm3: number;
@@ -54,7 +80,13 @@ export interface PhysicsResult {
   pinMass: number;
   /** Masse des billes mobiles (rattle ponctuel et chambre). */
   rattleMass: number;
+  /** Masse des hamecons et anneaux affectes depuis le catalogue. */
+  tackleMass: number;
+  hookMass: number;
+  ringMass: number;
   totalMass: number;
+  /** Bilan de masse poste par poste, avec la provenance de chaque valeur. */
+  massBreakdown: MassLine[];
   displacedMass: number;
   /** Masse / poussee. < 1 flotte, = 1 suspend, > 1 coule. */
   ratio: number;
@@ -145,6 +177,51 @@ function hardwarePoints(params: LureParams, total: number): PointMass[] {
   ];
 }
 
+
+/**
+ * Masses ponctuelles de la quincaillerie affectee — modules Q.4 et R.
+ *
+ * Le bras de levier compte autant que la masse : un triple 3/0 au ventre
+ * arriere ne deplace pas le centre de gravite comme le meme triple au ventre
+ * avant, et c'est souvent lui qui decide de l'action. On place donc l'anneau
+ * AU point d'accrochage et l'hamecon a mi-longueur SOUS lui, ce qui est la
+ * position moyenne d'un hamecon qui pend.
+ */
+function tacklePoints(params: LureParams, profile: ProfileSampler): PointMass[] {
+  const out: PointMass[] = [];
+  for (const mount of params.mounts) {
+    const resolved = resolveMount(params.catalogue, mount);
+    if (resolved.massG <= 0) continue;
+    const p = clamp(mount.position, 0.02, profile.bodyEnd - 0.01);
+    const x = profile.xAt(p);
+    const section = profile.section(p);
+    // height : -1 au ventre, 0 sur l'axe, +1 au dos.
+    const surfaceY =
+      mount.height < 0 ? section.bottom * -mount.height : section.top * mount.height;
+
+    // Un support de queue traine derriere, un support ventral pend dessous :
+    // les deux ne deplacent pas le centre de masse dans la meme direction.
+    const trails = mountTrails(mount.position);
+    if (resolved.ring) {
+      out.push({ x, y: surfaceY, mass: resolved.ring.massG });
+    }
+    if (resolved.hook) {
+      // Le centre de masse d'un hamecon suspendu se trouve a environ la
+      // moitie de sa longueur hors-tout, au bout de l'anneau.
+      const hangCm = resolved.hook.spanMm * 0.5 * MM_TO_CM;
+      const ringDrop = resolved.ring ? resolved.ring.spanMm * 0.66 * MM_TO_CM : 0;
+      const reach = ringDrop + hangCm;
+      const sign = mount.height <= 0 ? -1 : 1;
+      out.push(
+        trails
+          ? { x: x + reach, y: surfaceY, mass: resolved.hook.massG }
+          : { x, y: surfaceY + sign * reach, mass: resolved.hook.massG },
+      );
+    }
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Calcul principal
 // ---------------------------------------------------------------------------
@@ -211,8 +288,32 @@ export function computePhysics(
   // developpee, comme pour l'agrafe.
   const pinSpec = params.assembly.enabled ? resolvePin(params) : null;
   const pinMass = pinSpec ? pinWireLength(pinPath(pinSpec)) * Math.PI * ((pinSpec.wire * 0.05) ** 2) * STAINLESS_DENSITY : 0;
+  // Montage traversant : la masse du fil se DEDUIT de sa longueur developpee,
+  // comme celle d'une goupille. Elle ne se saisit pas.
+  const wirePlan =
+    params.throughWire.enabled && !throughWireBlocker(params)
+      ? planThroughWire(params, profile.lengthCm)
+      : null;
+  const wireMass = wirePlan ? wirePlan.massG : 0;
   const rattleMass = cavities.mass;
-  const totalMass = bodyMass + ballastMass + hardwareMass + clipMass + pinMass + rattleMass;
+  // Quincaillerie affectee depuis le catalogue : hamecons et anneaux, a leur
+  // masse reelle et a leur place reelle.
+  const tackle = tacklePoints(params, profile);
+  const tackleMass = tackle.reduce((sum, p) => sum + p.mass, 0);
+  const hookMass = params.mounts.reduce(
+    (sum, m) => sum + (findTackle(params.catalogue, m.hookId)?.massG ?? 0),
+    0,
+  );
+  const ringMass = tackleMass - hookMass;
+  const totalMass =
+    bodyMass +
+    ballastMass +
+    hardwareMass +
+    clipMass +
+    pinMass +
+    wireMass +
+    rattleMass +
+    tackleMass;
 
   // Centre de gravite : corps homogene + billes de lest + quincaillerie.
   const points: PointMass[] = [
@@ -222,7 +323,10 @@ export function computePhysics(
     ...(clipMass > 0 ? [{ x: profile.xAt(0), y: 0, mass: clipMass }] : []),
     // La goupille est logee dans la tete, sur l'axe.
     ...(pinMass > 0 ? [{ x: profile.xAt(0.07), y: 0, mass: pinMass }] : []),
+    // Le fil traversant est reparti sur toute la longueur, donc centre.
+    ...(wireMass > 0 ? [{ x: profile.xAt(0.5), y: 0, mass: wireMass }] : []),
     ...cavities.points,
+    ...tackle,
   ];
   const cg = { x: 0, y: 0, z: 0 };
   const massSum = points.reduce((sum, p) => sum + p.mass, 0);
@@ -285,6 +389,73 @@ export function computePhysics(
     diveDepth = [Math.round(depth * 0.75 * 10) / 10, Math.round(depth * 1.25 * 10) / 10];
   }
 
+  // --- Bilan de masse (Q.5) ------------------------------------------------
+  //
+  // Chaque poste dit d'ou il vient. Un corps imprime se CALCULE sur sa
+  // geometrie ; un hamecon vaut ce que dit sa ligne de catalogue, verifiee ou
+  // non ; la masse de quincaillerie saisie a la main reste une estimation. Le
+  // total n'a de sens que si l'on sait ce qu'on y a mis.
+  const tackleVerified =
+    params.mounts.length > 0 &&
+    params.mounts.every((m) => {
+      const ring = findTackle(params.catalogue, m.ringId);
+      const hook = findTackle(params.catalogue, m.hookId);
+      return (
+        (!ring || ring.source === 'verifie') && (!hook || hook.source === 'verifie')
+      );
+    });
+
+  const rawLines: Omit<MassLine, 'share'>[] = [
+    {
+      key: 'body',
+      label: 'Corps imprime',
+      massG: bodyMass,
+      provenance: 'geometrie',
+      detail: `${material.label}, ${Math.round(fill * 100)} % de matiere deposee`,
+    },
+    {
+      key: 'ballast',
+      label: 'Lest interne',
+      massG: ballastMass,
+      provenance: 'geometrie',
+      detail: `${params.ballasts.length} lest(s) a ${params.ballastDensity.toFixed(2)} g/cm3`,
+    },
+    {
+      key: 'internal',
+      label: 'Quincaillerie interne',
+      massG: clipMass + pinMass + wireMass + rattleMass,
+      provenance: 'geometrie',
+      detail: wireMass > 0
+        ? `Agrafe, billes et fil traversant (${(wirePlan!.wireLengthCm * 10).toFixed(0)} mm developpes)`
+        : 'Agrafe, goupille et billes, deduits de la longueur de fil et du volume',
+    },
+    {
+      key: 'hooks',
+      label: 'Hamecons',
+      massG: hookMass,
+      provenance: tackleVerified ? 'verifie' : 'estimation',
+      detail: hookMass > 0 ? 'Catalogue, place a son bras de levier reel' : 'Aucun hamecon affecte',
+    },
+    {
+      key: 'rings',
+      label: 'Anneaux',
+      massG: ringMass,
+      provenance: tackleVerified ? 'verifie' : 'estimation',
+      detail: ringMass > 0 ? 'Catalogue, au point d accrochage' : 'Aucun anneau affecte',
+    },
+    {
+      key: 'manual',
+      label: 'Quincaillerie non detaillee',
+      massG: hardwareMass,
+      provenance: 'estimation',
+      detail: 'Valeur saisie a la main, repartie sur trois points types',
+    },
+  ];
+  const massBreakdown: MassLine[] = rawLines.map((line) => ({
+    ...line,
+    share: totalMass > 1e-9 ? (line.massG / totalMass) * 100 : 0,
+  }));
+
   return {
     volumeCm3: volume,
     solidFraction: fill,
@@ -294,7 +465,11 @@ export function computePhysics(
     clipMass,
     pinMass,
     rattleMass,
+    tackleMass,
+    hookMass,
+    ringMass,
     totalMass,
+    massBreakdown,
     displacedMass,
     ratio,
     density,
@@ -321,6 +496,12 @@ export function computePhysics(
       bill: cavities.bill,
       joint: geo.jointPlan,
       dowels: cavities.dowels,
+      tackleMass,
+      mountWarnings: checkMounts(
+        params.mounts.map((mount) => resolveMount(params.catalogue, mount)),
+        params.length,
+        params.thickness,
+      ),
     }),
   };
 }
@@ -390,6 +571,8 @@ interface WarningInput {
   joint: ArticulationPlan | null;
   /** Goupilles cylindriques d'assemblage et leur controle. */
   dowels: DowelPlacement[];
+  tackleMass: number;
+  mountWarnings: MountWarning[];
 }
 
 function buildWarnings(
@@ -398,6 +581,28 @@ function buildWarnings(
   r: WarningInput,
 ): PhysicsWarning[] {
   const list: PhysicsWarning[] = [];
+
+  // Q.4 : le champ « masse de quincaillerie » d'avant le catalogue n'a pas
+  // disparu — il sert encore pour ce qu'on ne detaille pas. Mais s'il reste
+  // rempli alors que des hamecons sont affectes, la meme masse est comptee
+  // deux fois. On ne corrige pas en silence : on le dit.
+  if (params.hardwareMass > 0.05 && r.tackleMass > 0.05) {
+    list.push({
+      id: 'tackle-double',
+      level: 'warn',
+      title: 'Quincaillerie comptee deux fois',
+      detail: `Le catalogue affecte ${r.tackleMass.toFixed(1)} g d hamecons et d anneaux, et le champ « masse de quincaillerie » ajoute encore ${params.hardwareMass.toFixed(1)} g. Ramenez ce champ a zero, ou n y laissez que ce qui n est pas detaille.`,
+    });
+  }
+
+  for (const warning of r.mountWarnings) {
+    list.push({
+      id: `mount-${warning.mountId}`,
+      level: warning.level,
+      title: warning.level === 'error' ? 'Collision d hamecons' : 'Montage a verifier',
+      detail: warning.message,
+    });
+  }
 
   if (r.rollMarginMm <= 0.2) {
     list.push({

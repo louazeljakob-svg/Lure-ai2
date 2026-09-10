@@ -32,6 +32,8 @@ import {
   type SwimInput,
   type WireMaterial,
 } from '../lib/swim';
+import { throughWireBlocker } from '../lib/throughWire';
+import { resolveMount } from '../lib/tackle';
 import { EstimateStat, LineChart, RankBars, VIZ, type VizPoint } from './charts';
 import { Fieldset, Segmented, Slider, Switch } from './ui';
 
@@ -181,6 +183,12 @@ export function SwimSimulator({ params, physics, sockets }: Props) {
     [params, sealant, physics, sockets.length, currentResult.depth, floatMargin],
   );
 
+  // Un fil traversant capture ses boucles de nez et de queue d'un bout a
+  // l'autre du corps : il n'y a plus d'ancrage a arracher. Les oeillets
+  // ventraux, eux, restent des ancrages ordinaires — et le classement le dit
+  // ancrage par ancrage plutot que de promettre un montage uniforme.
+  const wireMounted = params.throughWire.enabled && !throughWireBlocker(params);
+
   const anchors = useMemo(
     () =>
       sockets.map((socket) =>
@@ -193,11 +201,49 @@ export function SwimSimulator({ params, physics, sockets }: Props) {
           params,
           assumptions,
           calibration,
+          wireMounted && (socket.exit === 'nose' || socket.exit === 'tail'),
         ),
       ),
-    [sockets, wire, params, assumptions, calibration],
+    [sockets, wire, params, assumptions, calibration, wireMounted],
   );
-  const snag = useMemo(() => snagScenario(anchors, lineKg), [anchors, lineKg]);
+
+  /** Le fil traversant lui-meme est un maillon : on le classe comme tel. */
+  const wireLink = useMemo(() => {
+    if (!wireMounted) return null;
+    const spec = WIRE_MATERIALS.find((m) => m.id === params.throughWire.material)
+      ?? WIRE_MATERIALS[0];
+    const r = params.throughWire.wireMm * 1e-3 / 2;
+    const newtons = spec.tensile * 1e6 * Math.PI * r * r;
+    return { label: `Fil traversant ${spec.label}`, kgf: newtons / 9.81 };
+  }, [wireMounted, params.throughWire.material, params.throughWire.wireMm]);
+
+  /** Anneaux et hamecons affectes : ils font partie de la chaine de rupture. */
+  const tackleLinks = useMemo(
+    () =>
+      params.mounts.flatMap((mount) => {
+        const resolved = resolveMount(params.catalogue, mount);
+        const out: { label: string; kgf: number }[] = [];
+        if (resolved.ring && resolved.ring.strengthKg > 0) {
+          out.push({
+            label: `${mount.label} — anneau ${resolved.ring.size}`,
+            kgf: resolved.ring.strengthKg,
+          });
+        }
+        if (resolved.hook && resolved.hook.strengthKg > 0) {
+          out.push({
+            label: `${mount.label} — hamecon ${resolved.hook.size}`,
+            kgf: resolved.hook.strengthKg,
+          });
+        }
+        return out;
+      }),
+    [params.mounts, params.catalogue],
+  );
+
+  const snag = useMemo(
+    () => snagScenario(anchors, lineKg, [...tackleLinks, ...(wireLink ? [wireLink] : [])]),
+    [anchors, lineKg, tackleLinks, wireLink],
+  );
 
   const setAssumption = (key: keyof SwimAssumptions, value: number) =>
     setAssumptions((prev) => ({ ...prev, [key]: value }));
@@ -658,6 +704,15 @@ export function SwimSimulator({ params, physics, sockets }: Props) {
                 display={`${n(lineKg, 1)} kg`}
                 onChange={setLineKg}
               />
+              {wireMounted ? (
+                <p className="swim__lead">
+                  <strong>Montage traversant</strong> : le fil est capture d un bout a l autre du
+                  corps, il n y a plus d ancrage a arracher au nez ni a la queue. Le maillon faible
+                  y devient le fil lui-meme ou l anneau brise. Les oeillets ventraux, eux, restent
+                  des ancrages ordinaires et gardent leur mode d arrachement — c est la raison pour
+                  laquelle le classement les nomme separement.
+                </p>
+              ) : null}
               <p className="swim__lead">
                 Accroche au fond : on tire jusqu'a ce que quelque chose lache. Ici c'est{' '}
                 <strong>{snag.first}</strong> a {n(snag.kgf, 1)} kgf.

@@ -243,6 +243,97 @@ export interface LiveryConfig {
 /** Environnement d'apercu : purement visuel lui aussi. */
 export type PreviewEnv = 'atelier' | 'studio' | 'subaquatique';
 
+
+// ---------------------------------------------------------------------------
+// Catalogue de quincaillerie — module Q
+// ---------------------------------------------------------------------------
+
+/** Familles de quincaillerie qui se pesent et se montent sur un leurre. */
+export type TackleFamily = 'treble' | 'inline' | 'assist' | 'split' | 'solid' | 'swivel';
+
+/**
+ * Provenance d'une ligne de catalogue.
+ *
+ * La distinction n'est pas cosmetique : une masse « indicative » est un ordre
+ * de grandeur qui peut se tromper de 30 %, une masse « verifiee » vient d'une
+ * charte fournisseur ou d'une balance. Le bilan de masse affiche la
+ * provenance ligne par ligne pour que l'utilisateur sache ou il en est.
+ */
+export type TackleSource = 'indicatif' | 'verifie';
+
+export interface TackleItem {
+  id: string;
+  family: TackleFamily;
+  /** Nom de la serie fabricant, saisi librement. */
+  series: string;
+  /** Notation normalisee : #8 a 10/0 pour les hamecons, #0 a #12 pour les anneaux. */
+  size: string;
+  /** Calibre du fil, en mm. */
+  wireMm: number;
+  /** Masse unitaire, en g. C'est la donnee qui compte. */
+  massG: number;
+  /** Resistance annoncee, en kg. La valeur en lb s'en deduit. */
+  strengthKg: number;
+  /** Longueur hors-tout d'un hamecon, ou diametre exterieur d'un anneau, en mm. */
+  spanMm: number;
+  source: TackleSource;
+  note: string;
+}
+
+/**
+ * Point de montage : un support d'hamecon ou une attache du leurre.
+ *
+ * Le chainage est explicite — un support porte un anneau brise, qui porte un
+ * hamecon — parce que c'est ce chainage qui decide du maillon faible et de la
+ * position reelle de la masse.
+ */
+export interface TackleMount {
+  id: string;
+  label: string;
+  /** Ancrage porteur, si le montage suit une goupille posee. */
+  anchorId: string | null;
+  /** Position sur l'axe : 0 = nez, 1 = queue. Utilisee sans ancrage. */
+  position: number;
+  /** Hauteur dans le plan de joint : -1 = ventre, 0 = axe, 1 = dos. */
+  height: number;
+  /** Ligne de catalogue de l'anneau brise, ou null. */
+  ringId: string | null;
+  /** Ligne de catalogue de l'hamecon, ou null. */
+  hookId: string | null;
+  /** Representation 3D a l'echelle, affichable ou masquable. */
+  visible: boolean;
+}
+
+
+/**
+ * Montage traversant — module P.
+ *
+ * Un fil unique traverse le corps de bout en bout et forme lui-meme les
+ * boucles de nez, de ventre et de queue. Ce n'est pas une variante
+ * cosmetique des oeillets : c'est ce qui change le MODE DE RUPTURE. Avec des
+ * oeillets, ce qui lache est presque toujours l'ancrage dans le plastique ;
+ * avec un fil traversant, l'ancrage n'existe plus — le maillon faible
+ * redevient le fil lui-meme ou l'anneau brise. C'est tout l'interet du
+ * montage, et le simulateur doit le refleter.
+ */
+export interface ThroughWireConfig {
+  enabled: boolean;
+  /** Diametre du fil, en mm. */
+  wireMm: number;
+  material: WireMaterialId;
+  /** Diametre exterieur des boucles formees, en mm. */
+  loopMm: number;
+  /** Jeu du canal de passage autour du fil, en mm. */
+  clearanceMm: number;
+  /** Nombre de sorties ventrales, en plus du nez et de la queue. */
+  bellyExits: number;
+  /** Position de chaque sortie ventrale, en fraction de la longueur. */
+  bellyPositions: number[];
+}
+
+/** Materiaux de fil, partages entre le montage traversant et le simulateur. */
+export type WireMaterialId = 'inox304' | 'inox316' | 'ressort' | 'laiton';
+
 export interface PaintConfig {
   dorsal: string;
   flank: string;
@@ -652,6 +743,22 @@ export interface LureParams {
   rattles: RattlePocket[];
   /** Chambre a billes tubulaire. */
   chamber: RattleChamber;
+
+  // --- Montage traversant (module P) --------------------------------------
+  /** Fil unique de bout en bout, en plus des modes d'ancrage existants. */
+  throughWire: ThroughWireConfig;
+
+  // --- Quincaillerie pesee (module Q) -------------------------------------
+  /**
+   * Table de quincaillerie du projet.
+   *
+   * Elle voyage AVEC le projet et non a cote : un leurre partage emporte les
+   * masses sur lesquelles son verdict a ete calcule, sinon le destinataire
+   * verrait un autre verdict que l'auteur.
+   */
+  catalogue: TackleItem[];
+  /** Supports d'hamecon et attaches, avec leur chainage anneau / hamecon. */
+  mounts: TackleMount[];
 
   // --- Finition ----------------------------------------------------------
   paint: PaintConfig;

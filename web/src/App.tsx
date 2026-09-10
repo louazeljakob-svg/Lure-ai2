@@ -61,6 +61,7 @@ import { ExportManager } from './components/ExportManager';
 import { LureSilhouette } from './components/LureSilhouette';
 import { AssemblyPanel } from './components/AssemblyPanel';
 import { MaterialPanel } from './components/MaterialPanel';
+import { TacklePanel } from './components/TacklePanel';
 import { PhysicsSimulator } from './components/PhysicsSimulator';
 import { ProjectsPanel } from './components/ProjectsPanel';
 import { ShapeEditor } from './components/ShapeEditor';
@@ -68,7 +69,14 @@ import { ShapeGallery } from './components/ShapeGallery';
 import { Viewport3D } from './components/Viewport3D';
 
 type Route = 'gallery' | 'editor';
-type PanelTab = 'scene' | 'material' | 'assembly' | 'reference' | 'physics' | 'projects';
+type PanelTab =
+  | 'scene'
+  | 'material'
+  | 'assembly'
+  | 'tackle'
+  | 'reference'
+  | 'physics'
+  | 'projects';
 type Pane = 'shape' | 'panel';
 
 interface Toast {
@@ -81,6 +89,11 @@ const PANEL_META: Record<PanelTab, { title: string; subtitle: string; tab: strin
   scene: { title: 'Scene', subtitle: 'Arbre des pieces et inspecteur', tab: 'Scene' },
   material: { title: 'Matiere & finition', subtitle: 'Impression, lestage, livree', tab: 'Matiere' },
   assembly: { title: 'Assemblage', subtitle: 'Ancrages, goujons, goupilles', tab: 'Assemblage' },
+  tackle: {
+    title: 'Quincaillerie',
+    subtitle: 'Catalogue pese, montages et bilan de masse',
+    tab: 'Quincaillerie',
+  },
   reference: { title: 'Reference', subtitle: 'Images calees a l echelle', tab: 'Reference' },
   physics: { title: 'Simulation', subtitle: 'Flottabilite, nage, tenue mecanique', tab: 'Physique' },
   projects: { title: 'Projets', subtitle: 'Creations de la session', tab: 'Projets' },
@@ -1457,6 +1470,9 @@ export default function App() {
                     onUpdateAnchor={updateAnchor}
                     onRemoveAnchor={removeAnchor}
                   />
+                ) : null}
+                {panelTab === 'tackle' ? (
+                  <TacklePanel params={params} physics={physics} onChange={updateParams} />
                 ) : null}
                 {panelTab === 'reference' ? (
                   <ReferencePanel

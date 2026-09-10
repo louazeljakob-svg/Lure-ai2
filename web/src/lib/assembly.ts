@@ -29,6 +29,11 @@ import { PINS, autoPin, buildPin, getPin, type PinPart, type PinSpec } from './h
 import { MM_TO_CM, type ProfileSampler } from './profile';
 import { billSlotPlan, type BillRoomProbe, type BillSlotPlan } from './billTemplate';
 import { buildDowelPins, planDowels, type DowelPlacement } from './dowels';
+import {
+  planThroughWire,
+  throughWireBlocker,
+  type ThroughWirePlan,
+} from './throughWire';
 
 const STATIONS = 112;
 const ARC_SAMPLES = 40;
@@ -445,6 +450,8 @@ export interface AssemblyResult {
   socketPreview: THREE.BufferGeometry | null;
   /** Billes mobiles, affichees dans leur logement. */
   rattles: { position: [number, number, number]; radius: number; mass: number }[];
+  /** Plan du fil traversant, ou null si le montage n'est pas retenu. */
+  throughWire: ThroughWirePlan | null;
   /** Goupilles modelisees, une par ancrage. */
   pins: PinPart[];
   sockets: SocketPlan[];
@@ -1420,7 +1427,36 @@ export function buildAssembly(
     };
   };
 
-  for (const anchor of params.assembly.anchors) {
+  // Un fil traversant forme LUI-MEME ses boucles de nez et de queue : il n'y
+  // a alors plus de goupille en 8 a ces deux endroits, et donc plus de puits.
+  // Les ancrages ventraux et dorsaux, eux, restent des oeillets a part
+  // entiere — voir la note du panneau Assemblage.
+  const wireTakesEnds = params.throughWire.enabled && !throughWireBlocker(params);
+
+  /**
+   * Sorties ventrales du montage traversant.
+   *
+   * Elles ne sont PAS formees sur le fil : une boucle ventrale sortie du plan
+   * de joint fendrait l'assemblage sur toute sa hauteur. Chaque sortie pose
+   * donc un oeillet ventral a part entiere, a la cote du fil — et son mode de
+   * rupture reste l'arrachement, ce que le simulateur dit ancrage par
+   * ancrage plutot que de promettre un montage uniformement traversant.
+   */
+  const bellyAnchors: PinAnchor[] = wireTakesEnds
+    ? params.throughWire.bellyPositions
+        .slice(0, Math.max(Math.round(params.throughWire.bellyExits), 0))
+        .map((position, index) => ({
+          id: `wire-belly-${index}`,
+          position: Math.min(Math.max(position, 0.12), 0.9),
+          height: -0.6,
+          exit: 'belly' as PinExit,
+          depth: 0,
+          pin: 'auto' as const,
+          method: 'channel' as SocketMethod,
+        }))
+    : [];
+
+  for (const anchor of [...params.assembly.anchors, ...bellyAnchors]) {
     const wanted = anchorPin(params, anchor);
     let plan = sizeAnchor(anchor, wanted);
     // Taille automatique : plutot qu'un message d'erreur, on descend le
@@ -1639,6 +1675,12 @@ export function buildAssembly(
 
   for (const plan of plans) {
     if (!plan.valid) continue;
+    if (wireTakesEnds && isLongitudinal(plan.exit)) {
+      plan.valid = false;
+      plan.problem =
+        'Le montage traversant forme lui-meme cette boucle : la goupille en 8 est inutile ici.';
+      continue;
+    }
     const { center, seatRadius: R, seatDepth, channelHalf: w } = plan;
     const well = { outline: circleOutline(center, R, 48), depth: seatDepth };
 
@@ -1933,6 +1975,89 @@ export function buildAssembly(
     });
   }
 
+  // --- Canal du montage traversant (module P) ------------------------------
+  //
+  // Une gorge demi-ronde dans chaque plan de joint : refermees l'une sur
+  // l'autre, les deux gorges forment le passage du fil. C'est exactement la
+  // mecanique des canaux de goupille, deja prouvee etanche — un montage
+  // traversant n'a aucune raison de reinventer un percage.
+  //
+  // Le canal est pose APRES les ancrages et AVANT la construction des coques,
+  // sans quoi il serait genere puis jamais emis : l'erreur classique de ce
+  // fichier.
+  let throughWirePlan: ThroughWirePlan | null = null;
+  if (wireTakesEnds) {
+    throughWirePlan = planThroughWire(params, profile.lengthCm);
+    const r = throughWirePlan.channelRadius;
+    // Le canal doit rester DANS la silhouette du plan de joint, avec sa
+    // paroi. Pres des pointes la section se referme : au-dela d'un certain x
+    // il n'y a plus la place d'un canal, et une poche qui deborde du contour
+    // est ecartee en silence par la triangulation — le canal existerait alors
+    // dans le code et nulle part dans la piece.
+    const room = r + WALL;
+    const fits = (station: Station): boolean => {
+      if (station.degenerate) return false;
+      const [tMin, tMax] = stationRange(surface, frame, station);
+      return tMin + room < 0 && 0 < tMax - room;
+    };
+    let first = 0;
+    while (first < stations.length && !fits(stations[first])) first++;
+    let last = stations.length - 1;
+    while (last > first && !fits(stations[last])) last--;
+
+    const x0 = Math.max(throughWirePlan.from.x, stations[Math.min(first, last)].x + r);
+    const x1 = Math.min(throughWirePlan.to.x, stations[last].x - r);
+    if (last > first && x1 - x0 > r) {
+      const a = new THREE.Vector2(x0, 0);
+      const b = new THREE.Vector2(x1, 0);
+      pockets.push({ outline: capsuleOutline(a, b, r), depth: r, dome: { a, b } });
+
+      // Sorties de nez et de queue : une encoche rectangulaire dans la face
+      // de coupe, exactement a la cote du canal, qui vient s'y raccorder.
+      // C'est la meme mecanique que la fente de bavette — celle qui est
+      // prouvee etanche sur toute la matrice.
+      const endNotch = (end: 'front' | 'rear'): boolean => {
+        const station = end === 'front' ? stations[0] : stations[stations.length - 1];
+        if (station.degenerate) return false;
+        const xCut = station.x;
+        const inner = end === 'front' ? x0 : x1;
+        const [tMin, tMax] = stationRange(surface, frame, station);
+        if (tMin + SKIN > -r || r > tMax - SKIN) return false;
+        if (!freeNotch(end, -r, r)) return false;
+        const depth = Math.min(r, notchRoom(surface, frame, station, -r, r) - SKIN);
+        if (depth <= 0.02) return false;
+        const path =
+          end === 'front'
+            ? [
+                new THREE.Vector2(xCut, r),
+                new THREE.Vector2(inner, r),
+                new THREE.Vector2(inner, -r),
+                new THREE.Vector2(xCut, -r),
+              ]
+            : [
+                new THREE.Vector2(xCut, -r),
+                new THREE.Vector2(inner, -r),
+                new THREE.Vector2(inner, r),
+                new THREE.Vector2(xCut, r),
+              ];
+        const clipped = clipEndPath(path, xCut, end === 'front');
+        if (!clipped) return false;
+        const exit: EndExit = {
+          end,
+          tLo: Math.min(clipped[0].y, clipped[clipped.length - 1].y),
+          tHi: Math.max(clipped[0].y, clipped[clipped.length - 1].y),
+          depth,
+          path: clipped,
+        };
+        maleEnds.push(exit);
+        femaleEnds.push(exit);
+        return true;
+      };
+      throughWirePlan.noseExit = endNotch('front');
+      throughWirePlan.tailExit = endNotch('rear');
+    }
+  }
+
   const male = buildShell(
     surface,
     frame,
@@ -1957,6 +2082,7 @@ export function buildAssembly(
     socketPreview,
     rattles,
     pins,
+    throughWire: throughWirePlan,
     sockets: plans.map((plan) => {
       const world = frame.toWorld(plan.center.y, 0);
       return {

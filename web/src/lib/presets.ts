@@ -7,6 +7,8 @@
 
 import type { LureParams, ShapeId } from '../types/lure';
 import { cloneLivery } from './liveries';
+import { defaultMounts, seedCatalogue } from './tackle';
+import { defaultThroughWire } from './throughWire';
 
 export interface Range {
   min: number;
@@ -306,6 +308,9 @@ export const SHAPE_PRESETS: ShapePreset[] = [
       ballasts: [ballast(0.5, -0.7, 6, 'stk'), ballast(0.76, -0.55, 5, 'stk')],
       rattles: [],
       chamber: chamber(),
+      throughWire: defaultThroughWire(),
+      catalogue: seedCatalogue(),
+      mounts: defaultMounts(),
       paint: {
         dorsal: '#1d3f63',
         flank: '#dfe6ec',
@@ -377,6 +382,9 @@ export const SHAPE_PRESETS: ShapePreset[] = [
       ballasts: [ballast(0.46, -0.72, 2.6, 'ryo'), ballast(0.66, -0.6, 1.6, 'ryo')],
       rattles: [],
       chamber: chamber(),
+      throughWire: defaultThroughWire(),
+      catalogue: seedCatalogue(),
+      mounts: defaultMounts(),
       paint: {
         dorsal: '#2f4f4f',
         flank: '#cfd8dc',
@@ -448,6 +456,9 @@ export const SHAPE_PRESETS: ShapePreset[] = [
       ballasts: [ballast(0.42, -0.75, 2.4, 'm25')],
       rattles: [],
       chamber: chamber(),
+      throughWire: defaultThroughWire(),
+      catalogue: seedCatalogue(),
+      mounts: defaultMounts(),
       paint: {
         dorsal: '#3d6b2e',
         flank: '#e8d75c',
@@ -519,6 +530,9 @@ export const SHAPE_PRESETS: ShapePreset[] = [
       ballasts: [ballast(0.58, -0.55, 3.2, 'pop'), ballast(0.7, -0.45, 1.6, 'pop')],
       rattles: [],
       chamber: chamber(),
+      throughWire: defaultThroughWire(),
+      catalogue: seedCatalogue(),
+      mounts: defaultMounts(),
       paint: {
         dorsal: '#FFFFFF',
         flank: '#FFFFFF',
@@ -590,6 +604,9 @@ export const SHAPE_PRESETS: ShapePreset[] = [
       ballasts: [ballast(0.38, -0.8, 4.5, 'crk'), ballast(0.55, -0.7, 1.6, 'crk')],
       rattles: [],
       chamber: chamber(),
+      throughWire: defaultThroughWire(),
+      catalogue: seedCatalogue(),
+      mounts: defaultMounts(),
       paint: {
         dorsal: '#2E6B1F',
         flank: '#F2C200',
@@ -661,6 +678,9 @@ export const SHAPE_PRESETS: ShapePreset[] = [
       ballasts: [ballast(0.48, -0.7, 3.7, 'jrk'), ballast(0.62, -0.65, 3, 'jrk')],
       rattles: [],
       chamber: chamber(),
+      throughWire: defaultThroughWire(),
+      catalogue: seedCatalogue(),
+      mounts: defaultMounts(),
       paint: {
         dorsal: '#0E2E4F',
         flank: '#D9E2EA',
@@ -732,6 +752,9 @@ export const SHAPE_PRESETS: ShapePreset[] = [
       ballasts: [],
       rattles: [],
       chamber: chamber(),
+      throughWire: defaultThroughWire(),
+      catalogue: seedCatalogue(),
+      mounts: defaultMounts(),
       paint: {
         dorsal: '#E30613',
         flank: '#FFFFFF',
@@ -803,6 +826,9 @@ export const SHAPE_PRESETS: ShapePreset[] = [
       ballasts: [ballast(0.42, -0.7, 18, 'swb'), ballast(0.6, -0.65, 11.5, 'swb')],
       rattles: [],
       chamber: chamber(),
+      throughWire: defaultThroughWire(),
+      catalogue: seedCatalogue(),
+      mounts: defaultMounts(),
       paint: {
         dorsal: '#3E5C43',
         flank: '#C9C3B4',
@@ -874,6 +900,9 @@ export const SHAPE_PRESETS: ShapePreset[] = [
       ballasts: [ballast(0.85, -0.4, 1.5, 'top')],
       rattles: [],
       chamber: chamber(),
+      throughWire: defaultThroughWire(),
+      catalogue: seedCatalogue(),
+      mounts: defaultMounts(),
       paint: {
         dorsal: '#F2F4F6',
         flank: '#FFFFFF',
@@ -918,6 +947,9 @@ export const clonePreset = (id: ShapeId): LureParams => {
     chamber: { ...params.chamber },
     // La livree porte des sous-objets : une copie superficielle les ferait
     // partager entre tous les projets ouverts.
+    throughWire: { ...params.throughWire, bellyPositions: [...params.throughWire.bellyPositions] },
+    catalogue: params.catalogue.map((item) => ({ ...item })),
+    mounts: params.mounts.map((mount, i) => ({ ...mount, id: `${mount.id}-${i}-${Date.now()}` })),
     paint: { ...params.paint, livery: cloneLivery(params.paint.livery) },
   };
 };

@@ -562,7 +562,7 @@ export const WIRE_MATERIALS: {
   { id: 'laiton', label: 'Laiton', tensile: 380, yield: 200 },
 ];
 
-export type FailureMode = 'tension' | 'loop' | 'pullout';
+export type FailureMode = 'tension' | 'loop' | 'pullout' | 'ring' | 'hook';
 
 export interface AnchorStrength {
   label: string;
@@ -578,6 +578,8 @@ const MODE_LABEL: Record<FailureMode, string> = {
   tension: 'rupture en traction du fil',
   loop: 'ouverture de la boucle',
   pullout: 'arrachement de l ancrage dans le plastique',
+  ring: 'ouverture de l anneau brise',
+  hook: 'deformation de l hamecon',
 };
 
 /**
@@ -598,6 +600,16 @@ export function anchorStrength(
   params: LureParams,
   assumptions: SwimAssumptions,
   calibration: SwimCalibration,
+  /**
+   * Vrai si CET ancrage est porte par un fil traversant.
+   *
+   * C'est tout l'interet du montage traversant, et c'est le seul endroit du
+   * modele ou il change quelque chose : le fil est capture d'un bout a
+   * l'autre du corps, il n'y a plus rien a arracher. Le mode d'arrachement
+   * disparait donc du classement — pas parce qu'il devient improbable, mais
+   * parce qu'il n'existe plus.
+   */
+  throughWire = false,
 ): AnchorStrength {
   const spec = WIRE_MATERIALS.find((item) => item.id === material) ?? WIRE_MATERIALS[0];
   const r = wireMm * 1e-3 / 2;
@@ -640,7 +652,7 @@ export function anchorStrength(
   const modes: { mode: FailureMode; value: number }[] = [
     { mode: 'tension', value: tension },
     { mode: 'loop', value: loop },
-    { mode: 'pullout', value: pullout },
+    ...(throughWire ? [] : [{ mode: 'pullout' as FailureMode, value: pullout }]),
   ];
   modes.sort((a, b) => a.value - b.value);
   const weakest = modes[0];
@@ -669,17 +681,29 @@ export interface SnagResult {
  *
  * On tire jusqu'a ce que quelque chose lache. Savoir QUOI change tout : si
  * c'est la ligne, on repart avec le leurre ; si c'est le corps, on ramene une
- * piece dechiree. Le noeud est compte a 85 % de la ligne, valeur courante
- * d'un noeud correctement serre.
+ * piece dechiree ; si c'est l'anneau, on retrouve le leurre sans son hamecon.
+ * Le noeud est compte a 85 % de la ligne, valeur courante d'un noeud
+ * correctement serre.
  */
 export function snagScenario(
   anchors: AnchorStrength[],
   lineKg: number,
+  /**
+   * Maillons issus du catalogue de quincaillerie : anneaux brises et
+   * hamecons, avec leur resistance annoncee. Sans eux le classement est
+   * incomplet — et c'est presque toujours l'anneau brise qui cede en
+   * premier sur un montage soigne.
+   */
+  tackle: { label: string; kgf: number }[] = [],
 ): SnagResult {
   const ranking = [
     { label: 'Corps de ligne', kgf: lineKg },
     { label: 'Noeud', kgf: lineKg * 0.85 },
+    ...tackle,
     ...anchors.map((a) => ({ label: a.label, kgf: a.kgf.value })),
-  ].sort((a, b) => a.kgf - b.kgf);
-  return { first: ranking[0].label, kgf: ranking[0].kgf, ranking };
+  ]
+    .filter((item) => item.kgf > 0)
+    .sort((a, b) => a.kgf - b.kgf);
+  const first = ranking[0] ?? { label: 'Corps de ligne', kgf: lineKg };
+  return { first: first.label, kgf: first.kgf, ranking };
 }

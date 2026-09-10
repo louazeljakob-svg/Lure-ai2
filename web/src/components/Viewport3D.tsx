@@ -18,6 +18,7 @@ import type { LureGeometry } from '../lib/geometry';
 import { buildAssembly, worldToAnchor, type AssemblyResult } from '../lib/assembly';
 import { createSurfaceSampler } from '../lib/geometry';
 import { createProfile } from '../lib/profile';
+import { mountTrails, resolveMount } from '../lib/tackle';
 import type { ThreeEvent } from '@react-three/fiber';
 import { FINISHES } from '../lib/materials';
 import { createLiveryNormalMap, createPaintTexture, createScaleNormalMap } from '../lib/paint';
@@ -346,6 +347,115 @@ function LureModel({
           />
         </mesh>
       ) : null}
+    </group>
+  );
+}
+
+
+/**
+ * Hamecons et anneaux a l'echelle — module Q.4.
+ *
+ * Representation SIMPLIFIEE mais dimensionnee : hampe, courbure et pointes
+ * suivent la longueur hors-tout de la ligne de catalogue. Le but n'est pas de
+ * dessiner un hamecon, c'est de voir tout de suite si le triple touche le
+ * corps, depasse la queue ou croise son voisin — les trois choses que le
+ * controle de dimension signale par ecrit.
+ */
+function TackleMarkers({ params, visible }: { params: LureParams; visible: boolean }) {
+  const profile = useMemo(() => createProfile(params), [params]);
+  const mounts = useMemo(
+    () =>
+      params.mounts
+        .filter((mount) => mount.visible)
+        .map((mount) => resolveMount(params.catalogue, mount)),
+    [params.mounts, params.catalogue],
+  );
+  if (!visible) return null;
+
+  const MM = 0.1; // mm -> cm, l'unite de la scene
+
+  return (
+    <group>
+      {mounts.map((entry) => {
+        const { mount, ring, hook } = entry;
+        if (!ring && !hook) return null;
+        const p = Math.min(Math.max(mount.position, 0.02), profile.bodyEnd - 0.01);
+        const x = profile.xAt(p);
+        const section = profile.section(p);
+        const surfaceY =
+          mount.height < 0 ? section.bottom * -mount.height : section.top * mount.height;
+        // Support de queue : la chaine part vers l'arriere (+x), pas vers le
+        // bas. Le groupe bascule alors d'un quart de tour, et « vers le bas »
+        // devient « vers l'arriere » dans son repere local.
+        const trails = mountTrails(mount.position);
+        const down = trails ? 1 : mount.height <= 0 ? -1 : 1;
+
+        const ringR = ring ? (ring.spanMm * MM) / 2 : 0;
+        const ringWire = ring ? (ring.wireMm * MM) / 2 : 0;
+        // L'hamecon pend au bout de l'anneau.
+        const hookTop = surfaceY + down * ringR * 2;
+        const shank = hook ? hook.spanMm * MM * 0.6 : 0;
+        const bendR = hook ? hook.spanMm * MM * 0.22 : 0;
+        const wire = hook ? (hook.wireMm * MM) / 2 : 0;
+        const points = hook?.family === 'treble' ? 3 : 1;
+
+        // Le groupe entier bascule d'un quart de tour pour un support de queue :
+        // la meme construction sert alors a l'horizontale.
+        return (
+          <group
+            key={mount.id}
+            position={[x, trails ? surfaceY : 0, 0]}
+            rotation={trails ? [0, 0, -Math.PI / 2] : [0, 0, 0]}
+          >
+            {ring ? (
+              <mesh
+                position={trails ? [0, ringR, 0] : [0, surfaceY + down * ringR, 0]}
+                rotation={[0, Math.PI / 2, 0]}
+              >
+                <torusGeometry args={[ringR, Math.max(ringWire, 0.005), 8, 24]} />
+                <meshStandardMaterial color="#c2c8d0" roughness={0.28} metalness={0.95} />
+              </mesh>
+            ) : null}
+
+            {hook ? (
+              <group position={[0, trails ? ringR * 2 : hookTop, 0]}>
+                {/* Hampe */}
+                <mesh position={[0, (down * shank) / 2, 0]}>
+                  <cylinderGeometry args={[Math.max(wire, 0.004), Math.max(wire, 0.004), shank, 8]} />
+                  <meshStandardMaterial color="#b9bec7" roughness={0.3} metalness={0.94} />
+                </mesh>
+                {Array.from({ length: points }, (_, i) => {
+                  // Rotation autour de la hampe : trois pointes a 120 degres.
+                  const angle = (i / points) * Math.PI * 2;
+                  return (
+                    <group
+                      key={i}
+                      position={[0, down * shank, 0]}
+                      rotation={[0, angle, 0]}
+                    >
+                      {/* Courbure : un demi-tore ouvert vers la pointe. */}
+                      <mesh position={[bendR, 0, 0]} rotation={[Math.PI / 2, 0, 0]}>
+                        <torusGeometry
+                          args={[bendR, Math.max(wire, 0.004), 6, 14, Math.PI * 1.1]}
+                        />
+                        <meshStandardMaterial color="#b9bec7" roughness={0.3} metalness={0.94} />
+                      </mesh>
+                      {/* Pointe */}
+                      <mesh
+                        position={[bendR * 2, -down * bendR * 0.5, 0]}
+                        rotation={[0, 0, down > 0 ? Math.PI : 0]}
+                      >
+                        <coneGeometry args={[Math.max(wire, 0.004) * 1.6, bendR * 0.9, 8]} />
+                        <meshStandardMaterial color="#d8dce2" roughness={0.24} metalness={0.96} />
+                      </mesh>
+                    </group>
+                  );
+                })}
+              </group>
+            ) : null}
+          </group>
+        );
+      })}
     </group>
   );
 }
@@ -711,6 +821,7 @@ export function Viewport3D({
   // Environnement d'apercu : purement visuel, il ne touche a aucune geometrie.
   const [env, setEnv] = useState<PreviewEnv>('atelier');
   const [shotSignal, setShotSignal] = useState(0);
+  const [showTackle, setShowTackle] = useState(true);
   // Previsualisation du debattement : le segment arriere oscille dans les
   // limites calculees, ce qui rend le reglage lisible d'un coup d'oeil.
   const [animateSwing, setAnimateSwing] = useState(false);
@@ -867,6 +978,9 @@ export function Viewport3D({
               overlay={workAids && showMarkers && !xray}
             />
             <BalanceMarkers physics={physics} radius={radius} visible={workAids && showMarkers} />
+            {/* Les hamecons restent visibles en presentation : ils font partie
+                du leurre fini, contrairement aux reperes de travail. */}
+            <TackleMarkers params={params} visible={showTackle} />
           </group>
 
           {/* Sous l'eau il n'y a pas de surface a montrer sous le nez du
@@ -968,6 +1082,15 @@ export function Viewport3D({
           }}
         >
           Rendu
+        </button>
+        <button
+          type="button"
+          className="toolbtn"
+          aria-pressed={showTackle}
+          title="Affiche hamecons et anneaux a l echelle du catalogue"
+          onClick={() => setShowTackle((value) => !value)}
+        >
+          Hamecons
         </button>
         <button
           type="button"

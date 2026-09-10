@@ -29,6 +29,12 @@ import type {
   FinishStyle,
   Inlay,
   LiveryConfig,
+  TackleFamily,
+  TackleItem,
+  TackleMount,
+  TackleSource,
+  ThroughWireConfig,
+  WireMaterialId,
   InlayShape,
   JointHardware,
   LureParams,
@@ -51,6 +57,7 @@ import type {
   TailShape,
 } from '../types/lure';
 import { clonePreset, emptyReference, LIMITS, type Range } from './presets';
+import { THROUGH_WIRE_LIMITS } from './throughWire';
 
 const DECAL_STYLES: DecalStyle[] = ['raised', 'engraved'];
 const SCALE_FITS: ScaleFit[] = ['wrapped', 'lateral'];
@@ -470,6 +477,74 @@ function sanitizeLivery(value: unknown, fallback: LiveryConfig): LiveryConfig {
   };
 }
 
+
+/**
+ * Catalogue de quincaillerie : un projet enregistre avant le module Q n'en a
+ * pas, et on retombe alors sur la table de depart. Une table partielle est
+ * completee ligne par ligne plutot que rejetee — un fichier bricole a la main
+ * doit s'ouvrir.
+ */
+function sanitizeCatalogue(value: unknown, fallback: TackleItem[]): TackleItem[] {
+  if (!Array.isArray(value) || value.length === 0) return fallback;
+  const families: TackleFamily[] = ['treble', 'inline', 'assist', 'split', 'solid', 'swivel'];
+  const sources: TackleSource[] = ['indicatif', 'verifie'];
+  const positive = { min: 0, max: 1000, step: 0.001 };
+  return value.slice(0, 600).map((raw, index) => {
+    const item = (raw ?? {}) as Partial<TackleItem>;
+    return {
+      id: typeof item.id === 'string' && item.id ? item.id : `tackle-${index}`,
+      family: pick(item.family, families, 'treble'),
+      series: typeof item.series === 'string' ? item.series.slice(0, 80) : 'Import',
+      size: typeof item.size === 'string' ? item.size.slice(0, 16) : '#1',
+      wireMm: num(item.wireMm, { min: 0.1, max: 8, step: 0.01 }, 1),
+      massG: num(item.massG, positive, 1),
+      strengthKg: num(item.strengthKg, { min: 0, max: 400, step: 0.1 }, 0),
+      spanMm: num(item.spanMm, { min: 0, max: 200, step: 0.1 }, 0),
+      source: pick(item.source, sources, 'indicatif'),
+      note: typeof item.note === 'string' ? item.note.slice(0, 240) : '',
+    };
+  });
+}
+
+/** Supports d'hamecon : sans eux le leurre n'a simplement aucun montage. */
+function sanitizeMounts(value: unknown, fallback: TackleMount[]): TackleMount[] {
+  if (!Array.isArray(value)) return fallback;
+  return value.slice(0, 8).map((raw, index) => {
+    const mount = (raw ?? {}) as Partial<TackleMount>;
+    return {
+      id: typeof mount.id === 'string' && mount.id ? mount.id : `mount-${index}`,
+      label: typeof mount.label === 'string' ? mount.label.slice(0, 60) : `Support ${index + 1}`,
+      anchorId: typeof mount.anchorId === 'string' ? mount.anchorId : null,
+      position: num(mount.position, { min: 0, max: 1, step: 0.01 }, 0.5),
+      height: num(mount.height, { min: -1, max: 1, step: 0.05 }, -1),
+      ringId: typeof mount.ringId === 'string' ? mount.ringId : null,
+      hookId: typeof mount.hookId === 'string' ? mount.hookId : null,
+      visible: bool(mount.visible, true),
+    };
+  });
+}
+
+
+/** Montage traversant : absent d'un projet anterieur au module P. */
+function sanitizeThroughWire(value: unknown, fallback: ThroughWireConfig): ThroughWireConfig {
+  const raw = (value ?? {}) as Partial<ThroughWireConfig>;
+  const materials: WireMaterialId[] = ['inox304', 'inox316', 'ressort', 'laiton'];
+  const positions = Array.isArray(raw.bellyPositions)
+    ? raw.bellyPositions
+        .slice(0, 3)
+        .map((p) => num(p, { min: 0.12, max: 0.9, step: 0.01 }, 0.42))
+    : fallback.bellyPositions;
+  return {
+    enabled: bool(raw.enabled, fallback.enabled),
+    wireMm: num(raw.wireMm, THROUGH_WIRE_LIMITS.wireMm, fallback.wireMm),
+    material: pick(raw.material, materials, fallback.material),
+    loopMm: num(raw.loopMm, THROUGH_WIRE_LIMITS.loopMm, fallback.loopMm),
+    clearanceMm: num(raw.clearanceMm, THROUGH_WIRE_LIMITS.clearanceMm, fallback.clearanceMm),
+    bellyExits: Math.round(num(raw.bellyExits, THROUGH_WIRE_LIMITS.bellyExits, fallback.bellyExits)),
+    bellyPositions: positions.length ? positions : fallback.bellyPositions,
+  };
+}
+
 /** Ramene n'importe quelle entree a un jeu de parametres exploitable. */
 export function sanitizeParams(input: unknown): LureParams {
   const raw = (input ?? {}) as Partial<LureParams>;
@@ -534,6 +609,9 @@ export function sanitizeParams(input: unknown): LureParams {
     ballasts: sanitizeBallasts(raw.ballasts, base.ballasts),
     rattles: sanitizeRattles(raw.rattles, base.rattles),
     chamber: sanitizeChamber(raw.chamber, base.chamber),
+    throughWire: sanitizeThroughWire(raw.throughWire, base.throughWire),
+    catalogue: sanitizeCatalogue(raw.catalogue, base.catalogue),
+    mounts: sanitizeMounts(raw.mounts, base.mounts),
     paint: {
       dorsal: color(paint.dorsal, base.paint.dorsal),
       flank: color(paint.flank, base.paint.flank),
