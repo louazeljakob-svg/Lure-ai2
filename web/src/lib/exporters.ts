@@ -48,7 +48,7 @@ export const EXPORT_LABEL: Record<ExportKind, string> = {
  * `owned` liste les geometries creees pour l'occasion : l'appelant doit les
  * liberer une fois la copie transformee produite.
  */
-function collectParts(
+export function collectParts(
   params: LureParams,
   geo: LureGeometry,
   kind: ExportKind,
