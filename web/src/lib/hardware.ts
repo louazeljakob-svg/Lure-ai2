@@ -29,14 +29,57 @@ export interface PinSpec {
   hint: string;
 }
 
-/** Catalogue reel, de la plus petite a la plus grande. */
-export const PINS: PinSpec[] = [
-  { id: 'xs06', label: 'XS 0,6', wire: 0.6, length: 6.5, loopWidth: 3, hint: 'Leurres 40 a 65 mm' },
-  { id: 'xs10', label: 'XS 1,0', wire: 1, length: 8, loopWidth: 4, hint: 'Leurres 65 a 90 mm' },
-  { id: 's', label: 'S (Petit)', wire: 1, length: 16, loopWidth: 5.5, hint: 'Leurres 90 a 140 mm' },
-  { id: 'm', label: 'M (Moyen)', wire: 1.5, length: 17.5, loopWidth: 7.5, hint: 'Leurres 140 a 180 mm' },
-  { id: 'l', label: 'L (Large)', wire: 2, length: 21.5, loopWidth: 10, hint: 'Gros leurres, eaux sales' },
+/**
+ * Facteur d'echelle du catalogue.
+ *
+ * Les cotes de reference ci-dessous sont celles relevees a l'origine ; ce
+ * facteur les porte a la taille reellement utilisee. Le changer ici suffit :
+ * les logements en 8, les alesages et les profils balayes se redimensionnent
+ * tout seuls, parce qu'ils lisent cette table et ne connaissent aucune cote
+ * en dur. Leur METHODE de generation, elle, ne change pas.
+ *
+ * Attention : les jeux et offsets de fabrication ne sont PAS concernes. Un
+ * jeu de 0,05 mm reste 0,05 mm quelle que soit la taille de la goupille —
+ * c'est une tolerance de machine, pas une proportion.
+ */
+export const PIN_SCALE = 1.3;
+
+/** Cotes de reference, avant mise a l'echelle. Un seul endroit a modifier. */
+const PIN_BASE: (Omit<PinSpec, 'hint'> & { minLength: number })[] = [
+  { id: 'xs06', label: 'XS 0,6', wire: 0.6, length: 6.5, loopWidth: 3, minLength: 0 },
+  { id: 'xs10', label: 'XS 1,0', wire: 1, length: 8, loopWidth: 4, minLength: 65 },
+  { id: 's', label: 'S (Petit)', wire: 1, length: 16, loopWidth: 5.5, minLength: 90 },
+  { id: 'm', label: 'M (Moyen)', wire: 1.5, length: 17.5, loopWidth: 7.5, minLength: 140 },
+  { id: 'l', label: 'L (Large)', wire: 2, length: 21.5, loopWidth: 10, minLength: 180 },
 ];
+
+/** Arrondi au centieme : une cote de catalogue se lit, elle ne traine pas. */
+const scaled = (value: number): number => Math.round(value * PIN_SCALE * 100) / 100;
+
+/**
+ * Seuil de bascule automatique, en mm de longueur de leurre.
+ *
+ * Il suit l'echelle : des goupilles 30 % plus grosses conviennent a des
+ * leurres 30 % plus longs, sinon la selection automatique proposerait une
+ * taille systematiquement trop forte.
+ */
+export const pinThreshold = (index: number): number =>
+  Math.round(PIN_BASE[index].minLength * PIN_SCALE);
+
+/** Catalogue reel, de la plus petite a la plus grande. */
+export const PINS: PinSpec[] = PIN_BASE.map((base, index) => {
+  const next = PIN_BASE[index + 1];
+  return {
+    id: base.id,
+    label: base.label,
+    wire: scaled(base.wire),
+    length: scaled(base.length),
+    loopWidth: scaled(base.loopWidth),
+    hint: next
+      ? `Leurres ${pinThreshold(index)} a ${pinThreshold(index + 1)} mm`
+      : 'Gros leurres, eaux sales',
+  };
+});
 
 export const getPin = (id: PinId): PinSpec => PINS.find((pin) => pin.id === id) ?? PINS[2];
 
@@ -49,11 +92,13 @@ export const getPin = (id: PinId): PinSpec => PINS.find((pin) => pin.id === id) 
  */
 export function autoPin(lureLengthMm: number, roughWater: boolean): PinId {
   if (roughWater) return 'l';
-  if (lureLengthMm < 65) return 'xs06';
-  if (lureLengthMm < 90) return 'xs10';
-  if (lureLengthMm < 140) return 's';
-  if (lureLengthMm < 180) return 'm';
-  return 'l';
+  // Les seuils viennent de la meme table que les cotes : agrandir le
+  // catalogue les decale d'autant, sans quoi la selection automatique
+  // proposerait une taille systematiquement trop forte.
+  for (let index = PINS.length - 1; index > 0; index--) {
+    if (lureLengthMm >= pinThreshold(index)) return PINS[index].id;
+  }
+  return PINS[0].id;
 }
 
 // ---------------------------------------------------------------------------

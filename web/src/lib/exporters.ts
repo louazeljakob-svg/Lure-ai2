@@ -72,9 +72,14 @@ function collectParts(
   if (assembly.socketPreview) owned.push(assembly.socketPreview);
   if (assembly.tenons) owned.push(assembly.tenons);
 
+  // Les barreaux d'assemblage sont imprimes A PART, poses a plat a cote des
+  // coques : ils accompagnent donc la piece male, une seule fois.
+  if (assembly.dowelPins) owned.push(assembly.dowelPins);
+
   if (kind === 'male') {
     parts.push(assembly.male);
     if (assembly.tenons) parts.push(assembly.tenons);
+    if (assembly.dowelPins) parts.push(assembly.dowelPins);
   } else {
     parts.push(assembly.female);
   }

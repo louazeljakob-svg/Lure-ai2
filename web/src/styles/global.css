@@ -23,6 +23,11 @@
   --green-soft: #e8f6ee;
   --blue: #1b5e9c;
   --blue-soft: #e9f1fa;
+  /* Bandeau plein : il porte du texte blanc, donc il doit rester sombre dans
+     les deux themes. C'est ce qui le distingue de --black, qui est une
+     couleur d'encre et s'inverse. */
+  --slab: #101114;
+  --slab-hover: #2a2c31;
 
   --radius: 4px;
   --radius-lg: 8px;
@@ -280,14 +285,14 @@ textarea {
 }
 
 .btn--dark {
-  background: var(--black);
-  border-color: var(--black);
+  background: var(--slab);
+  border-color: var(--slab);
   color: #fff;
 }
 
 .btn--dark:hover:not(:disabled) {
-  background: #2a2c31;
-  border-color: #2a2c31;
+  background: var(--slab-hover);
+  border-color: var(--slab-hover);
 }
 
 .btn--ghost {
@@ -382,7 +387,7 @@ textarea {
   flex: 0 0 auto;
   width: 24px;
   height: 24px;
-  background: var(--black);
+  background: var(--slab);
   color: #fff;
   font-family: var(--font-title);
   font-size: 15px;
@@ -540,7 +545,7 @@ textarea {
   justify-content: space-between;
   gap: 10px;
   padding: 12px 16px;
-  background: var(--black);
+  background: var(--slab);
   color: #fff;
 }
 
@@ -704,7 +709,9 @@ select:hover {
 .segmented {
   display: grid;
   grid-auto-flow: column;
-  grid-auto-columns: 1fr;
+  /* minmax(0, 1fr) et pas 1fr : sinon un libelle long impose sa largeur
+     minimale et fait deborder tout le panneau lateral. */
+  grid-auto-columns: minmax(0, 1fr);
   border: 1px solid var(--line-strong);
   border-radius: var(--radius);
   overflow: hidden;
@@ -997,8 +1004,8 @@ select:hover {
 }
 
 .toolbtn[aria-pressed='true'] {
-  background: var(--black);
-  border-color: var(--black);
+  background: var(--slab);
+  border-color: var(--slab);
   color: #fff;
 }
 
@@ -1071,7 +1078,7 @@ select:hover {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: #fff;
-  background: var(--black);
+  background: var(--slab);
 }
 
 .badge--float {
@@ -1308,7 +1315,7 @@ select:hover {
   display: grid;
   gap: 6px;
   padding: 12px;
-  background: var(--black);
+  background: var(--slab);
   color: #fff;
   margin-bottom: 12px;
 }
@@ -1558,7 +1565,7 @@ select:hover {
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  background: var(--black);
+  background: var(--slab);
   color: #fff;
   padding: 12px 14px;
   box-shadow: var(--shadow-lg);
@@ -2091,7 +2098,7 @@ select:hover {
 }
 
 .verdict--sink {
-  background: var(--black);
+  background: var(--slab);
 }
 
 .readout {
@@ -2252,7 +2259,7 @@ select:hover {
 }
 
 .statusbar__buoy--sink {
-  background: var(--black);
+  background: var(--slab);
 }
 
 .statusbar__toggle {
@@ -2300,9 +2307,442 @@ select:hover {
   --amber-soft: #33290f;
   --green-soft: #10291d;
   --blue-soft: #14243a;
+  /* En theme sombre le bandeau se detache par le haut, pas par le noir : un
+     aplat plus clair que la surface, toujours sous du texte blanc. */
+  --slab: #2b3038;
+  --slab-hover: #3a4049;
 }
 
 :root[data-theme='dark'] body {
   background: var(--surface-2);
   color: var(--ink);
+}
+
+/* Panneau guide d'un modele et carte de modele guide */
+
+.guide {
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--red);
+  background: var(--red-soft);
+  padding: 10px 12px;
+  margin-bottom: 14px;
+}
+
+.guide__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.guide__head h3 {
+  font-size: 15px;
+}
+
+.guide__lead {
+  margin: 6px 0 10px;
+  font-size: 12px;
+  color: var(--ink-2);
+  line-height: 1.45;
+}
+
+.guide__list {
+  margin: 0;
+  display: grid;
+  gap: 7px;
+}
+
+.guide__list > div {
+  display: grid;
+  gap: 1px;
+}
+
+.guide__list dt {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--red-dark);
+}
+
+.guide__list dd {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--ink-2);
+  line-height: 1.4;
+}
+
+.gallery__lead {
+  margin: -4px 0 16px;
+  max-width: 78ch;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+.shape-card--template .shape-card__figure {
+  background: linear-gradient(180deg, var(--surface-3), var(--surface-2));
+}
+
+.shape-card--template .shape-card__index {
+  color: var(--red);
+  font-weight: 700;
+}
+
+/* =========================================================================
+   Graphiques de simulation
+   Trois teintes categorielles, validees en clair et en sombre (separation
+   CVD >= 9, ecart normal >= 20). L'ordre des emplacements est le mecanisme
+   de securite : on ne le recycle pas, on ne le fait pas tourner.
+   ========================================================================= */
+
+:root {
+  --viz-1: #2a78d6;
+  --viz-2: #eb6834;
+  --viz-3: #1baf7a;
+  --viz-grid: #eceef1;
+  --viz-axis: #c9ced6;
+}
+
+:root[data-theme='dark'] {
+  --viz-1: #3987e5;
+  --viz-2: #d95926;
+  --viz-3: #199e70;
+  --viz-grid: #23282f;
+  --viz-axis: #3d444e;
+}
+
+.viz {
+  margin: 6px 0 14px;
+}
+
+.viz__plot {
+  position: relative;
+}
+
+.viz__plot svg {
+  display: block;
+  width: 100%;
+  overflow: visible;
+}
+
+.viz__grid {
+  stroke: var(--viz-grid);
+  stroke-width: 1;
+}
+
+.viz__axis {
+  stroke: var(--viz-axis);
+  stroke-width: 1;
+}
+
+.viz__tick {
+  fill: var(--ink-3);
+  font-size: 9.5px;
+  text-anchor: middle;
+}
+
+.viz__tick--y {
+  text-anchor: end;
+}
+
+.viz__direct {
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.viz__marker {
+  stroke: var(--ink-3);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+
+.viz__marker-label {
+  fill: var(--ink-3);
+  font-size: 9px;
+}
+
+.viz__crosshair {
+  stroke: var(--ink-3);
+  stroke-width: 1;
+}
+
+.viz__tip {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  pointer-events: none;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  box-shadow: var(--shadow-sm);
+  padding: 5px 7px;
+  display: grid;
+  gap: 2px;
+  font-size: 10.5px;
+  color: var(--ink-2);
+  white-space: nowrap;
+  z-index: 3;
+}
+
+.viz__tip strong {
+  color: var(--ink);
+  font-size: 10.5px;
+}
+
+.viz__tip span {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.viz__tip i,
+.viz__legend i {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  flex: none;
+}
+
+.viz__legend {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  font-size: 10.5px;
+  color: var(--ink-2);
+}
+
+.viz__legend li {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.viz__axis-label {
+  margin: 4px 0 0;
+  font-size: 10px;
+  color: var(--ink-3);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.viz__caption {
+  margin: 5px 0 0;
+  font-size: 11.5px;
+  color: var(--ink-2);
+  line-height: 1.45;
+}
+
+.viz__table {
+  margin-top: 6px;
+  font-size: 11px;
+}
+
+.viz__table summary {
+  cursor: pointer;
+  color: var(--ink-2);
+  font-size: 11px;
+  padding: 2px 0;
+}
+
+.viz__table-scroll {
+  overflow-x: auto;
+  margin-top: 4px;
+}
+
+.viz__table table {
+  border-collapse: collapse;
+  width: 100%;
+  font-variant-numeric: tabular-nums;
+}
+
+.viz__table th,
+.viz__table td {
+  border: 1px solid var(--line);
+  padding: 2px 5px;
+  text-align: right;
+  color: var(--ink-2);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.viz__table thead th {
+  background: var(--surface-3);
+  color: var(--ink);
+  font-weight: 700;
+}
+
+/* Une estimation porte sa fourchette : jamais un chiffre isole. */
+
+.stat--est .stat__range {
+  display: block;
+  font-size: 10.5px;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.stat--warn {
+  border-left: 3px solid var(--amber);
+}
+
+.stat--bad {
+  border-left: 3px solid var(--red);
+}
+
+/* Classement de rupture */
+
+.rank {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.rank__head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11.5px;
+}
+
+.rank__label {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.rank__value {
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.rank__track {
+  height: 8px;
+  background: var(--surface-3);
+  border-radius: 4px;
+  margin-top: 3px;
+  overflow: hidden;
+}
+
+.rank__fill {
+  height: 100%;
+  background: var(--viz-1);
+  border-radius: 4px;
+}
+
+.rank__row--weak .rank__fill {
+  background: var(--red);
+}
+
+.rank__row--weak .rank__label {
+  color: var(--red-dark);
+}
+
+.rank__detail {
+  display: block;
+  margin-top: 2px;
+  font-size: 10.5px;
+  color: var(--ink-3);
+  line-height: 1.4;
+}
+
+/* Bloc de simulation de nage */
+
+.swim__section {
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+  margin-top: 14px;
+}
+
+.swim__lead {
+  margin: -2px 0 10px;
+  font-size: 11.5px;
+  color: var(--ink-2);
+  line-height: 1.45;
+}
+
+.swim__badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface-3);
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ink);
+  margin-bottom: 8px;
+}
+
+.assumption {
+  display: grid;
+  grid-template-columns: 1fr 72px;
+  gap: 6px 8px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.assumption label {
+  font-size: 11.5px;
+  color: var(--ink-2);
+  line-height: 1.35;
+}
+
+.assumption input {
+  width: 100%;
+  font-size: 11.5px;
+  padding: 3px 5px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.assumption--fitted label::after {
+  content: ' · ajuste';
+  color: var(--amber);
+  font-weight: 700;
+}
+
+.row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0 6px;
+}
+
+/* --- Bibliotheque de livrees (module L) --------------------------------- */
+
+.livery-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.livery-card {
+  display: grid;
+  gap: 4px;
+  padding: 5px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color var(--transition);
+}
+
+.livery-card:hover {
+  border-color: var(--red);
+}
+
+.livery-card__swatch {
+  display: block;
+  height: 30px;
+  border: 1px solid var(--line);
+}
+
+.livery-card__name {
+  font-size: 10.5px;
+  line-height: 1.25;
+  color: var(--ink-2);
+  font-weight: 600;
 }

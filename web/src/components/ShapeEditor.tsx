@@ -9,6 +9,7 @@ import type {
   ShapeId,
   TailShape,
 } from '../types/lure';
+import { articulationBlocker } from '../lib/articulation';
 import { LIMITS, SHAPE_PRESETS } from '../lib/presets';
 import { billSize } from '../lib/billTemplate';
 import { Fieldset, Segmented, Slider, Switch } from './ui';
@@ -16,6 +17,8 @@ import { Fieldset, Segmented, Slider, Switch } from './ui';
 interface Props {
   params: LureParams;
   onChange: (patch: Partial<LureParams>) => void;
+  /** Coupe le corps en deux segments articules, depuis le panneau de forme. */
+  onAddArticulation: () => void;
   onLoadPreset: (shape: ShapeId) => void;
   sculpting: boolean;
   onSculptingChange: (active: boolean) => void;
@@ -53,6 +56,7 @@ const EYE_STYLES: { value: EyeStyle; label: string; relief: number | null; hint:
 export function ShapeEditor({
   params,
   onChange,
+  onAddArticulation,
   onLoadPreset,
   sculpting,
   onSculptingChange,
@@ -62,6 +66,7 @@ export function ShapeEditor({
   onUpdateSculpt,
 }: Props) {
   const active = params.sculpt.find((point) => point.id === selectedSculpt) ?? null;
+  const jointBlocker = articulationBlocker(params);
   const setDetail = (key: 'gills' | 'eyes', patch: Partial<DetailConfig>) =>
     onChange({ [key]: { ...params[key], ...patch } });
 
@@ -132,6 +137,32 @@ export function ShapeEditor({
           hint="Un ventre rebondi loge les lests bas et stabilise la nage."
           onChange={(ventralCurve) => onChange({ ventralCurve })}
         />
+
+        {/*
+          Raccourci vers l'articulation. Elle vit dans l'arbre de scene, mais
+          on decide de couper un corps en deux en le regardant, pas en
+          fouillant un menu : l'entree doit donc etre la aussi.
+        */}
+        {params.articulation.enabled ? (
+          <p className="control__hint">
+            Corps articule en deux segments — le joint se regle dans l onglet Scene.
+          </p>
+        ) : (
+          <>
+            <button
+              type="button"
+              className="btn btn--block"
+              disabled={!!jointBlocker}
+              onClick={onAddArticulation}
+            >
+              Couper en deux segments articules
+            </button>
+            <p className="control__hint" style={jointBlocker ? { color: 'var(--amber)' } : undefined}>
+              {jointBlocker ??
+                'Deux segments relies par une goupille et des oeillets. Le corps passe en une piece : l articulation coupe en travers.'}
+            </p>
+          </>
+        )}
       </Fieldset>
 
       <Fieldset legend="Modelage" hint="Reglages fins du nez, de la section et de l arriere.">

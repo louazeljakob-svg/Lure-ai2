@@ -23,6 +23,8 @@ export type NodeKind =
   | 'outline'
   | 'decal'
   | 'scales'
+  | 'inlay'
+  | 'dowels'
   | 'articulation'
   | 'jointEye'
   | 'jointPin'
@@ -59,6 +61,9 @@ interface Props {
 }
 
 export type AddKind =
+  | 'template'
+  | 'inlay'
+  | 'dowels'
   | 'decal'
   | 'scales'
   | 'articulation'
@@ -68,9 +73,12 @@ export type AddKind =
   | 'bib';
 
 const ADD_MENU: { kind: AddKind; label: string; hint: string }[] = [
+  { kind: 'articulation', label: 'Articulation', hint: 'Coupe le corps en deux segments articules' },
+  { kind: 'template', label: 'Modele guide 2 parties', hint: 'Un articule complet, deja regle et flottant' },
   { kind: 'decal', label: 'Decal', hint: 'Forme deposee sur le corps, en relief ou gravee' },
   { kind: 'scales', label: 'Ecailles', hint: 'Trame carrelee sur tout le corps' },
-  { kind: 'articulation', label: 'Articulation', hint: 'Coupe le corps en segments articules' },
+  { kind: 'inlay', label: 'Rainure de collant', hint: 'Creux plat pour un collant reflechissant' },
+  { kind: 'dowels', label: 'Goupilles d assemblage', hint: 'Barreaux imprimes qui alignent les deux coques' },
   { kind: 'eyes', label: 'Oeil', hint: 'Cuvette et iris graves dans la tete' },
   { kind: 'anchor', label: 'Support d hamecon', hint: 'Ancrage de goupille en 8' },
   { kind: 'ballast', label: 'Lest', hint: 'Masse interne de reglage' },

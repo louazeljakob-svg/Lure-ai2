@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   Decal,
+  Inlay,
   LureParams,
   PaintConfig,
   PinAnchor,
@@ -27,13 +28,16 @@ import {
 import { ReferencePanel } from './components/ReferencePanel';
 import { buildLure, PREVIEW_RESOLUTION } from './lib/geometry';
 import { useHistory } from './lib/history';
-import { fitToBody } from './lib/articulation';
+import { articulationBlocker, fitToBody } from './lib/articulation';
+import { getTemplate } from './lib/templates';
 import { emptyReference } from './lib/presets';
 import { Outliner, type AddKind, type NodeKind, type SceneNode } from './components/Outliner';
 import { OutlineEditor } from './components/OutlineEditor';
 import {
   ArticulationInspector,
   DecalInspector,
+  DowelInspector,
+  InlayInspector,
   JointEyeInspector,
   JointSlotInspector,
   PrintInspector,
@@ -78,7 +82,7 @@ const PANEL_META: Record<PanelTab, { title: string; subtitle: string; tab: strin
   material: { title: 'Matiere & finition', subtitle: 'Impression, lestage, livree', tab: 'Matiere' },
   assembly: { title: 'Assemblage', subtitle: 'Ancrages, goujons, goupilles', tab: 'Assemblage' },
   reference: { title: 'Reference', subtitle: 'Images calees a l echelle', tab: 'Reference' },
-  physics: { title: 'Simulation', subtitle: 'Flottabilite, assiette, action', tab: 'Physique' },
+  physics: { title: 'Simulation', subtitle: 'Flottabilite, nage, tenue mecanique', tab: 'Physique' },
   projects: { title: 'Projets', subtitle: 'Creations de la session', tab: 'Projets' },
 };
 
@@ -112,8 +116,14 @@ export default function App() {
   // contour s'ouvre sur la piece qui le demande.
   const [selectedNode, setSelectedNode] = useState<string>('body');
   const [selectedKind, setSelectedKind] = useState<NodeKind>('body');
-  const [editing, setEditing] = useState<{ kind: 'outline' | 'decal'; id?: string } | null>(null);
+  const [editing, setEditing] = useState<{
+    kind: 'outline' | 'decal' | 'inlay';
+    id?: string;
+  } | null>(null);
   const [dark, setDark] = useState(false);
+  // Modele guide charge : son panneau d'explication reste ouvert tant que
+  // l'utilisateur ne le referme pas.
+  const [guideId, setGuideId] = useState<string | null>(null);
   // Etat de sauvegarde, lu par la barre basse : « Enregistre » ne doit
   // s'afficher que si le projet en cours correspond a ce qui est en memoire.
   const [saveState, setSaveState] = useState<'saved' | 'dirty' | 'saving'>('saved');
@@ -275,6 +285,46 @@ export default function App() {
     [setParams],
   );
 
+  const updateInlay = useCallback(
+    (id: string, patch: Partial<Inlay>) => {
+      setParams((current) => ({
+        ...current,
+        inlays: current.inlays.map((item) => (item.id === id ? { ...item, ...patch } : item)),
+      }));
+    },
+    [setParams],
+  );
+
+  const addInlay = useCallback(() => {
+    const id = `rainure-${Date.now().toString(36)}`;
+    setParams((current) => ({
+      ...current,
+      inlays: [
+        ...current.inlays,
+        {
+          id,
+          name: current.inlays.length === 0 ? 'Rainure de collant' : `Rainure ${current.inlays.length + 1}`,
+          visible: true,
+          shape: 'oval' as const,
+          outline: { nodes: [], closed: true, mirror: false },
+          reference: emptyReference(),
+          // 0,25 mm : un collant reflechissant courant plus sa colle.
+          depth: 0.25,
+          margin: 0.2,
+          cornerRadius: 1.5,
+          mirror: true,
+          position: 0.42,
+          height: 0.1,
+          rotation: 0,
+          size: Math.max(current.length * 0.26, 8),
+        },
+      ],
+    }));
+    setSelectedNode(id);
+    setSelectedKind('inlay');
+    setPanelTab('scene');
+  }, [setParams]);
+
   const addBallast = useCallback(() => {
     setParams((current) => ({
       ...current,
@@ -294,6 +344,36 @@ export default function App() {
     setPanelTab('material');
   }, [setParams]);
 
+  /**
+   * Ajout d'une articulation, en un geste.
+   *
+   * L'articulation coupe le corps EN TRAVERS ; l'impression en deux coques le
+   * coupe dans la longueur. Les deux a la fois donneraient quatre pieces dont
+   * l'assemblage n'est pas genere. Plutot que de laisser l'ajout sans effet
+   * visible — c'etait le cas —, on bascule le corps en une piece et on le dit.
+   */
+  const addArticulation = useCallback(() => {
+    const blocked = articulationBlocker(params);
+    if (blocked) {
+      pushToast('error', blocked);
+      return;
+    }
+    setParams((current) => ({
+      ...current,
+      assembly: { ...current.assembly, enabled: false },
+      articulation: { ...current.articulation, enabled: true },
+    }));
+    setPanelTab('scene');
+    setSelectedNode('articulation');
+    setSelectedKind('articulation');
+    if (params.assembly.enabled) {
+      pushToast(
+        'ok',
+        'Corps passe en une piece : l articulation le coupe en travers, l impression en deux coques le coupait dans la longueur.',
+      );
+    }
+  }, [params, setParams, pushToast]);
+
   const fitJoint = useCallback(() => {
     setParams((current) => ({
       ...current,
@@ -303,6 +383,24 @@ export default function App() {
       },
     }));
   }, [setParams]);
+
+  const loadTemplate = useCallback(
+    (id: string) => {
+      const template = getTemplate(id);
+      if (!template) return;
+      history.reset(template.build());
+      setName(template.label);
+      setActiveId(null);
+      setFitKey((n) => n + 1);
+      setRoute('editor');
+      setPane('panel');
+      setPanelTab('scene');
+      setSelectedNode('articulation');
+      setSelectedKind('articulation');
+      setGuideId(id);
+    },
+    [history],
+  );
 
   const loadPreset = useCallback((shape: ShapeId) => {
     const preset = getPreset(shape);
@@ -739,6 +837,30 @@ export default function App() {
         onRemove: () => removeDecal(decal.id),
         onRename: (name: string) => updateDecal(decal.id, { name }),
       })),
+      ...params.inlays.map((inlay) => ({
+        id: inlay.id,
+        kind: 'inlay' as const,
+        icon: '▬',
+        label: inlay.name,
+        visible: inlay.visible,
+        warning:
+          inlay.shape === 'custom' && inlay.outline.nodes.length < 2
+            ? 'Aucun contour trace : cette rainure ne creuse rien.'
+            : undefined,
+        onToggleVisible: () => updateInlay(inlay.id, { visible: !inlay.visible }),
+        onRename: (name: string) => updateInlay(inlay.id, { name }),
+        onRemove: () =>
+          setParams((current) => ({
+            ...current,
+            inlays: current.inlays.filter((item) => item.id !== inlay.id),
+          })),
+      })),
+      { id: 'dowels', kind: 'dowels', icon: '⌷', label: 'Goupilles d assemblage',
+        visible: params.dowels.enabled,
+        warning: physics.dowels?.some((d) => !d.valid)
+          ? 'Un logement au moins n a pas pu etre creuse.'
+          : undefined,
+        onToggleVisible: () => updateParams({ dowels: { ...params.dowels, enabled: !params.dowels.enabled } }) },
       { id: 'scales', kind: 'scales', icon: '⬡', label: 'Ecailles', visible: params.scales.enabled,
         onToggleVisible: () => updateParams({ scales: { ...params.scales, enabled: !params.scales.enabled } }) },
     ];
@@ -783,7 +905,7 @@ export default function App() {
         ],
       },
     ];
-  }, [params, sockets, name, updateParams, updateDecal, duplicateDecal, removeDecal, reorderDecal, removeAnchor]);
+  }, [params, sockets, name, physics, updateParams, updateDecal, updateInlay, duplicateDecal, removeDecal, reorderDecal, removeAnchor, setParams]);
 
   const onAddNode = useCallback(
     (what: AddKind) => {
@@ -795,9 +917,16 @@ export default function App() {
         return;
       }
       if (what === 'articulation') {
-        updateParams({ articulation: { ...params.articulation, enabled: true } });
-        setSelectedNode('articulation');
-        setSelectedKind('articulation');
+        addArticulation();
+        return;
+      }
+      if (what === 'template') {
+        setRoute('gallery');
+        // La bibliotheque de modeles vit sur l'ecran d'accueil : y renvoyer
+        // vaut mieux que de dupliquer la liste dans un menu etroit.
+        window.setTimeout(() => {
+          document.getElementById('modeles-guides')?.scrollIntoView({ behavior: 'smooth' });
+        }, 60);
         return;
       }
       if (what === 'eyes') {
@@ -807,7 +936,17 @@ export default function App() {
         return;
       }
       if (what === 'anchor') return addAnchor();
+      if (what === 'inlay') return addInlay();
       if (what === 'ballast') return addBallast();
+      if (what === 'dowels') {
+        updateParams({
+          dowels: { ...params.dowels, enabled: true },
+          assembly: { ...params.assembly, enabled: true },
+        });
+        setSelectedNode('dowels');
+        setSelectedKind('dowels');
+        return;
+      }
       if (what === 'bib') {
         updateParams({ hasBib: true });
         setSelectedNode('bib');
@@ -818,6 +957,8 @@ export default function App() {
   );
 
   const selectedDecal = params.decals.find((decal) => decal.id === selectedNode) ?? null;
+  const selectedInlay = params.inlays.find((item) => item.id === selectedNode) ?? null;
+  const guide = guideId ? getTemplate(guideId) : undefined;
   const checks = useMemo(() => runPrintChecks(params, geo), [params, geo]);
 
   const panelMeta = PANEL_META[panelTab];
@@ -851,7 +992,7 @@ export default function App() {
             aria-current={route === 'gallery' ? 'page' : undefined}
             onClick={() => setRoute('gallery')}
           >
-            Galerie
+            Bibliotheque
           </button>
           <button
             type="button"
@@ -930,6 +1071,7 @@ export default function App() {
         <>
           <ShapeGallery
             onSelect={openShape}
+            onTemplate={loadTemplate}
             projects={projects}
             activeId={activeId}
             onOpen={openProject}
@@ -990,6 +1132,7 @@ export default function App() {
               <ShapeEditor
                 params={params}
                 onChange={updateParams}
+                onAddArticulation={addArticulation}
                 onLoadPreset={loadPreset}
                 sculpting={sculpting}
                 onSculptingChange={setSculpting}
@@ -1022,16 +1165,26 @@ export default function App() {
 
             {editing ? (
               <OutlineEditor
-                title={editing.kind === 'outline' ? 'Contour du profil' : 'Contour du decal'}
+                title={
+                  editing.kind === 'outline'
+                    ? 'Contour du profil'
+                    : editing.kind === 'inlay'
+                      ? 'Contour de la rainure'
+                      : 'Contour du decal'
+                }
                 hint={
                   editing.kind === 'outline'
                     ? 'Le trace remplace le dos et le ventre calcules par les curseurs. La maquette 3D suit a chaque geste.'
-                    : 'La forme sera projetee sur le corps puis mise en relief ou gravee.'
+                    : editing.kind === 'inlay'
+                      ? 'La forme sera creusee a fond plat sur le flanc, pour recevoir un collant decoupe.'
+                      : 'La forme sera projetee sur le corps puis mise en relief ou gravee.'
                 }
                 outline={
                   editing.kind === 'outline'
                     ? params.outline
-                    : (params.decals.find((d) => d.id === editing.id)?.outline ?? {
+                    : ((editing.kind === 'inlay'
+                        ? params.inlays.find((d) => d.id === editing.id)?.outline
+                        : params.decals.find((d) => d.id === editing.id)?.outline) ?? {
                         nodes: [],
                         closed: true,
                         mirror: false,
@@ -1040,15 +1193,22 @@ export default function App() {
                 reference={
                   editing.kind === 'outline'
                     ? params.outlineReference
-                    : (params.decals.find((d) => d.id === editing.id)?.reference ?? emptyReference())
+                    : ((editing.kind === 'inlay'
+                        ? params.inlays.find((d) => d.id === editing.id)?.reference
+                        : params.decals.find((d) => d.id === editing.id)?.reference) ??
+                      emptyReference())
                 }
                 onChange={(outline) => {
                   if (editing.kind === 'outline') updateParams({ outline });
-                  else if (editing.id) updateDecal(editing.id, { outline });
+                  else if (!editing.id) return;
+                  else if (editing.kind === 'inlay') updateInlay(editing.id, { outline });
+                  else updateDecal(editing.id, { outline });
                 }}
                 onReference={(reference) => {
                   if (editing.kind === 'outline') updateParams({ outlineReference: reference });
-                  else if (editing.id) updateDecal(editing.id, { reference });
+                  else if (!editing.id) return;
+                  else if (editing.kind === 'inlay') updateInlay(editing.id, { reference });
+                  else updateDecal(editing.id, { reference });
                 }}
                 onClose={() => setEditing(null)}
                 onUndo={history.undo}
@@ -1084,6 +1244,31 @@ export default function App() {
               <div role="tabpanel" aria-labelledby={`subtab-${panelTab}`}>
                 {panelTab === 'scene' ? (
                   <>
+                    {guide ? (
+                      <section className="guide">
+                        <div className="guide__head">
+                          <h3>{guide.label}</h3>
+                          <button
+                            type="button"
+                            className="contour__close"
+                            aria-label="Fermer le guide"
+                            onClick={() => setGuideId(null)}
+                          >
+                            ✕
+                          </button>
+                        </div>
+                        <p className="guide__lead">{guide.description}</p>
+                        <dl className="guide__list">
+                          {guide.guide.map((item) => (
+                            <div key={item.setting}>
+                              <dt>{item.setting}</dt>
+                              <dd>{item.why}</dd>
+                            </div>
+                          ))}
+                        </dl>
+                      </section>
+                    ) : null}
+
                     <Outliner
                       nodes={sceneNodes}
                       selected={selectedNode}
@@ -1101,6 +1286,24 @@ export default function App() {
                         decal={selectedDecal}
                         onChange={(patch) => updateDecal(selectedDecal.id, patch)}
                         onEditOutline={() => setEditing({ kind: 'decal', id: selectedDecal.id })}
+                      />
+                    ) : null}
+
+                    {selectedKind === 'inlay' && selectedInlay ? (
+                      <InlayInspector
+                        inlay={selectedInlay}
+                        onChange={(patch) => updateInlay(selectedInlay.id, patch)}
+                        onEditOutline={() => setEditing({ kind: 'inlay', id: selectedInlay.id })}
+                      />
+                    ) : null}
+
+                    {selectedKind === 'dowels' ? (
+                      <DowelInspector
+                        config={params.dowels}
+                        placements={physics.dowels ?? []}
+                        onChange={(patch) =>
+                          updateParams({ dowels: { ...params.dowels, ...patch } })
+                        }
                       />
                     ) : null}
 
@@ -1276,6 +1479,7 @@ export default function App() {
                     physics={physics}
                     water={water}
                     onWaterChange={setWater}
+                    sockets={plans.sockets}
                   />
                 ) : null}
                 {panelTab === 'projects' ? (

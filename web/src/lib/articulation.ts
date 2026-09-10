@@ -283,3 +283,26 @@ export function buildJointHardware(plan: ArticulationPlan): THREE.BufferGeometry
   merged.setIndex(indices);
   return merged;
 }
+
+/**
+ * Raison, en clair, qui empeche d'articuler ce corps — ou `null` si rien ne
+ * s'y oppose.
+ *
+ * Mieux vaut dire pourquoi que masquer l'option : un menu ou l'entree existe
+ * mais ne fait rien est pire qu'un menu ou elle manque.
+ */
+export function articulationBlocker(params: LureParams): string | null {
+  // Deux segments demandent de la matiere de chaque cote du joint, plus la
+  // place de la quincaillerie. En dessous, la piece ne s'imprime pas.
+  const minimum = Math.max(params.articulation.eyeLength * 2.5, 45);
+  if (params.length < minimum) {
+    return (
+      `Corps trop court pour une articulation : ${params.length.toFixed(0)} mm alors qu il en ` +
+      `faut au moins ${minimum.toFixed(0)} mm pour loger la quincaillerie de part et d autre du joint.`
+    );
+  }
+  if (params.shape === 'spoon') {
+    return 'Une cuiller est une lame pleine : il n y a pas de section a couper en deux segments.';
+  }
+  return null;
+}

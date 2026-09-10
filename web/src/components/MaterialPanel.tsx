@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import type {
   BallastWeight,
+  LiveryConfig,
   LureParams,
   PaintConfig,
   PatternId,
@@ -12,6 +13,7 @@ import type {
 } from '../types/lure';
 import { FINISHES, MATERIALS, getMaterial } from '../lib/materials';
 import { paintPreviewCss } from '../lib/paint';
+import { LIVERY_LIBRARY, cloneLivery } from '../lib/liveries';
 import { LIMITS } from '../lib/presets';
 import { ColorField, Fieldset, Segmented, Slider, Switch } from './ui';
 
@@ -108,6 +110,19 @@ export function MaterialPanel({
 
   const setPaint = (patch: Partial<PaintConfig>) =>
     onChange({ paint: { ...params.paint, ...patch } });
+
+  /** Une couche de livree se modifie sans toucher aux autres. */
+  const setLivery = <K extends keyof LiveryConfig>(key: K, patch: Partial<LiveryConfig[K]>) =>
+    setPaint({
+      livery: {
+        ...params.paint.livery,
+        [key]:
+          typeof params.paint.livery[key] === 'object'
+            ? { ...(params.paint.livery[key] as object), ...(patch as object) }
+            : patch,
+      } as LiveryConfig,
+    });
+  const livery = params.paint.livery;
 
   const setBallast = (id: string, patch: Partial<BallastWeight>) =>
     onChange({
@@ -422,6 +437,231 @@ export function MaterialPanel({
           display={`${params.chamber.balls}`}
           disabled={!params.chamber.enabled}
           onChange={(balls) => setChamber({ balls })}
+        />
+      </Fieldset>
+
+      <Fieldset
+        legend="Bibliotheque de livrees"
+        hint="Neuf livrees du metier, chacune modifiable une fois chargee."
+      >
+        <div className="livery-grid">
+          {LIVERY_LIBRARY.map((entry) => (
+            <button
+              key={entry.id}
+              type="button"
+              className="livery-card"
+              title={entry.note}
+              onClick={() =>
+                setPaint({ ...entry.paint, livery: cloneLivery(entry.paint.livery) })
+              }
+            >
+              <span
+                className="livery-card__swatch"
+                aria-hidden="true"
+                style={{ background: paintPreviewCss(entry.paint) }}
+              />
+              <span className="livery-card__name">{entry.name}</span>
+            </button>
+          ))}
+        </div>
+        <p className="control__hint">
+          Une livree chargee remplace les couleurs, le motif et les couches de finition. Elle ne
+          touche a aucune geometrie, a aucune masse et a aucun verdict.
+        </p>
+      </Fieldset>
+
+      <Fieldset
+        legend="Couches de finition"
+        hint="Barres, ecailles fines, opercule, ligne laterale, irisation et vernis. Purement visuel."
+      >
+        <Switch
+          label="Barres verticales"
+          checked={livery.bars.enabled}
+          onChange={(enabled) => setLivery('bars', { enabled })}
+          hint="Bords fondus, larges au dos, effacees avant le ventre."
+        />
+        {livery.bars.enabled ? (
+          <>
+            <div className="swatch-row">
+              <ColorField
+                label="Couleur des barres"
+                value={livery.bars.color}
+                onChange={(color) => setLivery('bars', { color })}
+              />
+            </div>
+            <Slider
+              label="Nombre"
+              value={livery.bars.count}
+              min={2}
+              max={20}
+              step={1}
+              display={`${livery.bars.count}`}
+              onChange={(count) => setLivery('bars', { count })}
+            />
+            <Slider
+              label="Largeur"
+              value={livery.bars.width}
+              min={0.05}
+              max={0.9}
+              step={0.01}
+              display={`${Math.round(livery.bars.width * 100)} %`}
+              onChange={(width) => setLivery('bars', { width })}
+            />
+            <Slider
+              label="Flou des bords"
+              value={livery.bars.blur}
+              min={0}
+              max={1}
+              step={0.02}
+              display={`${Math.round(livery.bars.blur * 100)} %`}
+              onChange={(blur) => setLivery('bars', { blur })}
+            />
+            <Slider
+              label="Intensite"
+              value={livery.bars.opacity}
+              min={0}
+              max={1}
+              step={0.02}
+              display={`${Math.round(livery.bars.opacity * 100)} %`}
+              onChange={(opacity) => setLivery('bars', { opacity })}
+            />
+          </>
+        ) : null}
+
+        <Switch
+          label="Ecailles fines en losange"
+          checked={livery.microScales.enabled}
+          onChange={(enabled) => setLivery('microScales', { enabled })}
+          hint="Peintes SOUS le vernis, comme sur un leurre fini. N entre pas dans le maillage."
+        />
+        {livery.microScales.enabled ? (
+          <>
+            <Slider
+              label="Finesse"
+              value={livery.microScales.density}
+              min={0}
+              max={1}
+              step={0.02}
+              display={`${Math.round(livery.microScales.density * 100)} %`}
+              onChange={(density) => setLivery('microScales', { density })}
+            />
+            <Slider
+              label="Contraste"
+              value={livery.microScales.contrast}
+              min={0}
+              max={1}
+              step={0.02}
+              display={`${Math.round(livery.microScales.contrast * 100)} %`}
+              onChange={(contrast) => setLivery('microScales', { contrast })}
+            />
+          </>
+        ) : null}
+
+        <Switch
+          label="Opercule holographique"
+          checked={livery.gillPlate.enabled}
+          onChange={(enabled) => setLivery('gillPlate', { enabled })}
+          hint="Plaque d ecailles larges a reflet rose et vert, distincte du corps."
+        />
+        {livery.gillPlate.enabled ? (
+          <>
+            <div className="swatch-row">
+              <ColorField
+                label="Reflet"
+                value={livery.gillPlate.color}
+                onChange={(color) => setLivery('gillPlate', { color })}
+              />
+            </div>
+            <Slider
+              label="Etendue"
+              value={livery.gillPlate.size}
+              min={0}
+              max={1}
+              step={0.02}
+              display={`${Math.round(livery.gillPlate.size * 100)} %`}
+              onChange={(size) => setLivery('gillPlate', { size })}
+            />
+          </>
+        ) : null}
+
+        <Switch
+          label="Ligne laterale"
+          checked={livery.lateral.enabled}
+          onChange={(enabled) => setLivery('lateral', { enabled })}
+        />
+        {livery.lateral.enabled ? (
+          <>
+            <div className="swatch-row">
+              <ColorField
+                label="Couleur"
+                value={livery.lateral.color}
+                onChange={(color) => setLivery('lateral', { color })}
+              />
+            </div>
+            <Slider
+              label="Epaisseur"
+              value={livery.lateral.width}
+              min={0}
+              max={1}
+              step={0.02}
+              display={`${Math.round(livery.lateral.width * 100)} %`}
+              onChange={(width) => setLivery('lateral', { width })}
+            />
+            <Slider
+              label="Hauteur sur le flanc"
+              value={livery.lateral.position}
+              min={0.3}
+              max={0.7}
+              step={0.01}
+              display={`${Math.round(livery.lateral.position * 100)} %`}
+              onChange={(position) => setLivery('lateral', { position })}
+            />
+          </>
+        ) : null}
+
+        <div className="swatch-row">
+          <ColorField
+            label="Teinte d irisation"
+            value={livery.iris.hue}
+            onChange={(hue) => setLivery('iris', { hue })}
+          />
+        </div>
+        <Slider
+          label="Intensite de l irisation"
+          value={livery.iris.strength}
+          min={0}
+          max={1}
+          step={0.02}
+          display={`${Math.round(livery.iris.strength * 100)} %`}
+          onChange={(strength) => setLivery('iris', { strength })}
+        />
+        <Slider
+          label="Nacre du ventre"
+          value={livery.pearl}
+          min={0}
+          max={1}
+          step={0.02}
+          display={`${Math.round(livery.pearl * 100)} %`}
+          onChange={(pearl) => setPaint({ livery: { ...livery, pearl } })}
+        />
+        <Slider
+          label="Epaisseur du vernis"
+          value={livery.varnish.thickness}
+          min={0}
+          max={1}
+          step={0.02}
+          display={`${Math.round(livery.varnish.thickness * 100)} %`}
+          onChange={(thickness) => setLivery('varnish', { thickness })}
+        />
+        <Slider
+          label="Brillance du vernis"
+          value={livery.varnish.gloss}
+          min={0}
+          max={1}
+          step={0.02}
+          display={`${Math.round(livery.varnish.gloss * 100)} %`}
+          onChange={(gloss) => setLivery('varnish', { gloss })}
+          hint="Le vernis est rendu comme une vraie couche transparente au-dessus de la peinture."
         />
       </Fieldset>
 

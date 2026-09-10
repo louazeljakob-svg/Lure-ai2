@@ -2,12 +2,15 @@
 
 import type { Project, ShapeId } from '../types/lure';
 import { getMaterial } from '../lib/materials';
+import { GUIDED_TEMPLATES } from '../lib/templates';
 import { SHAPE_PRESETS } from '../lib/presets';
 import { LureSilhouette } from './LureSilhouette';
 import { ProjectsPanel } from './ProjectsPanel';
 
 interface Props {
   onSelect: (shape: ShapeId) => void;
+  /** Ouvre un modele guide : un leurre complet, deja regle. */
+  onTemplate: (id: string) => void;
   projects: Project[];
   activeId: string | null;
   onOpen: (id: string) => void;
@@ -18,8 +21,30 @@ interface Props {
   onImportClick: () => void;
 }
 
+/** Silhouette en deux segments : la carte doit montrer ou tombe le joint. */
+function TemplateFigure({ headShare }: { headShare: number }) {
+  const cut = 6 + (headShare / 100) * 88;
+  return (
+    <svg viewBox="0 0 100 34" width="100%" height="72" role="img" aria-label="Silhouette articulee">
+      <path
+        d={`M6 17 Q ${cut * 0.45} 3 ${cut - 1.4} 8 L ${cut - 1.4} 26 Q ${cut * 0.45} 31 6 17 Z`}
+        fill="#101114"
+        opacity="0.82"
+      />
+      <path
+        d={`M ${cut + 1.4} 8 Q ${cut + (94 - cut) * 0.5} 4 94 15 L 94 19 Q ${cut + (94 - cut) * 0.5} 30 ${cut + 1.4} 26 Z`}
+        fill="#101114"
+        opacity="0.55"
+      />
+      <line x1={cut} y1="2" x2={cut} y2="32" stroke="#e30613" strokeWidth="1.4" strokeDasharray="3 2" />
+      <circle cx={cut} cy="17" r="2.1" fill="#e30613" />
+    </svg>
+  );
+}
+
 export function ShapeGallery({
   onSelect,
+  onTemplate,
   projects,
   activeId,
   onOpen,
@@ -108,6 +133,49 @@ export function ShapeGallery({
                     g de lest
                   </span>
                 ) : null}
+              </div>
+            </div>
+          </button>
+        ))}
+      </div>
+
+      <div className="section-head" style={{ marginTop: 40 }} id="modeles-guides">
+        <h2>Modeles guides — articules 2 parties</h2>
+        <span className="section-head__rule" />
+        <span className="section-head__hint">
+          {GUIDED_TEMPLATES.length} leurres complets, deja regles
+        </span>
+      </div>
+
+      <p className="gallery__lead">
+        Un gabarit donne un corps ; un modele guide donne un leurre qui nage — joint place,
+        quincaillerie dimensionnee, ancrages poses et flottabilite deja calee. Vous partez d un
+        objet qui fonctionne et vous l ajustez ensuite.
+      </p>
+
+      <div className="shape-grid">
+        {GUIDED_TEMPLATES.map((template) => (
+          <button
+            type="button"
+            className="shape-card shape-card--template"
+            key={template.id}
+            onClick={() => onTemplate(template.id)}
+          >
+            <div className="shape-card__figure">
+              <span className="shape-card__index">2 PARTIES</span>
+              <TemplateFigure headShare={template.headShare} />
+            </div>
+            <div className="shape-card__body">
+              <div className="shape-card__title">
+                <h3>{template.label}</h3>
+              </div>
+              <p className="shape-card__tagline">{template.tagline}</p>
+              <p>{template.description}</p>
+              <div className="shape-card__meta">
+                <span className="tag">{template.length} mm</span>
+                <span className="tag">
+                  tete {template.headShare} / queue {100 - template.headShare}
+                </span>
               </div>
             </div>
           </button>

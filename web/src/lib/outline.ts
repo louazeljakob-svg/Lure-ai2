@@ -222,3 +222,106 @@ export function bakeSignedField(
 
   return { bounds: raw, at };
 }
+
+/**
+ * Arrondit les angles d'un polygone d'un rayon donne.
+ *
+ * Chaque sommet est remplace par un arc tangent aux deux cotes. Le rayon est
+ * borne par la moitie du plus court des deux cotes : au-dela, les arcs
+ * voisins se recouvriraient et le contour se croiserait.
+ */
+export function roundCorners(
+  points: THREE.Vector2[],
+  radius: number,
+  steps = 6,
+): THREE.Vector2[] {
+  if (radius <= 1e-6 || points.length < 3) return points;
+  const out: THREE.Vector2[] = [];
+  const n = points.length;
+  for (let i = 0; i < n; i++) {
+    const previous = points[(i - 1 + n) % n];
+    const current = points[i];
+    const next = points[(i + 1) % n];
+
+    const toPrev = new THREE.Vector2().subVectors(previous, current);
+    const toNext = new THREE.Vector2().subVectors(next, current);
+    const lenPrev = toPrev.length();
+    const lenNext = toNext.length();
+    if (lenPrev < 1e-9 || lenNext < 1e-9) {
+      out.push(current.clone());
+      continue;
+    }
+    toPrev.divideScalar(lenPrev);
+    toNext.divideScalar(lenNext);
+
+    // Angle entre les deux cotes : un sommet presque plat n'a pas besoin
+    // d'arc, et le calcul y devient instable.
+    const cos = Math.min(Math.max(toPrev.dot(toNext), -1), 1);
+    const angle = Math.acos(cos);
+    if (angle > Math.PI - 0.05 || angle < 0.05) {
+      out.push(current.clone());
+      continue;
+    }
+
+    const cut = Math.min(radius / Math.tan(angle / 2), lenPrev / 2, lenNext / 2);
+    const a = new THREE.Vector2().copy(current).addScaledVector(toPrev, cut);
+    const b = new THREE.Vector2().copy(current).addScaledVector(toNext, cut);
+    for (let k = 0; k <= steps; k++) {
+      const t = k / steps;
+      // Bezier quadratique : l'arc de cercle a moins d'un pour cent pres,
+      // pour trois lignes au lieu d'une trigonometrie complete.
+      const u = 1 - t;
+      out.push(
+        new THREE.Vector2(
+          a.x * u * u + current.x * 2 * u * t + b.x * t * t,
+          a.y * u * u + current.y * 2 * u * t + b.y * t * t,
+        ),
+      );
+    }
+  }
+  return out;
+}
+
+/**
+ * Contours prets a l'emploi des rainures de collant, en coordonnees
+ * normalisees. Une largeur de 2, une hauteur qui suit la forme.
+ */
+export function inlayShapePoints(shape: string): THREE.Vector2[] {
+  const points: THREE.Vector2[] = [];
+  if (shape === 'oval') {
+    for (let i = 0; i < 48; i++) {
+      const a = (i / 48) * Math.PI * 2;
+      points.push(new THREE.Vector2(Math.cos(a), Math.sin(a) * 0.42));
+    }
+    return points;
+  }
+  if (shape === 'teardrop') {
+    // Goutte : ronde a l'avant, effilee vers l'arriere, comme une ecaille
+    // de flanc ou un patch d'opercule.
+    for (let i = 0; i < 56; i++) {
+      const a = (i / 56) * Math.PI * 2;
+      const taper = (1 + Math.cos(a)) / 2;
+      points.push(
+        new THREE.Vector2(Math.cos(a), Math.sin(a) * 0.46 * (0.25 + 0.75 * taper)),
+      );
+    }
+    return points;
+  }
+  if (shape === 'band') {
+    // Bande laterale : un rectangle allonge, angles arrondis par le reglage.
+    return [
+      new THREE.Vector2(-1, -0.16),
+      new THREE.Vector2(1, -0.16),
+      new THREE.Vector2(1, 0.16),
+      new THREE.Vector2(-1, 0.16),
+    ];
+  }
+  // Forme du flanc, decalee vers l'interieur : un ovale plus plein a l'avant,
+  // qui epouse la silhouette du corps.
+  for (let i = 0; i < 56; i++) {
+    const a = (i / 56) * Math.PI * 2;
+    const belly = 1 + 0.18 * Math.cos(a - 0.6);
+    points.push(new THREE.Vector2(Math.cos(a) * 1.02, Math.sin(a) * 0.5 * belly));
+  }
+  return points;
+}

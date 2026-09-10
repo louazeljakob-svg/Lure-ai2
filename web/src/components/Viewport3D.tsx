@@ -13,14 +13,14 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReferenceImage } from '../lib/reference';
 import { ReferencePlanes } from './ReferencePlanes';
 import * as THREE from 'three';
-import type { LureParams } from '../types/lure';
+import type { LureParams, PreviewEnv } from '../types/lure';
 import type { LureGeometry } from '../lib/geometry';
 import { buildAssembly, worldToAnchor, type AssemblyResult } from '../lib/assembly';
 import { createSurfaceSampler } from '../lib/geometry';
 import { createProfile } from '../lib/profile';
 import type { ThreeEvent } from '@react-three/fiber';
 import { FINISHES } from '../lib/materials';
-import { createPaintTexture, createScaleNormalMap } from '../lib/paint';
+import { createLiveryNormalMap, createPaintTexture, createScaleNormalMap } from '../lib/paint';
 import { useReducedMotion } from '../lib/hooks';
 import type { PhysicsResult } from '../lib/physics';
 import { waterlineY } from '../lib/physics';
@@ -37,6 +37,122 @@ const VIEW_DIRECTIONS: Record<ViewId, [number, number, number]> = {
 interface ControlsLike {
   target: THREE.Vector3;
   update: () => void;
+}
+
+
+/**
+ * Environnements d'apercu — module L.
+ *
+ * Purement visuel : ils changent la lumiere et le fond, jamais la geometrie.
+ * L'atelier est la vue de travail historique, avec sa grille et ses reperes ;
+ * le studio est la vue de presentation, fond blanc et ombre douce ; la vue
+ * subaquatique montre le leurre comme le poisson le voit.
+ */
+const ENVIRONMENTS: Record<
+  PreviewEnv,
+  {
+    label: string;
+    background: string;
+    /** Brouillard : couleur, debut et fin, ou null. */
+    fog: [string, number, number] | null;
+    ambient: number;
+    hemisphere: [string, string, number];
+    key: { position: [number, number, number]; intensity: number; color: string };
+    fill: { position: [number, number, number]; intensity: number; color: string };
+    rim: { position: [number, number, number]; intensity: number; color: string };
+    /** Grille et plan d'eau : la presentation les efface. */
+    chrome: boolean;
+    shadowOpacity: number;
+    /** Etendue de l'ombre portee, en rayons de scene. */
+    shadowSpread: number;
+  }
+> = {
+  atelier: {
+    label: 'Atelier',
+    background: '#eef0f3',
+    fog: null,
+    ambient: 0.85,
+    hemisphere: ['#ffffff', '#b9c0c9', 0.75],
+    key: { position: [6, 9, 7], intensity: 2.2, color: '#ffffff' },
+    fill: { position: [-7, 4, -6], intensity: 0.8, color: '#dce6f2' },
+    rim: { position: [0, -5, 6], intensity: 0.5, color: '#ffffff' },
+    chrome: true,
+    shadowOpacity: 0.3,
+    shadowSpread: 7,
+  },
+  studio: {
+    label: 'Studio',
+    background: '#ffffff',
+    fog: null,
+    // Fond blanc, lumiere large et douce : c'est ce qui donne la photo de
+    // catalogue. La cle reste marquee pour que le vernis accroche un reflet
+    // net — sans lui, un leurre verni parait mat.
+    ambient: 1.05,
+    hemisphere: ['#ffffff', '#f0f0f0', 1],
+    key: { position: [5, 8, 9], intensity: 2.9, color: '#ffffff' },
+    fill: { position: [-8, 3, -4], intensity: 1.1, color: '#ffffff' },
+    rim: { position: [-2, 6, -9], intensity: 1.6, color: '#eaf1ff' },
+    chrome: false,
+    shadowOpacity: 0.26,
+    /** Ombre serree sous la piece : une photo de catalogue n'a pas de sol. */
+    shadowSpread: 2.4,
+  },
+  subaquatique: {
+    label: 'Sous l eau',
+    background: '#0e3b52',
+    fog: ['#0e3b52', 8, 42],
+    ambient: 0.42,
+    hemisphere: ['#7fd0e8', '#062a3c', 0.85],
+    // Lumiere du jour filtree : elle vient du dessus, verticale et froide.
+    key: { position: [1.5, 12, 2], intensity: 2.6, color: '#bfeaff' },
+    fill: { position: [-6, 2, -5], intensity: 0.35, color: '#1d6c8e' },
+    rim: { position: [0, -6, 4], intensity: 0.28, color: '#0a5a78' },
+    chrome: false,
+    shadowOpacity: 0.12,
+    shadowSpread: 3,
+  },
+};
+
+/**
+ * Rendu de presentation.
+ *
+ * On rend la scene a la demande dans un tampon plus grand, on lit le pixel
+ * tout de suite (sans `preserveDrawingBuffer`, qui couterait de la memoire a
+ * chaque image), puis on rend la taille d'origine. Le fichier produit est un
+ * PNG, telecharge tel quel.
+ */
+function PresentationShot({ signal, name }: { signal: number; name: string }) {
+  const gl = useThree((state) => state.gl);
+  const scene = useThree((state) => state.scene);
+  const camera = useThree((state) => state.camera);
+  const done = useRef(0);
+
+  useEffect(() => {
+    if (signal === done.current) return;
+    done.current = signal;
+    if (signal === 0) return;
+
+    const size = new THREE.Vector2();
+    gl.getSize(size);
+    const ratio = gl.getPixelRatio();
+    const target = 2400;
+    const scale = Math.min(Math.max(target / Math.max(size.x, 1), 1), 4);
+
+    gl.setPixelRatio(ratio * scale);
+    gl.setSize(size.x, size.y, false);
+    gl.render(scene, camera);
+    const data = gl.domElement.toDataURL('image/png');
+    gl.setPixelRatio(ratio);
+    gl.setSize(size.x, size.y, false);
+    gl.render(scene, camera);
+
+    const link = document.createElement('a');
+    link.href = data;
+    link.download = `${name.replace(/[^\w-]+/g, '-').toLowerCase() || 'sakuma'}-rendu.png`;
+    link.click();
+  }, [signal, gl, scene, camera, name]);
+
+  return null;
 }
 
 function CameraRig({
@@ -108,12 +224,19 @@ function LureModel({
   useEffect(() => () => texture.dispose(), [texture]);
   // Ecailles : normal map tant que le relief n'est pas cuit dans le maillage.
   // Les deux ensemble donneraient un relief compte deux fois.
+  // Deux reliefs possibles, jamais les deux a la fois : les ecailles reelles
+  // (qui partiront a l'export) priment sur le grain purement optique de la
+  // livree, sinon le relief serait compte deux fois.
   const scaleMap = useMemo(
-    () => (params.scales.enabled && !params.scales.baked ? createScaleNormalMap(params) : null),
+    () =>
+      params.scales.enabled && !params.scales.baked
+        ? createScaleNormalMap(params)
+        : createLiveryNormalMap(params),
     [params],
   );
   useEffect(() => () => scaleMap?.dispose(), [scaleMap]);
   const finish = FINISHES[params.paint.finish];
+  const livery = params.paint.livery;
 
   // Corps translucide bleute quand l'articulation est a l'etude : la
   // quincaillerie doit se lire A TRAVERS la matiere, sinon regler un joint
@@ -128,9 +251,21 @@ function LureModel({
     metalness: finish.metalness,
     // Film mince : la teinte se decale avec l'angle de vue, ce qui rend la
     // finition holographique sans texture d'environnement.
-    iridescence: finish.iridescence,
-    iridescenceIOR: 1.35,
+    // Irisation : la finition donne le socle, la livree l'amplifie. Ce sont
+    // deux reglages distincts parce qu'ils repondent a deux questions
+    // differentes — quel type de peinture, et combien d'irisation dessus.
+    iridescence: Math.min(finish.iridescence + livery.iris.strength * 0.55, 1),
+    iridescenceIOR: 1.3 + livery.iris.strength * 0.2,
     iridescenceThicknessRange: [120, 520] as [number, number],
+    // Vernis : une vraie couche transparente par-dessus la peinture, avec sa
+    // propre rugosite. C'est elle qui renvoie le reflet net de la source, et
+    // c'est elle qui place les ecailles peintes SOUS le vernis.
+    clearcoat: 0.25 + livery.varnish.thickness * 0.75,
+    clearcoatRoughness: Math.max(0.02, (1 - livery.varnish.gloss) * 0.4),
+    // La nacre du ventre : un lustre doux qui ne depend pas du metal.
+    sheen: livery.pearl * 0.6,
+    sheenRoughness: 0.5,
+    sheenColor: new THREE.Color('#ffdada'),
     color: jointFocus ? '#a8c4e8' : '#ffffff',
     transparent: seeThrough,
     opacity: seeThrough ? (jointFocus ? 0.34 : 0.28) : 1,
@@ -573,6 +708,9 @@ export function Viewport3D({
   const [floatView, setFloatView] = useState(false);
   const [exploded, setExploded] = useState(false);
   const [showSockets, setShowSockets] = useState(true);
+  // Environnement d'apercu : purement visuel, il ne touche a aucune geometrie.
+  const [env, setEnv] = useState<PreviewEnv>('atelier');
+  const [shotSignal, setShotSignal] = useState(0);
   // Previsualisation du debattement : le segment arriere oscille dans les
   // limites calculees, ce qui rend le reglage lisible d'un coup d'oeil.
   const [animateSwing, setAnimateSwing] = useState(false);
@@ -599,6 +737,12 @@ export function Viewport3D({
   const radius =
     Math.hypot(geo.bounds.length, geo.bounds.height, geo.bounds.width) / 20 || 5;
   const groundY = -geo.bounds.height / 20 - 0.9;
+  const scenery = ENVIRONMENTS[env];
+  // Les reperes CG/CP, les portees et les lests sont des aides de travail :
+  // ils disparaissent des vues de presentation sans que l'utilisateur ait a
+  // decocher quoi que ce soit, et reviennent des le retour a l'atelier.
+  const workAids = env === 'atelier';
+  const shotName = `sakuma-${params.shape}`;
   // L'assemblage n'est calcule que lorsqu'il sert : vue eclatee, apercu des
   // portees ou placement d'ancrages.
   const hasCavity = params.rattles.length > 0 || params.chamber.enabled;
@@ -645,14 +789,28 @@ export function Viewport3D({
           gl={{ antialias: true, alpha: false }}
           camera={{ fov: 38, position: [6, 4, 9] }}
         >
-          <color attach="background" args={['#eef0f3']} />
+          <color attach="background" args={[scenery.background]} />
+          {scenery.fog ? <fog attach="fog" args={scenery.fog} /> : null}
           <CameraRig radius={radius} view={view} fitSignal={fitSignal + fitKey} />
 
-          <ambientLight intensity={0.85} />
-          <hemisphereLight args={['#ffffff', '#b9c0c9', 0.75]} />
-          <directionalLight position={[6, 9, 7]} intensity={2.2} />
-          <directionalLight position={[-7, 4, -6]} intensity={0.8} color="#dce6f2" />
-          <pointLight position={[0, -5, 6]} intensity={0.5} />
+          <ambientLight intensity={scenery.ambient} />
+          <hemisphereLight args={scenery.hemisphere} />
+          <directionalLight
+            position={scenery.key.position}
+            intensity={scenery.key.intensity}
+            color={scenery.key.color}
+          />
+          <directionalLight
+            position={scenery.fill.position}
+            intensity={scenery.fill.intensity}
+            color={scenery.fill.color}
+          />
+          <pointLight
+            position={scenery.rim.position}
+            intensity={scenery.rim.intensity}
+            color={scenery.rim.color}
+          />
+          <PresentationShot signal={shotSignal} name={shotName} />
 
           <ReferencePlanes
             references={references}
@@ -681,8 +839,8 @@ export function Viewport3D({
                 onPointerMove={(event) => handleSurfacePointer(event, false)}
               />
             )}
-            {assembly && showSockets ? <SocketPreview assembly={assembly} /> : null}
-            <Rattles assembly={assembly} visible={showMarkers || xray} />
+            {assembly && showSockets && workAids ? <SocketPreview assembly={assembly} /> : null}
+            <Rattles assembly={assembly} visible={workAids && (showMarkers || xray)} />
             {sculpting ? (
               <CageHandles
                 params={params}
@@ -703,12 +861,19 @@ export function Viewport3D({
                 }}
               />
             ) : null}
-            <Ballasts geo={geo} visible={showMarkers || xray} overlay={showMarkers && !xray} />
-            <BalanceMarkers physics={physics} radius={radius} visible={showMarkers} />
+            <Ballasts
+              geo={geo}
+              visible={workAids && (showMarkers || xray)}
+              overlay={workAids && showMarkers && !xray}
+            />
+            <BalanceMarkers physics={physics} radius={radius} visible={workAids && showMarkers} />
           </group>
 
-          <WaterPlane y={waterY} radius={radius} />
+          {/* Sous l'eau il n'y a pas de surface a montrer sous le nez du
+              leurre, et en studio la grille tuerait le fond blanc. */}
+          {scenery.chrome ? <WaterPlane y={waterY} radius={radius} /> : null}
 
+          {scenery.chrome ? (
           <Grid
             position={[0, groundY, 0]}
             args={[40, 40]}
@@ -722,13 +887,20 @@ export function Viewport3D({
             fadeStrength={1.2}
             infiniteGrid
           />
-          <ContactShadows
-            position={[0, groundY + 0.02, 0]}
-            opacity={0.3}
-            scale={Math.max(radius * 7, 20)}
-            blur={2.6}
-            far={Math.max(radius * 3, 8)}
-          />
+          ) : null}
+          {/* L'ombre de contact est posee sur un plan opaque : elle a du sens
+              au-dessus de la grille d'atelier, elle ferait une carte grise sur
+              un fond de studio. Les photos de catalogue n'en ont pas — on
+              n'en met pas. */}
+          {scenery.chrome ? (
+            <ContactShadows
+              position={[0, groundY + 0.02, 0]}
+              opacity={scenery.shadowOpacity}
+              scale={Math.max(radius * scenery.shadowSpread, 8)}
+              blur={2.6}
+              far={Math.max(radius * 3, 8)}
+            />
+          ) : null}
 
           <OrbitControls
             makeDefault
@@ -770,6 +942,32 @@ export function Viewport3D({
           onClick={() => setFitSignal((n) => n + 1)}
         >
           Recadrer
+        </button>
+        <div className="segmented" role="group" aria-label="Environnement d apercu">
+          {(Object.keys(ENVIRONMENTS) as PreviewEnv[]).map((id) => (
+            <button
+              key={id}
+              type="button"
+              aria-pressed={env === id}
+              title={`Environnement ${ENVIRONMENTS[id].label}`}
+              onClick={() => setEnv(id)}
+            >
+              {ENVIRONMENTS[id].label}
+            </button>
+          ))}
+        </div>
+        <button
+          type="button"
+          className="toolbtn"
+          title="Enregistre une image haute resolution de la vue courante"
+          onClick={() => {
+            // Le rendu de presentation suppose la vue studio : on y bascule
+            // plutot que de livrer une image avec la grille de travail.
+            setEnv('studio');
+            setShotSignal((n) => n + 1);
+          }}
+        >
+          Rendu
         </button>
         <button
           type="button"

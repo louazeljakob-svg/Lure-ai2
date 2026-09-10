@@ -18,6 +18,8 @@ import type {
   SculptPoint,
   ClipId,
   Decal,
+  DowelConfig,
+  DowelPin,
   DecalStyle,
   DetailConfig,
   EyeStyle,
@@ -25,6 +27,9 @@ import type {
   SocketMethod,
   FinishId,
   FinishStyle,
+  Inlay,
+  LiveryConfig,
+  InlayShape,
   JointHardware,
   LureParams,
   MaterialId,
@@ -52,6 +57,7 @@ const SCALE_FITS: ScaleFit[] = ['wrapped', 'lateral'];
 const SCALE_SHAPES: ScaleShape[] = ['diamond', 'hex', 'scallop'];
 const JOINT_HARDWARE: JointHardware[] = ['pin', 'twisted'];
 const PROCESSES: ProcessId[] = ['fdm', 'resin', 'wood'];
+const INLAY_SHAPES: InlayShape[] = ['custom', 'oval', 'teardrop', 'band', 'flank'];
 const FINISH_STYLES: FinishStyle[] = ['smooth', 'faceted'];
 const PREVIEWS: PreviewQuality[] = ['low', 'medium', 'high'];
 
@@ -348,6 +354,57 @@ function sanitizeArticulation(
   };
 }
 
+function sanitizeInlays(value: unknown, fallback: Inlay[]): Inlay[] {
+  if (!Array.isArray(value)) return fallback.map((item) => ({ ...item }));
+  return value.slice(0, 12).map((raw, index) => {
+    const item = (raw ?? {}) as Partial<Inlay>;
+    return {
+      id:
+        typeof item.id === 'string' && item.id.length > 0 && item.id.length <= 64
+          ? item.id
+          : `rainure-${index}-${Math.random().toString(36).slice(2, 8)}`,
+      name: sanitizeName(item.name, index === 0 ? 'Rainure de collant' : `Rainure ${index + 1}`),
+      visible: bool(item.visible, true),
+      shape: pick(item.shape, INLAY_SHAPES, 'oval'),
+      outline: sanitizeOutline(item.outline, { nodes: [], closed: true, mirror: false }),
+      reference: sanitizeReference(item.reference, emptyReference()),
+      depth: num(item.depth, LIMITS.inlayDepth, 0.25),
+      margin: num(item.margin, LIMITS.inlayMargin, 0.2),
+      cornerRadius: num(item.cornerRadius, LIMITS.inlayCorner, 1.5),
+      mirror: bool(item.mirror, true),
+      position: num(item.position, LIMITS.decalPosition, 0.42),
+      height: num(item.height, LIMITS.decalHeight, 0.1),
+      rotation: num(item.rotation, LIMITS.decalRotation, 0),
+      size: num(item.size, LIMITS.decalSize, 24),
+    };
+  });
+}
+
+function sanitizeDowels(value: unknown, fallback: DowelConfig): DowelConfig {
+  const raw = (value ?? {}) as Partial<DowelConfig>;
+  return {
+    enabled: bool(raw.enabled, fallback.enabled),
+    diameter: num(raw.diameter, LIMITS.dowelDiameter, fallback.diameter),
+    engagement: num(raw.engagement, LIMITS.dowelEngagement, fallback.engagement),
+    clearance: num(raw.clearance, LIMITS.dowelClearance, fallback.clearance),
+    chamfer: num(raw.chamfer, LIMITS.dowelChamfer, fallback.chamfer),
+    count: Math.round(num(raw.count, LIMITS.dowelCount, fallback.count)),
+    pins: Array.isArray(raw.pins)
+      ? raw.pins.slice(0, 6).map((item, index) => {
+          const pin = (item ?? {}) as Partial<DowelPin>;
+          return {
+            id:
+              typeof pin.id === 'string' && pin.id.length > 0 && pin.id.length <= 64
+                ? pin.id
+                : `goupille-${index}`,
+            position: num(pin.position, LIMITS.anchorPosition, 0.5),
+            height: num(pin.height, LIMITS.anchorHeight, 0),
+          };
+        })
+      : fallback.pins.map((pin) => ({ ...pin })),
+  };
+}
+
 function sanitizePrint(value: unknown, fallback: PrintConfig): PrintConfig {
   const raw = (value ?? {}) as Partial<PrintConfig>;
   return {
@@ -358,6 +415,58 @@ function sanitizePrint(value: unknown, fallback: PrintConfig): PrintConfig {
     shrinkage: num(raw.shrinkage, LIMITS.shrinkage, fallback.shrinkage),
     finish: pick(raw.finish, FINISH_STYLES, fallback.finish),
     preview: pick(raw.preview, PREVIEWS, fallback.preview),
+  };
+}
+
+
+/**
+ * Livree : un projet enregistre avant le module L n'en a pas. On retombe donc
+ * sur celle du preset plutot que d'echouer — un ancien fichier doit toujours
+ * s'ouvrir.
+ */
+function sanitizeLivery(value: unknown, fallback: LiveryConfig): LiveryConfig {
+  const raw = (value ?? {}) as Partial<LiveryConfig>;
+  const bars = (raw.bars ?? {}) as Partial<LiveryConfig['bars']>;
+  const iris = (raw.iris ?? {}) as Partial<LiveryConfig['iris']>;
+  const varnish = (raw.varnish ?? {}) as Partial<LiveryConfig['varnish']>;
+  const lateral = (raw.lateral ?? {}) as Partial<LiveryConfig['lateral']>;
+  const gill = (raw.gillPlate ?? {}) as Partial<LiveryConfig['gillPlate']>;
+  const micro = (raw.microScales ?? {}) as Partial<LiveryConfig['microScales']>;
+  const unit = { min: 0, max: 1, step: 0.01 };
+  return {
+    bars: {
+      enabled: bool(bars.enabled, fallback.bars.enabled),
+      count: Math.round(num(bars.count, { min: 2, max: 20, step: 1 }, fallback.bars.count)),
+      width: num(bars.width, { min: 0.05, max: 0.9, step: 0.01 }, fallback.bars.width),
+      blur: num(bars.blur, unit, fallback.bars.blur),
+      color: color(bars.color, fallback.bars.color),
+      opacity: num(bars.opacity, unit, fallback.bars.opacity),
+    },
+    iris: {
+      strength: num(iris.strength, unit, fallback.iris.strength),
+      hue: color(iris.hue, fallback.iris.hue),
+    },
+    varnish: {
+      gloss: num(varnish.gloss, unit, fallback.varnish.gloss),
+      thickness: num(varnish.thickness, unit, fallback.varnish.thickness),
+    },
+    lateral: {
+      enabled: bool(lateral.enabled, fallback.lateral.enabled),
+      color: color(lateral.color, fallback.lateral.color),
+      width: num(lateral.width, unit, fallback.lateral.width),
+      position: num(lateral.position, { min: 0.3, max: 0.7, step: 0.01 }, fallback.lateral.position),
+    },
+    gillPlate: {
+      enabled: bool(gill.enabled, fallback.gillPlate.enabled),
+      color: color(gill.color, fallback.gillPlate.color),
+      size: num(gill.size, unit, fallback.gillPlate.size),
+    },
+    microScales: {
+      enabled: bool(micro.enabled, fallback.microScales.enabled),
+      density: num(micro.density, unit, fallback.microScales.density),
+      contrast: num(micro.contrast, unit, fallback.microScales.contrast),
+    },
+    pearl: num(raw.pearl, unit, fallback.pearl),
   };
 }
 
@@ -408,6 +517,7 @@ export function sanitizeParams(input: unknown): LureParams {
     eyeStyle: pick(raw.eyeStyle, EYE_STYLES, base.eyeStyle),
     clip: pick(raw.clip, CLIP_IDS, base.clip),
     assembly: sanitizeAssembly(raw.assembly, base.assembly),
+    dowels: sanitizeDowels(raw.dowels, base.dowels),
     fabrication: sanitizeFabrication(raw.fabrication, base.fabrication),
     sculpt: sanitizeSculpt(raw.sculpt, base.sculpt),
     articulation: sanitizeArticulation(raw.articulation, base.articulation),
@@ -415,6 +525,7 @@ export function sanitizeParams(input: unknown): LureParams {
     outlineReference: sanitizeReference(raw.outlineReference, base.outlineReference),
     decals: sanitizeDecals(raw.decals, base.decals),
     scales: sanitizeScales(raw.scales, base.scales),
+    inlays: sanitizeInlays(raw.inlays, base.inlays),
     material: pick(raw.material, MATERIALS, base.material),
     print: sanitizePrint(raw.print, base.print),
     infill: num(raw.infill, LIMITS.infill, base.infill),
@@ -437,6 +548,7 @@ export function sanitizeParams(input: unknown): LureParams {
       patternColor: color(paint.patternColor, base.paint.patternColor),
       patternScale: num(paint.patternScale, LIMITS.patternScale, base.paint.patternScale),
       finish: pick(paint.finish, FINISHES, base.paint.finish),
+      livery: sanitizeLivery(paint.livery, base.paint.livery),
     },
   };
 }

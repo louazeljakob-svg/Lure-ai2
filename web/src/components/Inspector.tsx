@@ -9,12 +9,15 @@
 import type {
   ArticulationConfig,
   Decal,
+  DowelConfig,
+  Inlay,
   LureParams,
   PrintConfig,
   ScalesConfig,
 } from '../types/lure';
 import { LIMITS, type Range } from '../lib/presets';
 import { getMaterial, materialsFor } from '../lib/materials';
+import { autoDowels, type DowelPlacement } from '../lib/dowels';
 import { Fieldset, Segmented, Slider, Switch } from './ui';
 
 /**
@@ -474,6 +477,253 @@ export function JointSlotInspector({
         hint="Etendue verticale de la fente ; elle se cale sur les colonnes du maillage."
         onChange={(slotWidth) => onChange({ slotWidth })}
       />
+    </Fieldset>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Rainure de collant
+// ---------------------------------------------------------------------------
+
+export function InlayInspector({
+  inlay,
+  onChange,
+  onEditOutline,
+}: {
+  inlay: Inlay;
+  onChange: (patch: Partial<Inlay>) => void;
+  onEditOutline: () => void;
+}) {
+  return (
+    <Fieldset
+      legend="Rainure de collant"
+      hint="Un creux plat sur le flanc, pour qu un collant reflechissant decoupe affleure la surface au lieu de depasser."
+    >
+      <Segmented
+        label="Forme"
+        value={inlay.shape}
+        options={[
+          { value: 'oval', label: 'Ovale' },
+          { value: 'teardrop', label: 'Goutte' },
+          { value: 'band', label: 'Bande' },
+          { value: 'flank', label: 'Flanc' },
+          { value: 'custom', label: 'Tracee' },
+        ]}
+        wrap
+        onChange={(shape) => onChange({ shape })}
+      />
+
+      {inlay.shape === 'custom' ? (
+        <>
+          <button type="button" className="btn btn--primary btn--block" onClick={onEditOutline}>
+            {inlay.outline.nodes.length >= 2 ? 'Modifier le contour' : 'Dessiner le contour'}
+          </button>
+          {inlay.outline.nodes.length < 2 ? (
+            <p className="control__hint" style={{ color: 'var(--amber)' }}>
+              Aucun contour trace : la rainure ne creuse rien. Ouvrez l editeur et posez au
+              moins deux points, ou choisissez une forme prete.
+            </p>
+          ) : null}
+        </>
+      ) : null}
+
+      <RangeSlider
+        label="Profondeur"
+        value={inlay.depth}
+        range={LIMITS.inlayDepth}
+        format={(v) => `${v.toFixed(2)} mm`}
+        hint="0,25 mm est la reference : environ cinq epaisseurs de feuille de papier, soit un collant reflechissant courant plus sa colle."
+        onChange={(depth) => onChange({ depth })}
+      />
+      <RangeSlider
+        label="Marge peripherique"
+        value={inlay.margin}
+        range={LIMITS.inlayMargin}
+        format={(v) => `${v.toFixed(2)} mm`}
+        hint="Elargit le creux autour du collant, pour rattraper la decoupe."
+        onChange={(margin) => onChange({ margin })}
+      />
+      <RangeSlider
+        label="Rayon des angles"
+        value={inlay.cornerRadius}
+        range={LIMITS.inlayCorner}
+        format={(v) => `${v.toFixed(1)} mm`}
+        onChange={(cornerRadius) => onChange({ cornerRadius })}
+      />
+      <Switch
+        label="Miroir babord / tribord"
+        checked={inlay.mirror}
+        onChange={(mirror) => onChange({ mirror })}
+      />
+
+      <p className="control__hint">
+        Le fond est lisse : ecailles et decals sont effaces a l interieur, avec une
+        transition nette sur le bord. C est une surface de collage.
+      </p>
+
+      <RangeSlider
+        label="Position sur l axe"
+        value={inlay.position}
+        range={LIMITS.decalPosition}
+        format={(v) => `${(v * 100).toFixed(0)} %`}
+        onChange={(position) => onChange({ position })}
+      />
+      <RangeSlider
+        label="Hauteur"
+        value={inlay.height}
+        range={LIMITS.decalHeight}
+        format={(v) => (v === 0 ? 'axe' : v > 0 ? `${(v * 100).toFixed(0)} % dos` : `${(-v * 100).toFixed(0)} % ventre`)}
+        onChange={(height) => onChange({ height })}
+      />
+      <RangeSlider
+        label="Rotation"
+        value={inlay.rotation}
+        range={LIMITS.decalRotation}
+        format={(v) => `${v.toFixed(0)} deg`}
+        onChange={(rotation) => onChange({ rotation })}
+      />
+      <RangeSlider
+        label="Largeur"
+        value={inlay.size}
+        range={LIMITS.decalSize}
+        format={(v) => `${v.toFixed(1)} mm`}
+        onChange={(size) => onChange({ size })}
+      />
+    </Fieldset>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Goupilles cylindriques d'assemblage
+// ---------------------------------------------------------------------------
+
+export function DowelInspector({
+  config,
+  placements,
+  onChange,
+}: {
+  config: DowelConfig;
+  placements: DowelPlacement[];
+  onChange: (patch: Partial<DowelConfig>) => void;
+}) {
+  const refused = placements.filter((item) => !item.valid);
+  const source = config.pins.length > 0 ? config.pins : autoDowels(config.count);
+
+  return (
+    <Fieldset
+      legend="Goupilles d assemblage"
+      hint="Des barreaux cylindriques imprimes a part, qui alignent les deux demi-coques pendant le collage et reprennent l effort. Ils ne remplacent pas le logement en 8 de la quincaillerie : les deux cohabitent."
+    >
+      <Switch
+        label="Goupilles cylindriques"
+        checked={config.enabled}
+        onChange={(enabled) => onChange({ enabled })}
+      />
+
+      {config.enabled ? (
+        <>
+          <RangeSlider
+            label="Nombre de goupilles"
+            value={config.count}
+            range={LIMITS.dowelCount}
+            format={(v) => `${v.toFixed(0)}`}
+            hint="Reparties automatiquement le long du corps. Deplacez-en une pour figer la liste."
+            onChange={(count) => onChange({ count, pins: [] })}
+          />
+          <RangeSlider
+            label="Diametre de goupille"
+            value={config.diameter}
+            range={LIMITS.dowelDiameter}
+            format={(v) => `${v.toFixed(1)} mm`}
+            onChange={(diameter) => onChange({ diameter })}
+          />
+          <RangeSlider
+            label="Longueur d engagement"
+            value={config.engagement}
+            range={LIMITS.dowelEngagement}
+            format={(v) => `${v.toFixed(1)} mm`}
+            hint="Par cote. Le barreau imprime fait donc environ le double."
+            onChange={(engagement) => onChange({ engagement })}
+          />
+          <RangeSlider
+            label="Jeu logement / goupille"
+            value={config.clearance}
+            range={LIMITS.dowelClearance}
+            format={(v) => `${v.toFixed(2)} mm`}
+            hint="Jeu diametral. Une valeur absolue, elle ne suit pas la taille de la goupille."
+            onChange={(clearance) => onChange({ clearance })}
+          />
+          <RangeSlider
+            label="Chanfrein d entree"
+            value={config.chamfer}
+            range={LIMITS.dowelChamfer}
+            format={(v) => `${v.toFixed(2)} mm`}
+            hint="Il evite d avoir a forcer a l engagement, et rattrape le bourrelet de premiere couche."
+            onChange={(chamfer) => onChange({ chamfer })}
+          />
+
+          <p className="control__hint">
+            Barreau imprime : {config.diameter.toFixed(1)} mm de diametre sur{' '}
+            {(config.engagement * 2 - config.chamfer * 0.5).toFixed(1)} mm de long,
+            couche a plat a cote des coques.
+          </p>
+
+          {source.map((pin, index) => {
+            const placement = placements[index];
+            return (
+              <div
+                className={placement && !placement.valid ? 'ballast ballast--invalid' : 'ballast'}
+                key={pin.id}
+              >
+                <div className="ballast__head">
+                  <span className="ballast__name">Goupille {index + 1}</span>
+                  <span className="ballast__spec">
+                    {(pin.position * 100).toFixed(0)} % · {pin.height === 0 ? 'axe' : pin.height.toFixed(2)}
+                  </span>
+                </div>
+                <RangeSlider
+                  label="Position sur l axe"
+                  value={pin.position}
+                  range={LIMITS.anchorPosition}
+                  format={(v) => `${(v * 100).toFixed(0)} %`}
+                  onChange={(position) =>
+                    onChange({
+                      pins: source.map((item, k) =>
+                        k === index ? { ...item, position } : { ...item },
+                      ),
+                    })
+                  }
+                />
+                <RangeSlider
+                  label="Hauteur"
+                  value={pin.height}
+                  range={LIMITS.anchorHeight}
+                  format={(v) => (v === 0 ? 'axe' : v > 0 ? `${(v * 100).toFixed(0)} % dos` : `${(-v * 100).toFixed(0)} % ventre`)}
+                  onChange={(height) =>
+                    onChange({
+                      pins: source.map((item, k) =>
+                        k === index ? { ...item, height } : { ...item },
+                      ),
+                    })
+                  }
+                />
+                {placement && !placement.valid ? (
+                  <p className="control__hint" style={{ color: 'var(--red)' }}>
+                    {placement.problem}
+                  </p>
+                ) : null}
+              </div>
+            );
+          })}
+
+          {refused.length > 0 ? (
+            <p className="control__hint" style={{ color: 'var(--amber)' }}>
+              {refused.length} logement(s) non creuse(s) : mieux vaut une coque pleine qu un
+              percage qui sort de la piece.
+            </p>
+          ) : null}
+        </>
+      ) : null}
     </Fieldset>
   );
 }

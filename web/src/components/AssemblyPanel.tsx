@@ -147,6 +147,16 @@ export function AssemblyPanel({
                 </p>
               ) : null}
 
+              {/*
+                Cotes reelles du format retenu : de quoi verifier une
+                goupille du catalogue fournisseur sans quitter l ecran.
+              */}
+              <p className="control__hint">
+                Fil {spec.wire.toFixed(2)} mm · boucle {spec.loopWidth.toFixed(2)} mm ·
+                longueur {spec.length.toFixed(2)} mm
+                {anchor.pin === 'auto' ? ` · ${spec.hint}` : ' · taille forcee'}
+              </p>
+
               {plan?.downsized ? (
                 <p className="control__hint">
                   Taille ramenee a {spec.label} : la section ne laisse pas la place a une

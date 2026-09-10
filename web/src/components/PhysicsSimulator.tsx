@@ -3,7 +3,9 @@
 import type { LureParams, WaterId } from '../types/lure';
 import { WATER_LABEL } from '../lib/materials';
 import type { PhysicsResult } from '../lib/physics';
+import type { SocketPlan } from '../lib/assembly';
 import { LureSilhouette } from './LureSilhouette';
+import { SwimSimulator } from './SwimSimulator';
 import { Fieldset, Segmented } from './ui';
 
 interface Props {
@@ -11,6 +13,8 @@ interface Props {
   physics: PhysicsResult;
   water: WaterId;
   onWaterChange: (water: WaterId) => void;
+  /** Ancrages reellement generes : la tenue mecanique se calcule dessus. */
+  sockets: SocketPlan[];
 }
 
 const BUOYANCY = {
@@ -60,7 +64,7 @@ const attitudeText = (trim: number): string => {
 
 const NOTICE_ICON = { error: '!', warn: '!', ok: 'OK', info: 'i' } as const;
 
-export function PhysicsSimulator({ params, physics, water, onWaterChange }: Props) {
+export function PhysicsSimulator({ params, physics, water, onWaterChange, sockets }: Props) {
   const verdict = BUOYANCY[physics.buoyancy];
   const action = ACTION[physics.action];
   const cgClamped = Math.min(Math.max(physics.cgPct, 0), 100);
@@ -231,6 +235,8 @@ export function PhysicsSimulator({ params, physics, water, onWaterChange }: Prop
           </p>
         )}
       </Fieldset>
+
+      <SwimSimulator params={params} physics={physics} sockets={sockets} />
 
       <Fieldset legend="Coherence physique" hint="Verifications automatiques de la configuration.">
         {physics.warnings.length === 0 ? (

@@ -117,6 +117,22 @@ export function runPrintChecks(params: LureParams, geo: LureGeometry): PrintChec
       Math.max(params.print.layerHeight, 0.01),
   );
 
+  // Rainures de collant : ce qui reste de paroi sous le fond du creux. Une
+  // rainure de 0,25 mm ne pose jamais de probleme ; une de 1 mm sur un flanc
+  // deja mince, si.
+  const inlayIssues: string[] = [];
+  for (const inlay of params.inlays) {
+    if (!inlay.visible) continue;
+    const section = profile.section(Math.min(Math.max(inlay.position, 0.02), profile.bodyEnd - 0.02));
+    const wall = section.halfWidth / MM_TO_CM - inlay.depth;
+    if (wall < nozzleWall) {
+      inlayIssues.push(
+        `« ${inlay.name} » : ${inlay.depth.toFixed(2)} mm de creux sur un flanc de ` +
+          `${(section.halfWidth / MM_TO_CM).toFixed(1)} mm, il ne resterait que ${wall.toFixed(1)} mm de paroi.`,
+      );
+    }
+  }
+
   return [
     {
       id: 'watertight',
@@ -154,6 +170,19 @@ export function runPrintChecks(params: LureParams, geo: LureGeometry): PrintChec
           ? 'Chaque arete dirigee apparait une seule fois : aucune face retournee.'
           : 'Des aretes se comptent deux fois dans le meme sens : une face est retournee.',
     },
+    ...(params.inlays.some((inlay) => inlay.visible)
+      ? [
+          {
+            id: 'inlay',
+            label: 'Paroi sous les rainures de collant',
+            ok: inlayIssues.length === 0,
+            detail:
+              inlayIssues.length === 0
+                ? 'Chaque rainure laisse assez de matiere sous son fond.'
+                : inlayIssues.join(' '),
+          },
+        ]
+      : []),
     {
       id: 'layers',
       label: 'Nombre de couches',

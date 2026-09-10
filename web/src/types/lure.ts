@@ -205,6 +205,44 @@ export interface AssemblyConfig {
   anchors: PinAnchor[];
 }
 
+/**
+ * Livree fine — module L.
+ *
+ * Purement visuel. Rien ici n'entre dans une geometrie exportee, dans un
+ * calcul de masse ni dans un verdict : ce sont des couches de peinture et de
+ * vernis, pas de la matiere. Le champ est distinct de `PaintConfig` pour
+ * qu'on puisse le lire d'un coup d'oeil et verifier cette promesse.
+ */
+export interface LiveryConfig {
+  /** Barres verticales diffuses du dos, aux bords fondus. */
+  bars: {
+    enabled: boolean;
+    /** Nombre de barres sur la longueur. */
+    count: number;
+    /** Largeur d'une barre, en fraction de l'intervalle. */
+    width: number;
+    /** Flou des bords : 0 = franc, 1 = totalement fondu. */
+    blur: number;
+    color: string;
+    opacity: number;
+  };
+  /** Irisation du film mince : intensite et teinte dominante. */
+  iris: { strength: number; hue: string };
+  /** Vernis : brillance et epaisseur percue. */
+  varnish: { gloss: number; thickness: number };
+  /** Ligne laterale suivant le corps. */
+  lateral: { enabled: boolean; color: string; width: number; position: number };
+  /** Opercule en ecailles larges a reflet holographique. */
+  gillPlate: { enabled: boolean; color: string; size: number };
+  /** Micro-ecailles en losange peintes SOUS le vernis. */
+  microScales: { enabled: boolean; density: number; contrast: number };
+  /** Nacre rosee du ventre : 0 = blanc pur. */
+  pearl: number;
+}
+
+/** Environnement d'apercu : purement visuel lui aussi. */
+export type PreviewEnv = 'atelier' | 'studio' | 'subaquatique';
+
 export interface PaintConfig {
   dorsal: string;
   flank: string;
@@ -226,6 +264,8 @@ export interface PaintConfig {
   /** Densite du motif (nombre de rayures / d'ecailles par rangee). */
   patternScale: number;
   finish: FinishId;
+  /** Couches de finition realistes. */
+  livery: LiveryConfig;
 }
 
 /** Livree enregistree dans la bibliotheque du projet. */
@@ -371,6 +411,42 @@ export interface ScalesConfig {
   marginBottom: number;
 }
 
+/** Formes de rainure prêtes a l'emploi, en plus du trace libre. */
+export type InlayShape = 'custom' | 'oval' | 'teardrop' | 'band' | 'flank';
+
+/**
+ * Rainure pour collant reflechissant.
+ *
+ * Un creux PLAT sur le flanc, destine a recevoir un collant decoupe pour
+ * qu'il affleure la surface au lieu de depasser. Le fond ne suit pas la
+ * courbure des ecailles : c'est une surface de collage, elle doit etre lisse.
+ * Ecailles et decals sont donc effaces a l'interieur, avec une transition
+ * nette sur le bord.
+ */
+export interface Inlay {
+  id: string;
+  name: string;
+  visible: boolean;
+  shape: InlayShape;
+  /** Trace libre, utilise quand `shape` vaut `custom`. */
+  outline: Outline;
+  reference: OutlineReference;
+  /** Profondeur du creux, en mm. */
+  depth: number;
+  /** Marge peripherique autour du collant, en mm. */
+  margin: number;
+  /** Rayon des angles, en mm. */
+  cornerRadius: number;
+  mirror: boolean;
+  /** Position du centre : le long de l'axe (0 = nez, 1 = queue). */
+  position: number;
+  /** Hauteur du centre dans la section : -1 = ventre, 1 = dos. */
+  height: number;
+  rotation: number;
+  /** Largeur, en mm. La hauteur suit les proportions de la forme. */
+  size: number;
+}
+
 /** Quincaillerie qui relie deux segments articules. */
 export type JointHardware = 'pin' | 'twisted';
 
@@ -404,6 +480,43 @@ export interface ArticulationConfig {
   slotHeight: number;
   slotDepth: number;
   slotWidth: number;
+}
+
+/**
+ * Goupille cylindrique d'assemblage : un simple barreau, imprime a plat a
+ * cote des coques, qui aligne et tient les deux moities.
+ *
+ * Elle ne remplace pas le logement en forme de 8 — celui-la recoit la
+ * quincaillerie en fil d'acier et reste le comportement par defaut. Les deux
+ * methodes coexistent et repondent a deux besoins differents : tenir la
+ * quincaillerie, ou tenir les coques entre elles.
+ */
+export interface DowelPin {
+  id: string;
+  /** Position sur l'axe du corps : 0 = nez, 1 = queue. */
+  position: number;
+  /** Hauteur dans le plan de joint : -1 = ventre, 0 = axe, 1 = dos. */
+  height: number;
+}
+
+/** Reglages des goupilles cylindriques d'assemblage. */
+export interface DowelConfig {
+  enabled: boolean;
+  /** Diametre de la goupille, en mm. */
+  diameter: number;
+  /** Longueur d'engagement dans CHAQUE coque, en mm. */
+  engagement: number;
+  /** Jeu diametral entre le logement et la goupille, en mm. */
+  clearance: number;
+  /** Chanfrein d'entree du logement, en mm. */
+  chamfer: number;
+  /**
+   * Emplacements. Vide = repartition automatique le long du corps ; des que
+   * l'utilisateur en deplace un, la liste devient explicite.
+   */
+  pins: DowelPin[];
+  /** Nombre vise par la repartition automatique. */
+  count: number;
 }
 
 /** Procede de fabrication vise : il change la liste des matieres utiles. */
@@ -499,6 +612,8 @@ export interface LureParams {
   clip: ClipId;
   /** Assemblage male / femelle, goujons et logement de goupille. */
   assembly: AssemblyConfig;
+  /** Goupilles cylindriques d'assemblage, imprimees a part. */
+  dowels: DowelConfig;
   /** Jeux de fabrication, mesures sur l'imprimante et reglables. */
   fabrication: FabricationConfig;
   /** Cage de sculpture : deformations locales par-dessus les sliders. */
@@ -519,6 +634,8 @@ export interface LureParams {
   decals: Decal[];
   /** Trame d'ecailles, une seule par projet. */
   scales: ScalesConfig;
+  /** Rainures pour collants reflechissants. */
+  inlays: Inlay[];
 
   // --- Impression & lestage ---------------------------------------------
   material: MaterialId;

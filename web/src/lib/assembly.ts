@@ -28,6 +28,7 @@ import { createSurfaceSampler, type SurfaceSampler } from './geometry';
 import { PINS, autoPin, buildPin, getPin, type PinPart, type PinSpec } from './hardware';
 import { MM_TO_CM, type ProfileSampler } from './profile';
 import { billSlotPlan, type BillRoomProbe, type BillSlotPlan } from './billTemplate';
+import { buildDowelPins, planDowels, type DowelPlacement } from './dowels';
 
 const STATIONS = 112;
 const ARC_SAMPLES = 40;
@@ -449,6 +450,10 @@ export interface AssemblyResult {
   sockets: SocketPlan[];
   /** Empreinte de bavette reellement creusee, apres arbitrage avec les portees. */
   billPlan: BillSlotPlan | null;
+  /** Goupilles cylindriques d'assemblage, avec leur controle. */
+  dowels: DowelPlacement[];
+  /** Barreaux imprimes, poses a plat a cote des coques. */
+  dowelPins: THREE.BufferGeometry | null;
   pinSpec: PinSpec;
   pinMass: number;
   /** Direction d'ecartement pour la vue eclatee. */
@@ -1072,6 +1077,16 @@ interface AnchorPlan {
   downsized: boolean;
 }
 
+/**
+ * Rayon de l'empreinte reellement creusee par un ancrage, en cm.
+ *
+ * C'est le contour de poche qui compte, pas le puits : il englobe le canal de
+ * sortie et sa collerette. Cette meme expression sert a l'emission, de sorte
+ * que le test de chevauchement mesure exactement ce qui sera produit.
+ */
+const pocketReach = (plan: AnchorPlan): number =>
+  Math.hypot(plan.seatRadius, plan.channelHalf) + LEDGE;
+
 /** Goujon : un pilier qui traverse les deux puits et enfile la petite boucle. */
 interface TenonSolid {
   center: THREE.Vector2;
@@ -1431,8 +1446,14 @@ export function buildAssembly(
       }
     }
 
+    // Chevauchement : on compare les EMPREINTES reellement creusees, pas les
+    // rayons de portee. Le contour d'une poche deborde du puits — il englobe
+    // le canal de sortie et sa collerette —, et deux poches dont les puits
+    // s'evitent peuvent tres bien se recouvrir. Le maillage s'ouvrait alors
+    // sans que rien ne le signale.
     for (const other of plans) {
-      if (other.valid && other.center.distanceTo(plan.center) < other.seatRadius + plan.seatRadius + SKIN) {
+      if (!other.valid) continue;
+      if (other.center.distanceTo(plan.center) < pocketReach(other) + pocketReach(plan) + SKIN) {
         plan.valid = false;
         plan.problem = 'Chevauchement avec une autre portee.';
       }
@@ -1847,6 +1868,71 @@ export function buildAssembly(
     cutRear,
     arcSamples: resolution.arcSamples,
   };
+  // --- Goupilles cylindriques d'assemblage --------------------------------
+  // Elles alignent les deux coques pendant le collage. Leur logement est un
+  // simple percage debouchant sur la face de joint : rien a voir avec le
+  // logement en forme de 8, qui recoit la quincaillerie et reste intact.
+  const dowelObstacles = [
+    ...plans
+      .filter((plan) => plan.valid)
+      .map((plan) => ({
+        center: plan.center,
+        radius: pocketReach(plan),
+        label: `la portee de ${EXIT_LABEL[plan.exit].toLowerCase()}`,
+      })),
+    ...rattles.map((ball) => ({
+      center: new THREE.Vector2(ball.position[0], ball.position[1]),
+      radius: ball.radius + WALL,
+      label: 'un logement de bille',
+    })),
+  ];
+  if (params.chamber.enabled) {
+    const from = fitCavity(
+      stationAt(stations, profile.xAt(params.chamber.fromPosition)) ?? stations[0],
+      params.chamber.fromHeight,
+      (params.chamber.diameter * MM_TO_CM) / 2,
+    );
+    const to = fitCavity(
+      stationAt(stations, profile.xAt(params.chamber.toPosition)) ?? stations[0],
+      params.chamber.toHeight,
+      (params.chamber.diameter * MM_TO_CM) / 2,
+    );
+    for (const point of [from, to]) {
+      if (point) {
+        dowelObstacles.push({
+          center: point,
+          radius: (params.chamber.diameter * MM_TO_CM) / 2 + WALL,
+          label: 'la chambre de bruit',
+        });
+      }
+    }
+  }
+
+  const dowels = planDowels(
+    profile,
+    params,
+    (x, t) => {
+      const station = stationAt(stations, x);
+      if (!station || station.degenerate) return 0;
+      return shellThickness(surface, frame, station, t);
+    },
+    dowelObstacles,
+  );
+
+  for (const dowel of dowels) {
+    if (!dowel.valid) continue;
+    // Chanfrein d'entree : une collerette plus large sur la premiere fraction
+    // de la profondeur, de quoi engager le barreau sans forcer.
+    pockets.push({
+      outline: circleOutline(dowel.center, dowel.bore + dowel.chamfer, 32),
+      depth: dowel.chamfer,
+      bore: {
+        outline: circleOutline(dowel.center, dowel.bore, 32),
+        depth: dowel.depth,
+      },
+    });
+  }
+
   const male = buildShell(
     surface,
     frame,
@@ -1890,6 +1976,8 @@ export function buildAssembly(
       };
     }),
     billPlan: billResult,
+    dowels,
+    dowelPins: buildDowelPins(dowels),
     pinSpec: plans[0]?.spec ?? fallback,
     pinMass: pins.reduce((sum, pin) => sum + pin.mass, 0),
     splitNormal: new THREE.Vector3(0, normal.y, normal.z).normalize(),

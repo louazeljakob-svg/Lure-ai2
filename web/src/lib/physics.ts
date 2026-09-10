@@ -18,6 +18,7 @@ import { buildAssembly, resolvePin } from './assembly';
 import { printedBodies } from './geometry';
 import type { BillSlotPlan } from './billTemplate';
 import type { ArticulationPlan } from './articulation';
+import { dowelVolumes, type DowelPlacement } from './dowels';
 import { pinPath, pinWireLength, STAINLESS_DENSITY } from './hardware';
 
 export type Buoyancy = 'float' | 'suspend' | 'sink';
@@ -41,6 +42,8 @@ export interface Vec3 {
 export interface PhysicsResult {
   /** Volume exterieur total en cm3 (corps + bavette + caudale). */
   volumeCm3: number;
+  /** Goupilles cylindriques d'assemblage retenues, avec leur controle. */
+  dowels: DowelPlacement[];
   solidFraction: number;
   bodyMass: number;
   ballastMass: number;
@@ -177,6 +180,8 @@ export function computePhysics(
         mass: 0,
         points: [] as PointMass[],
         bill: null as BillSlotPlan | null,
+        dowelAdded: 0,
+        dowels: [] as DowelPlacement[],
       };
   // Bavette imprimee et caudale ne font pas partie des coques : leur volume
   // s'ajoute a celui des deux demi-corps.
@@ -189,7 +194,12 @@ export function computePhysics(
   // Les parois de perimetre comptent : a remplissage egal, six parois
   // deposent bien plus de matiere qu'une seule.
   const fill = solidFraction(params.material, params.infill, params.print.perimeters);
-  const bodyMass = (cavities.printed + appendages) * material.density * fill + jointMass;
+  // Les barreaux d'assemblage sont pleins : ils ne suivent pas le taux de
+  // remplissage du corps.
+  const bodyMass =
+    (cavities.printed + appendages) * material.density * fill +
+    cavities.dowelAdded * material.density +
+    jointMass;
   const lengthCm = profile.lengthCm;
   const halfLength = lengthCm / 2;
 
@@ -299,6 +309,7 @@ export function computePhysics(
     action,
     actionScore,
     diveDepth,
+    dowels: cavities.dowels,
     warnings: buildWarnings(params, geo, {
       buoyancy,
       ratio,
@@ -309,6 +320,7 @@ export function computePhysics(
       totalMass,
       bill: cavities.bill,
       joint: geo.jointPlan,
+      dowels: cavities.dowels,
     }),
   };
 }
@@ -323,7 +335,14 @@ export function computePhysics(
 function shellContent(
   params: LureParams,
   profile: ReturnType<typeof createProfile>,
-): { printed: number; mass: number; points: PointMass[]; bill: BillSlotPlan | null } {
+): {
+  printed: number;
+  mass: number;
+  points: PointMass[];
+  bill: BillSlotPlan | null;
+  dowelAdded: number;
+  dowels: DowelPlacement[];
+} {
   const assembly = buildAssembly(profile, params, { stations: 40, arcSamples: 10 });
   const printed =
     massProperties(assembly.male).volume +
@@ -340,7 +359,17 @@ function shellContent(
   assembly.tenons?.dispose();
   assembly.socketPreview?.dispose();
   for (const pin of assembly.pins) pin.geometry.dispose();
-  return { printed, mass, points, bill: assembly.billPlan };
+  assembly.dowelPins?.dispose();
+  return {
+    printed,
+    mass,
+    points,
+    bill: assembly.billPlan,
+    // Les logements sont deja retires du volume mesure sur les coques ; il
+    // ne reste qu'a AJOUTER la matiere des barreaux, qui s'impriment a part.
+    dowelAdded: dowelVolumes(assembly.dowels).added,
+    dowels: assembly.dowels,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -359,6 +388,8 @@ interface WarningInput {
   bill: BillSlotPlan | null;
   /** Cotes du joint articule, ou null. */
   joint: ArticulationPlan | null;
+  /** Goupilles cylindriques d'assemblage et leur controle. */
+  dowels: DowelPlacement[];
 }
 
 function buildWarnings(
@@ -488,6 +519,16 @@ function buildWarnings(
       title: 'Articulation et deux coques ne se cumulent pas',
       detail:
         'L articulation coupe le corps en travers, l impression en deux coques le coupe dans la longueur : les deux ensemble donneraient quatre pieces dont l assemblage n est pas genere. Desactivez « Corps en deux parties » pour obtenir les segments articules.',
+    });
+  }
+
+  for (const dowel of r.dowels) {
+    if (dowel.valid || !dowel.problem) continue;
+    list.push({
+      id: `dowel-${dowel.id}`,
+      level: 'warn',
+      title: 'Logement de goupille non creuse',
+      detail: dowel.problem,
     });
   }
 

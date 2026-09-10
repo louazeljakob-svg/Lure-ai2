@@ -9,9 +9,15 @@
  */
 
 import * as THREE from 'three';
-import type { Decal, LureParams, ScalesConfig } from '../types/lure';
+import type { Decal, Inlay, LureParams, ScalesConfig } from '../types/lure';
 import { MM_TO_CM, type ProfileSampler } from './profile';
-import { bakeSignedField, flattenOutline, type SignedField } from './outline';
+import {
+  bakeSignedField,
+  flattenOutline,
+  inlayShapePoints,
+  roundCorners,
+  type SignedField,
+} from './outline';
 
 /** Un decal cuit : tout ce qu'il faut pour l'interroger par sommet. */
 interface BakedDecal {
@@ -59,6 +65,56 @@ function bakeDecal(profile: ProfileSampler, decal: Decal): BakedDecal | null {
     // et un rayon de nageoire ne se fondent pas sur la meme distance.
     ramp: Math.max((decal.softness / 100) * span * 0.5, 1e-4),
     mirror: decal.mirror,
+  };
+}
+
+/** Une rainure cuite : meme parametrage qu'un decal, autre effet. */
+interface BakedInlay {
+  field: SignedField;
+  cx: number;
+  cy: number;
+  cos: number;
+  sin: number;
+  perCm: number;
+  /** Profondeur du creux, en cm. */
+  depth: number;
+  /** Marge peripherique, en unites de contour. */
+  margin: number;
+  mirror: boolean;
+}
+
+function bakeInlay(profile: ProfileSampler, inlay: Inlay): BakedInlay | null {
+  const raw =
+    inlay.shape === 'custom' ? flattenOutline(inlay.outline) : inlayShapePoints(inlay.shape);
+  if (raw.length < 3) return null;
+
+  // Le rayon d'angle est donne en millimetres reels : il faut donc le
+  // ramener dans les unites du contour avant d'arrondir.
+  const widthCm = Math.max(inlay.size * MM_TO_CM, 0.05);
+  const spanRaw = Math.max(
+    Math.max(...raw.map((p) => p.x)) - Math.min(...raw.map((p) => p.x)),
+    1e-6,
+  );
+  const perCm = spanRaw / widthCm;
+  const flat = roundCorners(raw, inlay.cornerRadius * MM_TO_CM * perCm);
+
+  const field = bakeSignedField(flat);
+  if (!field) return null;
+
+  const section = profile.section(THREE.MathUtils.clamp(inlay.position, 0, profile.bodyEnd));
+  const cy = inlay.height >= 0 ? inlay.height * section.top : -inlay.height * section.bottom;
+  const angle = THREE.MathUtils.degToRad(inlay.rotation);
+
+  return {
+    field,
+    cx: profile.xAt(THREE.MathUtils.clamp(inlay.position, 0, profile.bodyEnd)),
+    cy,
+    cos: Math.cos(angle),
+    sin: Math.sin(angle),
+    perCm,
+    depth: inlay.depth * MM_TO_CM,
+    margin: inlay.margin * MM_TO_CM * perCm,
+    mirror: inlay.mirror,
   };
 }
 
@@ -158,8 +214,13 @@ export function createSurfaceDetail(
     .map((decal) => bakeDecal(profile, decal))
     .filter((baked): baked is BakedDecal => baked !== null);
 
+  const inlays = params.inlays
+    .filter((inlay) => inlay.visible)
+    .map((inlay) => bakeInlay(profile, inlay))
+    .filter((baked): baked is BakedInlay => baked !== null);
+
   const scales = params.scales.enabled && bakeScales ? params.scales : null;
-  if (decals.length === 0 && !scales) return null;
+  if (decals.length === 0 && inlays.length === 0 && !scales) return null;
 
   const lengthCm = profile.lengthCm;
   const scaleAmplitude = scales
@@ -230,6 +291,26 @@ export function createSurfaceDetail(
           total += scaleAmplitude;
         }
       }
+    }
+
+    // --- Rainures de collant ---------------------------------------------
+    // Le fond est une surface de COLLAGE : il ne suit ni les ecailles ni les
+    // decals. A l'interieur, tout le relief accumule plus haut est efface et
+    // remplace par un creux net. La transition tient en un dixieme de
+    // millimetre — un bord flou ne collerait pas mieux et se verrait.
+    for (const inlay of inlays) {
+      if (!inlay.mirror && Math.sin(theta) < 0) continue;
+      if (lateral < 0.12) continue;
+      const dx = (x - inlay.cx) * inlay.perCm;
+      const dy = (y - inlay.cy) * inlay.perCm;
+      const lx = dx * inlay.cos + dy * inlay.sin;
+      const ly = -dx * inlay.sin + dy * inlay.cos;
+      // La marge peripherique elargit le creux autour du collant.
+      const signed = inlay.field.at(lx, ly) + inlay.margin;
+      if (signed <= 0) continue;
+      const edge = Math.max(0.01 * inlay.perCm, 1e-4);
+      const weight = smooth(signed / edge);
+      total = total * (1 - weight) - inlay.depth * weight;
     }
 
     return total;
