@@ -283,6 +283,7 @@ export function computePhysics(
         mass: 0,
         points: [] as PointMass[],
         bill: null as BillSlotPlan | null,
+        billProblem: null as string | null,
         dowelAdded: 0,
         dowels: [] as DowelPlacement[],
       };
@@ -582,6 +583,7 @@ export function computePhysics(
       ballastMass,
       totalMass,
       bill: cavities.bill,
+      billProblem: cavities.billProblem,
       joint: geo.jointPlan,
       dowels: cavities.dowels,
       tackleMass,
@@ -609,6 +611,7 @@ function shellContent(
   mass: number;
   points: PointMass[];
   bill: BillSlotPlan | null;
+  billProblem: string | null;
   dowelAdded: number;
   dowels: DowelPlacement[];
 } {
@@ -634,6 +637,7 @@ function shellContent(
     mass,
     points,
     bill: assembly.billPlan,
+    billProblem: assembly.billProblem,
     // Les logements sont deja retires du volume mesure sur les coques ; il
     // ne reste qu'a AJOUTER la matiere des barreaux, qui s'impriment a part.
     dowelAdded: dowelVolumes(assembly.dowels).added,
@@ -655,6 +659,8 @@ interface WarningInput {
   totalMass: number;
   /** Empreinte de bavette retenue par l'assemblage, ou null s'il n'y en a pas. */
   bill: BillSlotPlan | null;
+  /** Pourquoi la fente est absente ou moins enfoncee que demande. */
+  billProblem: string | null;
   /** Cotes du joint articule, ou null. */
   joint: ArticulationPlan | null;
   /** Goupilles cylindriques d'assemblage et leur controle. */
@@ -852,6 +858,15 @@ function buildWarnings(
       title: 'Fente de bavette non generee',
       detail:
         'La fente d insertion se creuse dans le plan de joint : elle demande le corps en deux parties. Activez « Corps en deux parties » dans l onglet Assemblage, ou imprimez la bavette avec le corps.',
+    });
+  }
+
+  if (r.billProblem) {
+    list.push({
+      id: 'bill-depth',
+      level: 'warn',
+      title: 'Fente de bavette bornee par la tete',
+      detail: r.billProblem,
     });
   }
 

@@ -419,6 +419,30 @@ interface EndExit {
   bore?: { outline: THREE.Vector2[]; depth: number };
 }
 
+/**
+ * Fente de bavette debouchant au menton, sans tronquer le nez.
+ *
+ * La plaque entre par le ventre : sur les quelques millimetres ou la tete est
+ * plus mince que la plaque, la bande est ouverte de part en part — c'est la
+ * bouche. Des que la tete peut porter la fente, une poche fermee prend le
+ * relais jusqu'au fond plat. Le nez, lui, reste entier : rien n'est coupe
+ * au-dela de l'emprise de la plaque.
+ */
+interface ChinSlot {
+  /** Premiere station ou la bande mord dans la matiere. */
+  iStart: number;
+  /** Station ou la poche fermee commence : la bouche s'y termine. */
+  iEnd: number;
+  /** Arete haute de la bande, station par station de `iStart` a `iEnd`. */
+  topT: number[];
+  /** Arete basse de la bande a la station `iEnd`. */
+  baseT: number;
+  /** Profondeur laterale de la poche, par coque. */
+  depth: number;
+  /** Les deux coins du fond ferme, dans le plan de joint. */
+  back: [THREE.Vector2, THREE.Vector2];
+}
+
 /** Portee de goupille engendree par un point d'ancrage. */
 export interface SocketPlan {
   anchorId: string;
@@ -457,6 +481,8 @@ export interface AssemblyResult {
   sockets: SocketPlan[];
   /** Empreinte de bavette reellement creusee, apres arbitrage avec les portees. */
   billPlan: BillSlotPlan | null;
+  /** Pourquoi la fente de bavette est absente ou reduite, le cas echeant. */
+  billProblem: string | null;
   /** Goupilles cylindriques d'assemblage, avec leur controle. */
   dowels: DowelPlacement[];
   /** Barreaux imprimes, poses a plat a cote des coques. */
@@ -727,6 +753,16 @@ function sampleAtDepth(ring: Ring, fromIndex: number, depth: number, arcSamples:
   return null;
 }
 
+/**
+ * Premier echantillon, depuis le bord bas, dont la cote transverse atteint
+ * `t`. La bouche de la fente de bavette est donc toujours au moins aussi
+ * haute que la bande de la plaque : la plaque ne peut pas y coincer.
+ */
+function rankAtT(ring: Ring, t: number, arcSamples: number): number | null {
+  for (let j = 1; j <= arcSamples - 2; j++) if (ring.t[j] >= t) return j;
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Construction d'une coque
 // ---------------------------------------------------------------------------
@@ -740,6 +776,7 @@ interface ShellInput {
   cutFront: boolean;
   cutRear: boolean;
   arcSamples: number;
+  chinSlots: ChinSlot[];
 }
 
 function buildShell(
@@ -817,8 +854,48 @@ function buildShell(
     }
   }
 
+  // --- Bouches de fente de bavette ----------------------------------------
+  // Le rang de rognage suit l'arete haute de la bande, station par station :
+  // la bouche est une fente inclinee, pas une fenetre rectangulaire. On le
+  // rend croissant, car la bande ne peut que monter en s'enfoncant.
+  interface ChinCut {
+    slot: ChinSlot;
+    rank: number[];
+  }
+  const chinCuts: ChinCut[] = [];
+  const chinStrip = new Set<number>();
+  for (const slot of input.chinSlots) {
+    if (slot.iStart < 1 || slot.iEnd <= slot.iStart || slot.iEnd >= stations.length) continue;
+    // Un fond qui deborde devant la bouche donnerait une poche croisee.
+    const xMouth = stations[slot.iEnd].x;
+    if (slot.back[0].x < xMouth - 1e-9 || slot.back[1].x < xMouth - 1e-9) continue;
+    const rank: number[] = [];
+    let ok = true;
+    for (let k = 0; ok && k <= slot.iEnd - slot.iStart; k++) {
+      const ring = rings[slot.iStart + k];
+      const found = rankAtT(ring, slot.topT[k], arcSamples);
+      if (found === null || ring.t[found] <= ring.t[0] + 1e-4) ok = false;
+      else rank.push(Math.max(found, rank[k - 1] ?? 1));
+    }
+    if (ok) {
+      const ring = rings[slot.iEnd];
+      const last = rank[rank.length - 1];
+      if (
+        ring.n[last] < slot.depth + 1e-4 ||
+        slot.baseT <= ring.t[0] + 1e-4 ||
+        slot.baseT >= ring.t[last] - 1e-4
+      ) {
+        ok = false;
+      }
+    }
+    if (!ok) continue;
+    chinCuts.push({ slot, rank });
+    for (let i = slot.iStart; i < slot.iEnd; i++) chinStrip.add(i);
+  }
+
   // --- Peau ----------------------------------------------------------------
   for (let i = 0; i < stations.length - 1; i++) {
+    if (chinStrip.has(i)) continue;
     const a = rings[i];
     const b = rings[i + 1];
     const start = Math.max(a.clipStart, b.clipStart);
@@ -826,6 +903,72 @@ function buildShell(
     for (let j = start; j < end; j++) {
       mesh.quad(a.points[j], b.points[j], b.points[j + 1], a.points[j + 1]);
     }
+  }
+
+  // --- Peau et parois au droit d'une fente de bavette ----------------------
+  for (const { slot, rank } of chinCuts) {
+    const jointAt = (i: number, j: number) => lift(rings[i].t[j], 0, stations[i].x);
+    for (let k = 0; k < slot.iEnd - slot.iStart; k++) {
+      const i = slot.iStart + k;
+      const a = rings[i];
+      const b = rings[i + 1];
+      const sa = rank[k];
+      const sb = rank[k + 1];
+      const end = Math.min(a.clipEnd, b.clipEnd);
+      for (let j = Math.max(sa, sb); j < end; j++) {
+        mesh.quad(a.points[j], b.points[j], b.points[j + 1], a.points[j + 1]);
+      }
+      // Les deux stations ne rognent pas au meme rang : l'eventail referme le
+      // decalage sans laisser de T-jonction.
+      for (let j = sa; j < sb; j++) mesh.triangle(a.points[j], b.points[sb], a.points[j + 1]);
+      for (let j = sb; j < sa; j++) mesh.triangle(a.points[sa], b.points[j], b.points[j + 1]);
+      // Paroi haute de la bouche : du plan de joint a la peau, normale vers
+      // le vide de la fente. A la derniere station elle se scinde a la cote
+      // du fond de poche, sinon l'arete ne s'apparierait pas avec la face de
+      // reprise de matiere.
+      const a0 = jointAt(i, sa);
+      const a1 = a.points[sa];
+      const b0 = jointAt(i + 1, sb);
+      const b1 = b.points[sb];
+      if (k === slot.iEnd - slot.iStart - 1) {
+        const bm = lift(b.t[sb], slot.depth, stations[i + 1].x);
+        mesh.triangle(a0, b0, bm);
+        mesh.triangle(a0, bm, b1);
+        mesh.triangle(a0, b1, a1);
+      } else {
+        mesh.quad(a0, b0, b1, a1);
+      }
+    }
+
+    // Face avant de la bouche : la matiere s'arrete la, la fente s'ouvre.
+    const head = rings[slot.iStart];
+    const front: THREE.Vector2[] = [new THREE.Vector2(head.t[0], 0)];
+    for (let j = 0; j <= rank[0]; j++) front.push(new THREE.Vector2(head.t[j], head.n[j]));
+    front.push(new THREE.Vector2(head.t[rank[0]], 0));
+    fill(mesh, contourOf(front), [], cross(stations[slot.iStart].x), false);
+
+    // Face arriere : la matiere reprend, moins la section de la poche.
+    const tail = rings[slot.iEnd];
+    const last = rank[rank.length - 1];
+    const back: THREE.Vector2[] = [new THREE.Vector2(tail.t[0], 0)];
+    for (let j = 0; j <= last; j++) back.push(new THREE.Vector2(tail.t[j], tail.n[j]));
+    back.push(new THREE.Vector2(tail.t[last], slot.depth));
+    back.push(new THREE.Vector2(slot.baseT, slot.depth));
+    back.push(new THREE.Vector2(slot.baseT, 0));
+    fill(mesh, contourOf(back), [], cross(stations[slot.iEnd].x), true);
+
+    // Poche fermee : fond plat, parois sur tout le pourtour sauf la bouche.
+    const path = [
+      new THREE.Vector2(stations[slot.iEnd].x, tail.t[last]),
+      slot.back[0],
+      slot.back[1],
+      new THREE.Vector2(stations[slot.iEnd].x, slot.baseT),
+    ];
+    const marked = ringMarked(
+      path,
+      path.map((_, i) => i === 0 || i === path.length - 1),
+    );
+    emitCavity(mesh, marked.outline, { depth: slot.depth }, planar, lift, marked.skip);
   }
 
   // --- Contour du plan de joint -------------------------------------------
@@ -846,6 +989,22 @@ function buildShell(
 
   const contour: THREE.Vector2[] = [];
   for (let i = 0; i < stations.length; ) {
+    // La fente de bavette detourne le contour du ventre : il monte a l'arete
+    // haute de la bande, la suit jusqu'a la poche, en fait le tour, puis
+    // redescend au ventre. Tout ce qui est entre les deux est ouvert.
+    const chin = chinCuts.find((candidate) => candidate.slot.iStart === i);
+    if (chin) {
+      contour.push(rimLo(i));
+      for (let k = 0; k <= chin.slot.iEnd - chin.slot.iStart; k++) {
+        const station = chin.slot.iStart + k;
+        contour.push(new THREE.Vector2(stations[station].x, rings[station].t[chin.rank[k]]));
+      }
+      contour.push(chin.slot.back[0], chin.slot.back[1]);
+      contour.push(new THREE.Vector2(stations[chin.slot.iEnd].x, chin.slot.baseT));
+      contour.push(rimLo(chin.slot.iEnd));
+      i = chin.slot.iEnd + 1;
+      continue;
+    }
     const exit = loExits.find((candidate) => candidate.iStart === i);
     if (exit) {
       contour.push(rimLo(i), ...exit.path, rimLo(exit.iEnd));
@@ -1532,10 +1691,9 @@ export function buildAssembly(
     params.hasBib && params.billMode === 'polycarbonate' && params.assembly.planeAngle < 25
       ? billSlotPlan(profile, params, roomProbe(surface, frame, profile), pStart)
       : null;
-  if (bill) {
-    pStart = Math.max(pStart, bill.cutP);
-    cutFront = true;
-  }
+  // La fente ne tronque plus le nez : elle debouche au menton, sur sa seule
+  // emprise. `cutP` ne designe donc plus une coupe, mais la station ou la
+  // tete devient assez epaisse pour porter la poche fermee.
   if (pEnd - pStart < 0.2) {
     pStart = 0;
     pEnd = profile.bodyEnd;
@@ -1605,7 +1763,7 @@ export function buildAssembly(
   // c'est la fente qui l'emporte — l'ancrage fautif est alors signale.
   let billInsertion = bill ? bill.insertion : 0;
   if (bill) {
-    const xCut = stations[0].x;
+    const xCut = profile.xAt(bill.cutP);
     const centre = bill.centreAt(xCut);
     const footprint = (insertion: number) => [
       new THREE.Vector2(xCut, centre + bill.halfBand),
@@ -1801,43 +1959,159 @@ export function buildAssembly(
   }
 
   // --- Fente de bavette, identique dans les deux coques --------------------
+  // La plaque entre par le menton. La bouche est bornee a la bande : elle
+  // court de la station ou la bande perce le ventre jusqu'a celle ou la tete
+  // peut porter une poche fermee. Le nez reste entier.
+  const chinSlots: ChinSlot[] = [];
   let billResult: BillSlotPlan | null = bill;
+  let billProblem: string | null = null;
   if (bill) {
-    const xCut = stations[0].x;
-    const centre = bill.centreAt(xCut);
-    const path = clipEndPath(
-      [
-        new THREE.Vector2(xCut, centre + bill.halfBand),
-        bill.along(-billInsertion, -bill.halfPlate),
-        bill.along(-billInsertion, bill.halfPlate),
-        new THREE.Vector2(xCut, centre - bill.halfBand),
-      ],
-      xCut,
-      true,
-    );
     billResult = null;
-    if (path) {
-      const tHi = path[0].y;
-      const tLo = path[path.length - 1].y;
-      const depth = Math.min(
-        bill.depth,
-        notchRoom(surface, frame, stations[0], tLo, tHi) - SKIN,
-      );
-      const [tMin, tMax] = stations[0].degenerate
-        ? [0, 0]
-        : stationRange(surface, frame, stations[0]);
+    const xCut = profile.xAt(bill.cutP);
+    const topOf = (x: number) => bill.centreAt(x) + bill.halfBand;
+    const baseOf = (x: number) => bill.centreAt(x) - bill.halfBand;
+    const rangeOf = (station: Station): [number, number] =>
+      station.degenerate ? [0, 0] : stationRange(surface, frame, station);
+
+    // La bouche s'arrete des que la tete peut porter une poche fermee : assez
+    // epaisse pour la largeur de la plaque, et assez haute sous la bande pour
+    // qu'il reste une paroi de menton imprimable. Au-dela, plus rien n'est
+    // retire hors de l'emprise de la plaque.
+    let iEnd = -1;
+    for (let i = 1; i < stations.length && stations[i].x <= xCut + 1e-9; i++) {
+      const station = stations[i];
+      if (station.degenerate) continue;
+      const [tMin, tMax] = rangeOf(station);
+      const tLo = baseOf(station.x);
+      const tHi = topOf(station.x);
+      if (tLo < tMin + WALL || tHi > tMax - SKIN) continue;
+      if (notchRoom(surface, frame, station, tLo, tHi) < bill.depth + SKIN) continue;
+      iEnd = i;
+      break;
+    }
+    if (iEnd < 0) {
+      for (let i = 1; i < stations.length; i++) {
+        if (stations[i].x >= xCut - 1e-9) {
+          iEnd = i;
+          break;
+        }
+      }
+    }
+
+    /**
+     * Enfoncement admissible : la poche doit rester dans la tete, avec la
+     * peau reglementaire tout autour, sur toute sa longueur.
+     */
+    const admissible = (): number => {
+      const step = 0.02;
+      let reach = 0;
+      for (let u = step; u <= billInsertion + 1e-9; u += step) {
+        const corner = bill.along(-u, 0);
+        const station = findStation(surface, frame, pAtX(profile, corner.x), corner.x);
+        if (station.degenerate) break;
+        const [tMin, tMax] = rangeOf(station);
+        const tLo = baseOf(corner.x);
+        const tHi = topOf(corner.x);
+        if (tLo < tMin + WALL || tHi > tMax - SKIN) break;
+        if (notchRoom(surface, frame, station, tLo, tHi) < bill.depth + SKIN) break;
+        reach = u;
+      }
+      return reach;
+    };
+
+    const reach = iEnd > 0 ? admissible() : 0;
+    if (reach + 1e-9 < billInsertion) {
+      billProblem =
+        `La tete ne peut recevoir la bavette que sur ${(reach * 10).toFixed(1)} mm : ` +
+        `au-dela, la fente percerait la peau ou sortirait de la tete. ` +
+        `Enfoncement demande ${(billInsertion * 10).toFixed(1)} mm.`;
+      billInsertion = reach;
+    }
+
+    // Le fond ferme est un plan perpendiculaire a la plaque : sur une bavette
+    // tres inclinee, son coin haut peut tomber DEVANT la station de bouche.
+    // La poche se croiserait alors elle-meme. On recule la bouche d'un cran
+    // plutot que de deformer le fond : la fente garde son profil.
+    const back: [THREE.Vector2, THREE.Vector2] = [
+      bill.along(-billInsertion, -bill.halfPlate),
+      bill.along(-billInsertion, bill.halfPlate),
+    ];
+    const xBack = Math.min(back[0].x, back[1].x);
+    while (iEnd > 1 && stations[iEnd].x > xBack + 1e-9) iEnd -= 1;
+
+    if (iEnd > 0 && billInsertion >= 0.2) {
+      const tail = stations[iEnd];
+      const [tMin, tMax] = rangeOf(tail);
+      const baseT = baseOf(tail.x);
+      const topT = topOf(tail.x);
+      const depth = Math.min(bill.depth, notchRoom(surface, frame, tail, baseT, topT) - SKIN);
+
+      // Vers l'avant, la bande descend et le ventre remonte : elles se
+      // croisent. C'est la que la bouche commence.
+      let iStart = iEnd;
+      while (iStart > 1) {
+        const previous = stations[iStart - 1];
+        const [lo] = rangeOf(previous);
+        if (previous.degenerate || topOf(previous.x) <= lo + 1e-3) break;
+        iStart -= 1;
+      }
+
+      const topT_ = [];
+      for (let i = iStart; i <= iEnd; i++) topT_.push(topOf(stations[i].x));
+
       if (
         depth > 0.05 &&
-        tHi - tLo > 0.02 &&
-        tMin + SKIN <= tLo &&
-        tHi <= tMax - SKIN &&
-        freeNotch('front', tLo, tHi)
+        iEnd - iStart >= 1 &&
+        baseT >= tMin + WALL &&
+        topT <= tMax - SKIN &&
+        reserve(iStart, iEnd)
       ) {
-        const exit: EndExit = { end: 'front', tLo, tHi, depth, path };
-        maleEnds.push(exit);
-        femaleEnds.push(exit);
+        chinSlots.push({ iStart, iEnd, topT: topT_, baseT, depth, back });
         billResult = { ...bill, depth, insertion: billInsertion };
+      } else if (cutFront) {
+        // Le nez est deja coupe net par un passage de goupille : la fente
+        // debouche alors par cette face-la, sans rien retirer de plus.
+        const xFace = stations[0].x;
+        const centre = bill.centreAt(xFace);
+        const path = clipEndPath(
+          [
+            new THREE.Vector2(xFace, centre + bill.halfBand),
+            bill.along(-billInsertion, -bill.halfPlate),
+            bill.along(-billInsertion, bill.halfPlate),
+            new THREE.Vector2(xFace, centre - bill.halfBand),
+          ],
+          xFace,
+          true,
+        );
+        if (path) {
+          const tHi = path[0].y;
+          const tLo = path[path.length - 1].y;
+          const faceDepth = Math.min(
+            bill.depth,
+            notchRoom(surface, frame, stations[0], tLo, tHi) - SKIN,
+          );
+          const [faceMin, faceMax] = rangeOf(stations[0]);
+          if (
+            faceDepth > 0.05 &&
+            tHi - tLo > 0.02 &&
+            faceMin + SKIN <= tLo &&
+            tHi <= faceMax - SKIN &&
+            freeNotch('front', tLo, tHi)
+          ) {
+            const exit: EndExit = { end: 'front', tLo, tHi, depth: faceDepth, path };
+            maleEnds.push(exit);
+            femaleEnds.push(exit);
+            billResult = { ...bill, depth: faceDepth, insertion: billInsertion };
+          }
+        }
       }
+    }
+
+    if (!billResult && !billProblem) {
+      billProblem =
+        'La fente de bavette ne peut pas deboucher sans entamer la tete : ' +
+        'la bande ne trouve pas de sortie au menton. Reduisez la largeur ou ' +
+        'l inclinaison de la bavette, ou imprimez-la avec le corps.';
     }
   }
 
@@ -1909,6 +2183,7 @@ export function buildAssembly(
     cutFront,
     cutRear,
     arcSamples: resolution.arcSamples,
+    chinSlots,
   };
   // --- Goupilles cylindriques d'assemblage --------------------------------
   // Elles alignent les deux coques pendant le collage. Leur logement est un
@@ -2102,6 +2377,7 @@ export function buildAssembly(
       };
     }),
     billPlan: billResult,
+    billProblem,
     dowels,
     dowelPins: buildDowelPins(dowels),
     pinSpec: plans[0]?.spec ?? fallback,
