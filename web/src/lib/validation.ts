@@ -6,7 +6,11 @@
  * generateur de geometrie, ce qui evite tout NaN ou valeur absurde.
  */
 
+import { SCREW_LENGTHS } from './screws';
 import type {
+  ScrewHead,
+  ScrewPlacement,
+  ScrewSize,
   ArticulationConfig,
   AssemblyConfig,
   BallastShape,
@@ -380,6 +384,41 @@ function sanitizeArticulation(
   };
 }
 
+/**
+ * Vis d'assemblage.
+ *
+ * Le diametre accepte 'auto' — la suggestion par la hauteur du corps — et la
+ * longueur est ramenee a la valeur du catalogue la plus proche : le module
+ * n'en propose aucune autre, il ne faut donc pas qu'un fichier en introduise.
+ */
+function sanitizeScrews(value: unknown, fallback: LureParams['screws']): LureParams['screws'] {
+  const raw = (value ?? {}) as Partial<LureParams['screws']>;
+  const sizes: (ScrewSize | 'auto')[] = ['auto', 'M2', 'M3', 'M4'];
+  const heads: ScrewHead[] = ['countersunk', 'socket'];
+  const list = Array.isArray(raw.screws) ? raw.screws : fallback.screws;
+  return {
+    enabled: bool(raw.enabled, fallback.enabled),
+    nutFit: num(raw.nutFit, LIMITS.nutFit, fallback.nutFit),
+    screws: list.slice(0, 3).map((entry, index) => {
+      const item = (entry ?? {}) as Partial<ScrewPlacement>;
+      const base = fallback.screws[index] ?? fallback.screws[0];
+      const nearest = SCREW_LENGTHS.reduce((best, candidate) =>
+        Math.abs(candidate - (item.length ?? base.length)) <
+        Math.abs(best - (item.length ?? base.length))
+          ? candidate
+          : best,
+      );
+      return {
+        id: typeof item.id === 'string' ? item.id : `vis-${index}`,
+        position: num(item.position, { min: 0, max: 1, step: 0.001 }, base.position),
+        size: sizes.includes(item.size as ScrewSize) ? (item.size as ScrewSize) : base.size,
+        head: heads.includes(item.head as ScrewHead) ? (item.head as ScrewHead) : base.head,
+        length: nearest,
+      };
+    }),
+  };
+}
+
 function sanitizeInlays(value: unknown, fallback: Inlay[]): Inlay[] {
   if (!Array.isArray(value)) return fallback.map((item) => ({ ...item }));
   return value.slice(0, 12).map((raw, index) => {
@@ -695,6 +734,7 @@ export function sanitizeParams(input: unknown): LureParams {
     fabrication: sanitizeFabrication(raw.fabrication, base.fabrication),
     sculpt: sanitizeSculpt(raw.sculpt, base.sculpt),
     articulation: sanitizeArticulation(raw.articulation, base.articulation),
+    screws: sanitizeScrews(raw.screws, base.screws),
     outline: sanitizeOutline(raw.outline, base.outline),
     outlineReference: sanitizeReference(raw.outlineReference, base.outlineReference),
     decals: sanitizeDecals(raw.decals, base.decals),

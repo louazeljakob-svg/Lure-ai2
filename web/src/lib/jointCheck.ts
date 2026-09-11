@@ -280,22 +280,33 @@ export function jointTravel(
           }
         }
       }
+      // Obstacles exterieurs — vis d'assemblage, cylindres, quincaillerie.
+      //
+      // Ce qui compte est le mouvement RELATIF : une piece portee par le
+      // corps est fixe, mais la quincaillerie de la queue lui passe devant
+      // sur toute la course. On la teste donc contre les points mobiles, pas
+      // contre une position de repos.
       for (const obstacle of obstacles) {
         if (obstacle.to < plan.slot.from || obstacle.from > plan.slot.to) continue;
-        const [x, z] =
+        const [ox, oz] =
           obstacle.frame === 'tail' ? spin(obstacle.x, obstacle.z, angle) : [obstacle.x, obstacle.z];
-        // Un obstacle porte par la queue est teste contre le corps, et
-        // reciproquement : c'est le mouvement RELATIF qui compte.
-        const bite = biteInto(x, z, (obstacle.from + obstacle.to) / 2, plan, obstacle.frame === 'body');
-        if (bite > obstacle.radius * 0 + 1e-6) {
-          record(
-            deg,
-            obstacle.label,
-            obstacle.frame === 'tail' ? 'segment avant' : 'segment arriere',
-            bite,
-            'Deplacez la piece hors de la course du joint, ou reculez le joint.',
-          );
-          blocked = Math.min(blocked, Math.abs(deg));
+        for (const part of parts) {
+          if (part.y < obstacle.from || part.y > obstacle.to) continue;
+          for (const [px, pz] of part.points) {
+            const [x, z] = spin(px, pz, obstacle.frame === 'tail' ? 0 : angle);
+            const gap = Math.hypot(x - ox, z - oz) - obstacle.radius;
+            if (gap < 0) {
+              record(
+                deg,
+                obstacle.label,
+                `${part.label}, sur son chemin de debattement`,
+                -gap,
+                'Deplacez la vis le long du corps, ou servez-vous de la vis elle-meme ' +
+                  'comme axe de retention a cet emplacement, en supprimant le cylindre.',
+              );
+              blocked = Math.min(blocked, Math.abs(deg));
+            }
+          }
         }
       }
       if (k === 0) break;

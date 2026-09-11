@@ -18,6 +18,7 @@ import { assemblyActive, assemblyBlocker, buildAssembly, resolvePin } from './as
 import { printedBodies } from './geometry';
 import type { BillSlotPlan } from './billTemplate';
 import { jointTravel, type JointTravel } from './jointCheck';
+import { headOf, type ScrewPlan } from './screws';
 import type { ArticulationPlan } from './articulation';
 import { dowelVolumes, type DowelPlacement } from './dowels';
 import { planThroughWire, throughWireBlocker } from './throughWire';
@@ -287,6 +288,7 @@ export function computePhysics(
         billProblem: null as string | null,
         dowelAdded: 0,
         dowels: [] as DowelPlacement[],
+        screws: [] as ScrewPlan[],
       };
   // Bavette imprimee et caudale ne font pas partie des coques : leur volume
   // s'ajoute a celui des deux demi-corps.
@@ -586,8 +588,29 @@ export function computePhysics(
       bill: cavities.bill,
       billProblem: cavities.billProblem,
       joint: geo.jointPlan,
-      jointRun: geo.jointPlan ? jointTravel(profile, geo.jointPlan) : null,
+      // Module V.4 : une vis qui passe pres d'une boucle de goupille ou de son
+      // chemin de debattement doit etre detectee par le test de collision. Les
+      // vis sont portees par le corps ; le test les compare donc au mouvement
+      // de la queue et de sa quincaillerie.
+      jointRun: geo.jointPlan
+        ? jointTravel(
+            profile,
+            geo.jointPlan,
+            cavities.screws
+              .filter((screw) => screw.valid)
+              .map((screw) => ({
+                label: `Vis ${screw.spec.size}`,
+                frame: 'body' as const,
+                x: screw.x - geo.jointPlan!.xJoint,
+                z: 0,
+                from: screw.bearingY,
+                to: screw.nut.toY,
+                radius: Math.max(screw.headSeat.radius, screw.nut.across / 2),
+              })),
+          )
+        : null,
       dowels: cavities.dowels,
+      screws: cavities.screws,
       tackleMass,
       mountWarnings: checkMounts(
         params.mounts.map((mount) => resolveMount(params.catalogue, mount)),
@@ -616,6 +639,7 @@ function shellContent(
   billProblem: string | null;
   dowelAdded: number;
   dowels: DowelPlacement[];
+  screws: ScrewPlan[];
 } {
   const assembly = buildAssembly(profile, params, { stations: 40, arcSamples: 10 });
   const printed =
@@ -627,6 +651,16 @@ function shellContent(
     y: ball.position[1],
     mass: ball.mass,
   }));
+  // Vis et ecrous : de l'acier inox, souvent plus lourd que le lest qu'ils
+  // remplacent. Ils pesent la ou ils sont, pas au centre du corps.
+  for (const screw of assembly.screws) {
+    if (!screw.valid) continue;
+    points.push({
+      x: screw.x,
+      y: (screw.bearingY + screw.tipY) / 2,
+      mass: screw.massG,
+    });
+  }
   const mass = points.reduce((sum, point) => sum + point.mass, 0);
   assembly.male.dispose();
   assembly.female.dispose();
@@ -644,6 +678,7 @@ function shellContent(
     // ne reste qu'a AJOUTER la matiere des barreaux, qui s'impriment a part.
     dowelAdded: dowelVolumes(assembly.dowels).added,
     dowels: assembly.dowels,
+    screws: assembly.screws,
   };
 }
 
@@ -669,6 +704,8 @@ interface WarningInput {
   jointRun: JointTravel | null;
   /** Goupilles cylindriques d'assemblage et leur controle. */
   dowels: DowelPlacement[];
+  /** Vis d'assemblage et leur controle (module U). */
+  screws: ScrewPlan[];
   tackleMass: number;
   mountWarnings: MountWarning[];
 }
@@ -873,6 +910,34 @@ function buildWarnings(
               .join(' ; ') +
             '.'
           : ''),
+    });
+  }
+
+  for (const screw of r.screws) {
+    if (screw.valid) continue;
+    list.push({
+      id: `screw-${screw.id}`,
+      level: 'error',
+      title: `Vis ${screw.spec.size} impossible a cet endroit`,
+      detail:
+        `${screw.problem ?? ''} ` +
+        (screw.longestFit
+          ? `La plus longue qui passe ici est une ${screw.spec.size} de ${screw.longestFit} mm.`
+          : 'Aucune longueur du catalogue ne passe ici.'),
+    });
+  }
+  for (const screw of r.screws) {
+    if (!screw.valid) continue;
+    const cap = headOf(screw.spec, screw.head);
+    list.push({
+      id: `screw-ok-${screw.id}`,
+      level: 'info',
+      title: `Vis ${screw.spec.size} x ${screw.lengthMm} mm : longueur utile ${screw.usefulMm.toFixed(2)} mm`,
+      detail:
+        `Tete ${screw.head === 'countersunk' ? 'fraisee' : 'cylindrique'} de ` +
+        `${cap.diameter.toFixed(1)} mm, noyee a ${(Math.abs(screw.headTopY - screw.bellyY) * 10).toFixed(1)} mm ` +
+        `sous le ventre. La portee d ecrou est placee pour que la vis soit entierement ` +
+        `engagee en fin de serrage. Vis et ecrou pesent ${screw.massG.toFixed(2)} g.`,
     });
   }
 

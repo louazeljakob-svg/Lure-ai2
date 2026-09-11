@@ -29,6 +29,7 @@ import { PINS, autoPin, buildPin, getPin, type PinPart, type PinSpec } from './h
 import { MM_TO_CM, type ProfileSampler } from './profile';
 import { billSlotPlan, type BillRoomProbe, type BillSlotPlan } from './billTemplate';
 import { buildDowelPins, planDowels, type DowelPlacement } from './dowels';
+import { planScrews, type ScrewPlan } from './screws';
 import {
   planThroughWire,
   throughWireBlocker,
@@ -403,7 +404,14 @@ interface SideExit {
   iEnd: number;
   path: THREE.Vector2[];
   depth: number;
-  bore?: { outline: THREE.Vector2[]; depth: number };
+  /**
+   * Puits plus profonds au fond de la poche.
+   *
+   * Un passage de goupille n'en a qu'un — le logement de la boucle. Un
+   * passage de vis en a deux : le lamage de tete et la portee d'ecrou, a des
+   * cotes differentes, dans une meme fente.
+   */
+  bores?: { outline: THREE.Vector2[]; depth: number }[];
 }
 
 /** Passage debouchant par une extremite tronquee du corps. */
@@ -415,8 +423,8 @@ interface EndExit {
   depth: number;
   /** Poche associee, dans le plan de joint, ouverte du cote de la coupe. */
   path: THREE.Vector2[];
-  /** Puits plus profond au fond de la poche : le logement de la boucle. */
-  bore?: { outline: THREE.Vector2[]; depth: number };
+  /** Puits plus profonds au fond de la poche. */
+  bores?: { outline: THREE.Vector2[]; depth: number }[];
 }
 
 /**
@@ -485,6 +493,8 @@ export interface AssemblyResult {
   billProblem: string | null;
   /** Goupilles cylindriques d'assemblage, avec leur controle. */
   dowels: DowelPlacement[];
+  /** Vis d'assemblage et leur controle (module U). */
+  screws: ScrewPlan[];
   /** Barreaux imprimes, poses a plat a cote des coques. */
   dowelPins: THREE.BufferGeometry | null;
   pinSpec: PinSpec;
@@ -1167,17 +1177,20 @@ function buildShell(
 function emitCavity(
   mesh: MeshBuilder,
   outline: THREE.Vector2[],
-  exit: { depth: number; bore?: { outline: THREE.Vector2[]; depth: number } },
+  exit: { depth: number; bores?: { outline: THREE.Vector2[]; depth: number }[] },
   planar: (n: number) => Lift,
   lift: Raise,
   skip: (index: number) => boolean,
 ): void {
-  const bore = exit.bore ? contourOf(exit.bore.outline) : null;
-  fill(mesh, outline, bore ? [bore] : [], planar(exit.depth), true);
+  const wells = (exit.bores ?? []).map((well) => ({
+    outline: contourOf(well.outline),
+    depth: well.depth,
+  }));
+  fill(mesh, outline, wells.map((well) => well.outline), planar(exit.depth), true);
   pocketWall(mesh, outline, 0, exit.depth, lift, skip);
-  if (bore && exit.bore) {
-    pocketWall(mesh, bore, exit.depth, exit.bore.depth, lift);
-    fill(mesh, bore, [], planar(exit.bore.depth), true);
+  for (const well of wells) {
+    pocketWall(mesh, well.outline, exit.depth, well.depth, lift);
+    fill(mesh, well.outline, [], planar(well.depth), true);
   }
 }
 
@@ -1877,8 +1890,8 @@ export function buildAssembly(
         tLo,
         tHi,
         depth: w,
+        bores: [well],
         path,
-        bore: well,
       };
       maleEnds.push(common);
       femaleEnds.push(common);
@@ -1932,7 +1945,7 @@ export function buildAssembly(
         iEnd,
         path: arcPoints(center, outer, angleStart, sweep),
         depth: w,
-        bore: well,
+        bores: [well],
       };
       maleSides.push(common);
       femaleSides.push(common);
@@ -2225,6 +2238,112 @@ export function buildAssembly(
     }
   }
 
+  // --- Passages de vis d'assemblage (module U) -----------------------------
+  //
+  // La vis entre par le ventre, monte dans le plan de symetrie et se serre
+  // dans un ecrou captif. Tout tient dans UNE fente debouchant au ventre :
+  //   - la fente elle-meme, a la cote du percage de passage ;
+  //   - un puits plus profond a la bouche, pour noyer la tete ;
+  //   - un puits hexagonal a la profondeur de l'ecrou, qui l'empeche de
+  //     tourner au serrage.
+  // Les trois sont a cheval sur le joint : chaque demi-coque en porte la
+  // moitie, et c'est le serrage qui plaque les deux ensemble.
+  const screwPlans = planScrews(
+    profile,
+    params,
+    dowelObstacles.map((item) => ({ center: item.center, radius: item.radius, label: item.label })),
+  );
+  const LEDGE_X = 0.02;
+  for (const screw of screwPlans) {
+    if (!screw.valid) continue;
+    const station = stationAt(stations, screw.x);
+    if (!station || station.degenerate) {
+      screw.valid = false;
+      screw.problem = 'La vis tombe hors du corps a cet endroit.';
+      continue;
+    }
+    const [tMin, tMax] = stationRange(surface, frame, station);
+    // La fente est a la cote du LAMAGE de tete : c'est la plus grande des
+    // trois, et une poche a fond unique ne peut pas etre plus profonde a la
+    // bouche qu'au fond. Le percage et l'ecrou y sont donc au large en
+    // travers ; c'est la largeur en X, elle, qui suit les trois etages — et
+    // c'est elle qui tient l'ecrou : un hexagone dans une fente a la cote de
+    // son entre-plats ne peut pas tourner.
+    const wHead = screw.headSeat.radius;
+    const wNut = screw.nut.across / 2;
+    const halfX = Math.max(wHead, wNut, screw.boreRadius) + LEDGE_X;
+    let iStart = 0;
+    while (iStart < stations.length - 1 && stations[iStart + 1].x <= screw.x - halfX) iStart++;
+    let iEnd = stations.length - 1;
+    while (iEnd > 0 && stations[iEnd - 1].x >= screw.x + halfX) iEnd--;
+    if (iEnd < iStart + 2) {
+      const middle = Math.round((iStart + iEnd) / 2);
+      iStart = middle - 1;
+      iEnd = middle + 1;
+    }
+    if (iStart < 1 || iEnd > stations.length - 2 || !reserve(iStart, iEnd)) {
+      screw.valid = false;
+      screw.problem =
+        `Vis a ${((screw.x - profile.xAt(0)) / MM_TO_CM).toFixed(0)} mm : un autre passage ` +
+        'occupe deja le ventre ici. Deplacez-la le long du corps.';
+      continue;
+    }
+    // Hauteur a laquelle la coque atteint la cote du lamage : en dessous, la
+    // bouche est deja ouverte de part en part et le contour de la poche n'a
+    // rien a y faire.
+    // ... mesuree sur TOUTES les stations de la bouche : aux deux bords la
+    // coque est plus mince, et c'est la que le contour ressortirait.
+    let tOpen = tMin;
+    for (let i = iStart; i <= iEnd; i++) {
+      const probe = stations[i];
+      if (probe.degenerate) continue;
+      const [lo, hi] = stationRange(surface, frame, probe);
+      let found = hi;
+      for (let k = 1; k <= 80; k++) {
+        const t = lo + ((hi - lo) * k) / 80;
+        if (shellThickness(surface, frame, probe, t) >= wHead) {
+          found = t;
+          break;
+        }
+      }
+      tOpen = Math.max(tOpen, found);
+    }
+    const tStart = Math.max(tOpen + LEDGE_X * 2, screw.bearingY);
+    const top = Math.min(screw.nut.toY, tMax - SKIN);
+    if (tStart >= screw.nut.fromY - LEDGE_X || top <= tStart) {
+      screw.valid = false;
+      screw.problem =
+        `Vis a ${((screw.x - profile.xAt(0)) / MM_TO_CM).toFixed(0)} mm : le corps n est pas ` +
+        `assez epais au ventre pour noyer une tete de ${(wHead * 20).toFixed(1)} mm. ` +
+        'Passez au diametre inferieur, ou deplacez la vis vers une section plus large.';
+      continue;
+    }
+    // Les deux extremites du chemin tombent EXACTEMENT sur les stations
+    // frontieres : c'est la que la face de coupe verticale de la bouche est
+    // emise, et un chemin qui s'arreterait avant laisserait un trou.
+    const path = [
+      new THREE.Vector2(stations[iStart].x, tStart),
+      new THREE.Vector2(screw.x - screw.boreRadius, tStart),
+      new THREE.Vector2(screw.x - screw.boreRadius, screw.nut.fromY),
+      new THREE.Vector2(screw.x - wNut, screw.nut.fromY),
+      new THREE.Vector2(screw.x - wNut, top),
+      new THREE.Vector2(screw.x + wNut, top),
+      new THREE.Vector2(screw.x + wNut, screw.nut.fromY),
+      new THREE.Vector2(screw.x + screw.boreRadius, screw.nut.fromY),
+      new THREE.Vector2(screw.x + screw.boreRadius, tStart),
+      new THREE.Vector2(stations[iEnd].x, tStart),
+    ];
+    const exit: SideExit = {
+      rail: 'lo',
+      iStart,
+      iEnd,
+      path,
+      depth: wHead,
+    };
+    maleSides.push(exit);
+    femaleSides.push(exit);
+  }
+
   const dowels = planDowels(
     profile,
     params,
@@ -2379,6 +2498,7 @@ export function buildAssembly(
     billPlan: billResult,
     billProblem,
     dowels,
+    screws: screwPlans,
     dowelPins: buildDowelPins(dowels),
     pinSpec: plans[0]?.spec ?? fallback,
     pinMass: pins.reduce((sum, pin) => sum + pin.mass, 0),

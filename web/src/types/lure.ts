@@ -191,6 +191,38 @@ export interface BallastWeight {
   shape: BallastShape;
 }
 
+/** Diametre de vis d'assemblage. */
+export type ScrewSize = 'M2' | 'M3' | 'M4';
+
+/** Type de tete : fraisee 90 deg (DIN 965) ou cylindrique six pans (DIN 912). */
+export type ScrewHead = 'countersunk' | 'socket';
+
+/**
+ * Une vis d'assemblage, du ventre vers le dos.
+ *
+ * Diametre et longueur se reglent VIS PAR VIS : rien n'oblige a mettre la
+ * meme partout, et un corps qui s'affine vers la queue demande souvent une
+ * M2 derriere la ou une M4 passe devant.
+ */
+export interface ScrewPlacement {
+  id: string;
+  /** Position sur l'axe du corps : 0 = nez, 1 = queue. */
+  position: number;
+  /** Diametre impose, ou suggestion automatique selon la hauteur du corps. */
+  size: ScrewSize | 'auto';
+  head: ScrewHead;
+  /** Longueur nominale, en mm : 15, 20, 25, 30 ou 35. */
+  length: number;
+}
+
+/** Assemblage visse des demi-coques — module U. */
+export interface ScrewConfig {
+  enabled: boolean;
+  /** Jeu du logement d'ecrou, en mm, sur l'entre-plats ET sur l'epaisseur. */
+  nutFit: number;
+  screws: ScrewPlacement[];
+}
+
 /**
  * Assemblage en deux coques imprimables.
  *
@@ -882,6 +914,8 @@ export interface LureParams {
   sculpt: SculptPoint[];
   /** Articulation : corps coupe en segments relies par une quincaillerie. */
   articulation: ArticulationConfig;
+  /** Assemblage visse des demi-coques (module U). */
+  screws: ScrewConfig;
 
   // --- Surface ------------------------------------------------------------
   /**

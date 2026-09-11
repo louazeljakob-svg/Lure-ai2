@@ -127,6 +127,9 @@ export const LIMITS = {
   retentionSeatFit: { min: 0.05, max: 0.4, step: 0.01 },
   retentionLoopFit: { min: 0.1, max: 0.5, step: 0.01 },
   retentionChamfer: { min: 0.2, max: 1, step: 0.05 },
+  // --- Assemblage visse ---------------------------------------------------
+  screwCount: { min: 1, max: 3, step: 1 },
+  nutFit: { min: 0, max: 0.4, step: 0.01 },
   // --- Atelier -----------------------------------------------------------
   perimeters: { min: 1, max: 6, step: 1 },
   layerHeight: { min: 0.05, max: 0.4, step: 0.01 },
@@ -310,6 +313,20 @@ const articulation = (
 });
 
 /** Trame d'ecailles desactivee, reglee sur une ecaille de vairon. */
+/**
+ * Assemblage visse : desactive par defaut, avec une vis au milieu du corps.
+ *
+ * Le diametre reste sur « auto » : il se choisit sur la hauteur du corps a
+ * l'endroit de la vis, ce qui donne le bon calibre sans reglage.
+ */
+const screws = (): LureParams['screws'] => ({
+  enabled: false,
+  nutFit: 0.1,
+  // A 30 % du corps : devant le support d'hamecon ventral, qui occupe le
+  // milieu et que le passage de vis ne peut pas traverser.
+  screws: [{ id: 'vis-0', position: 0.3, size: 'auto', head: 'countersunk', length: 20 }],
+});
+
 const scales = (): LureParams['scales'] => ({
   enabled: false,
   baked: false,
@@ -394,6 +411,7 @@ const BASE_PRESETS: ShapePreset[] = [
       assembly: assembly({ roughWater: true }),
       fabrication: fabrication(),
       articulation: articulation(),
+      screws: screws(),
       dowels: dowels(),
       outline: { nodes: [], closed: true, mirror: false },
       outlineReference: emptyReference(),
@@ -474,6 +492,7 @@ const BASE_PRESETS: ShapePreset[] = [
       assembly: assembly(),
       fabrication: fabrication(),
       articulation: articulation(),
+      screws: screws(),
       dowels: dowels(),
       outline: { nodes: [], closed: true, mirror: false },
       outlineReference: emptyReference(),
@@ -554,6 +573,7 @@ const BASE_PRESETS: ShapePreset[] = [
       assembly: assembly(),
       fabrication: fabrication(),
       articulation: articulation(),
+      screws: screws(),
       dowels: dowels(),
       outline: { nodes: [], closed: true, mirror: false },
       outlineReference: emptyReference(),
@@ -634,6 +654,7 @@ const BASE_PRESETS: ShapePreset[] = [
       assembly: assembly(),
       fabrication: fabrication(),
       articulation: articulation(),
+      screws: screws(),
       dowels: dowels(),
       outline: { nodes: [], closed: true, mirror: false },
       outlineReference: emptyReference(),
@@ -714,6 +735,7 @@ const BASE_PRESETS: ShapePreset[] = [
       assembly: assembly(),
       fabrication: fabrication(),
       articulation: articulation(),
+      screws: screws(),
       dowels: dowels(),
       outline: { nodes: [], closed: true, mirror: false },
       outlineReference: emptyReference(),
@@ -794,6 +816,7 @@ const BASE_PRESETS: ShapePreset[] = [
       assembly: assembly(),
       fabrication: fabrication(),
       articulation: articulation(),
+      screws: screws(),
       dowels: dowels(),
       outline: { nodes: [], closed: true, mirror: false },
       outlineReference: emptyReference(),
@@ -874,6 +897,7 @@ const BASE_PRESETS: ShapePreset[] = [
       assembly: assembly(),
       fabrication: fabrication(),
       articulation: articulation(),
+      screws: screws(),
       dowels: dowels(),
       outline: { nodes: [], closed: true, mirror: false },
       outlineReference: emptyReference(),
@@ -954,6 +978,7 @@ const BASE_PRESETS: ShapePreset[] = [
       assembly: assembly(),
       fabrication: fabrication(),
       articulation: articulation(),
+      screws: screws(),
       dowels: dowels(),
       outline: { nodes: [], closed: true, mirror: false },
       outlineReference: emptyReference(),
@@ -1034,6 +1059,7 @@ const BASE_PRESETS: ShapePreset[] = [
       assembly: assembly(),
       fabrication: fabrication(),
       articulation: articulation(),
+      screws: screws(),
       dowels: dowels(),
       outline: { nodes: [], closed: true, mirror: false },
       outlineReference: emptyReference(),
@@ -1296,6 +1322,13 @@ export const clonePreset = (id: ShapeId): LureParams => {
     // d'un projet modifiait le MODELE, et donc tous les projets ouverts
     // ensuite. Une copie par clone, comme pour les autres.
     articulation: { ...params.articulation },
+    screws: {
+      ...params.screws,
+      screws: params.screws.screws.map((screw, i) => ({
+        ...screw,
+        id: `${screw.id}-${i}-${Date.now()}`,
+      })),
+    },
     dowels: { ...params.dowels },
     print: { ...params.print },
     scales: { ...params.scales },

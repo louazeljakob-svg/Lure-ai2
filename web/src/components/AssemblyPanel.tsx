@@ -1,6 +1,10 @@
 /** Panneau Assemblage : deux coques, goujons, logement de goupille, agrafes. */
 
 import type {
+  ScrewConfig,
+  ScrewHead,
+  ScrewPlacement,
+  ScrewSize,
   AssemblyConfig,
   ClipId,
   FabricationConfig,
@@ -26,6 +30,8 @@ import {
   throughWireBlocker,
 } from '../lib/throughWire';
 import { Fieldset, Segmented, Slider, Switch } from './ui';
+import { HEAD_LABEL, SCREWS, SCREW_LENGTHS, SCREW_SIZES, headOf, suggestSize, usefulLength } from '../lib/screws';
+import { createProfile, MM_TO_CM } from '../lib/profile';
 
 interface Props {
   params: LureParams;
@@ -81,6 +87,15 @@ export function AssemblyPanel({
     onChange({ throughWire: { ...wire, ...patch } });
   const blocker = throughWireBlocker(params);
   const assemblyBlock = assemblyBlocker(params);
+
+  const screws = params.screws;
+  const setScrews = (patch: Partial<ScrewConfig>) =>
+    onChange({ screws: { ...screws, ...patch } });
+  const setScrew = (id: string, patch: Partial<ScrewPlacement>) =>
+    setScrews({
+      screws: screws.screws.map((item) => (item.id === id ? { ...item, ...patch } : item)),
+    });
+  const screwProfile = createProfile(params);
 
   return (
     <div className="panel__body">
@@ -391,6 +406,117 @@ export function AssemblyPanel({
         <button type="button" className="btn btn--block" onClick={onAddAnchor}>
           + Ajouter un ancrage
         </button>
+      </Fieldset>
+
+      <Fieldset
+        legend="Vis d assemblage"
+        hint="La vis entre par le VENTRE, monte dans le plan de symetrie et se serre dans un ecrou hexagonal captif, a cheval sur les deux coques. Tete et ecrou portent chacun pour moitie sur chaque moitie : c est le serrage qui plaque les deux coques ensemble, et le passage, a cheval lui aussi, qui les aligne."
+      >
+        <Switch
+          label="Assemblage visse"
+          checked={screws.enabled}
+          onChange={(enabled) => setScrews({ enabled })}
+        />
+        <Slider
+          label="Jeu du logement d ecrou"
+          value={screws.nutFit}
+          {...LIMITS.nutFit}
+          display={`${screws.nutFit.toFixed(2)} mm`}
+          disabled={!screws.enabled}
+          hint="Applique a l entre-plats ET a l epaisseur, sur les trois diametres."
+          onChange={(nutFit) => setScrews({ nutFit })}
+        />
+        {screws.screws.map((screw, index) => {
+          const p = Math.min(Math.max(screw.position, 0.04), screwProfile.bodyEnd - 0.04);
+          const section = screwProfile.section(p);
+          const heightMm = (section.top - section.bottom) / MM_TO_CM;
+          const size = screw.size === 'auto' ? suggestSize(heightMm) : screw.size;
+          const spec = SCREWS[size];
+          const cap = headOf(spec, screw.head);
+          const useful = usefulLength(spec, screw.head, screw.length);
+          return (
+            <div className="row-actions" key={screw.id} style={{ display: 'block' }}>
+              <Slider
+                label={`Vis ${index + 1} — position`}
+                value={screw.position * 100}
+                min={5}
+                max={95}
+                step={1}
+                display={`${((screwProfile.xAt(p) - screwProfile.xAt(0)) / MM_TO_CM).toFixed(0)} mm du nez`}
+                disabled={!screws.enabled}
+                onChange={(value) => setScrew(screw.id, { position: value / 100 })}
+              />
+              <Segmented
+                label="Diametre"
+                value={screw.size}
+                options={[
+                  { value: 'auto', label: `Auto (${suggestSize(heightMm)})` },
+                  ...SCREW_SIZES.map((id) => ({ value: id, label: id })),
+                ]}
+                onChange={(value) => setScrew(screw.id, { size: value as ScrewSize | 'auto' })}
+              />
+              <Segmented
+                label="Tete"
+                value={screw.head}
+                options={(['countersunk', 'socket'] as ScrewHead[]).map((id) => ({
+                  value: id,
+                  label: id === 'countersunk' ? 'Fraisee' : 'Cylindrique',
+                }))}
+                onChange={(value) => setScrew(screw.id, { head: value as ScrewHead })}
+              />
+              <Segmented
+                label="Longueur"
+                value={String(screw.length)}
+                options={SCREW_LENGTHS.map((value) => ({
+                  value: String(value),
+                  label: `${value}`,
+                }))}
+                onChange={(value) => setScrew(screw.id, { length: Number(value) })}
+              />
+              <p className="hint">
+                {HEAD_LABEL[screw.head]}, tete {cap.diameter.toFixed(1)} mm. Longueur utile{' '}
+                <b>{useful.toFixed(2)} mm</b> — c est elle qui place la portee d ecrou. Ecrou{' '}
+                {(spec.nut.across + screws.nutFit).toFixed(2)} mm entre plats sur{' '}
+                {(spec.nut.thickness + screws.nutFit).toFixed(2)} mm d epaisseur.
+              </p>
+              {screws.screws.length > 1 ? (
+                <button
+                  type="button"
+                  className="toolbtn"
+                  disabled={!screws.enabled}
+                  onClick={() =>
+                    setScrews({ screws: screws.screws.filter((item) => item.id !== screw.id) })
+                  }
+                >
+                  Retirer cette vis
+                </button>
+              ) : null}
+            </div>
+          );
+        })}
+        {screws.screws.length < 3 ? (
+          <button
+            type="button"
+            className="toolbtn"
+            disabled={!screws.enabled}
+            onClick={() =>
+              setScrews({
+                screws: [
+                  ...screws.screws,
+                  {
+                    id: `vis-${Date.now()}`,
+                    position: Math.min(0.3 + screws.screws.length * 0.25, 0.9),
+                    size: 'auto',
+                    head: 'countersunk',
+                    length: 20,
+                  },
+                ],
+              })
+            }
+          >
+            Ajouter une vis
+          </button>
+        ) : null}
       </Fieldset>
 
       <Fieldset
