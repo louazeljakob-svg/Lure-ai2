@@ -877,6 +877,8 @@ export interface Viewport3DProps {
   onDragSculpt: (id: string, deltaMm: number) => void;
   /** Vrai quand l'articulation est selectionnee dans l'arbre de scene. */
   jointFocus?: boolean;
+  /** Maillage importe (module W), affiche a cote du corps parametrique. */
+  importedMesh?: THREE.BufferGeometry | null;
 }
 
 export function Viewport3D({
@@ -897,6 +899,7 @@ export function Viewport3D({
   onSelectSculpt,
   onDragSculpt,
   jointFocus = false,
+  importedMesh = null,
 }: Viewport3DProps) {
   const reducedMotion = useReducedMotion();
   const [view, setView] = useState<ViewId>('iso');
@@ -1050,6 +1053,24 @@ export function Viewport3D({
                 onPointerMove={(event) => handleSurfacePointer(event, false)}
               />
             )}
+            {/*
+              Maillage importe : pose dans le meme repere que le corps
+              genere, en translucide, pour qu'on voie d'un coup ce qui
+              ressemble et ce qui differe.
+            */}
+            {importedMesh ? (
+              <mesh geometry={importedMesh} renderOrder={4}>
+                <meshPhysicalMaterial
+                  color="#7fb3ff"
+                  transparent
+                  opacity={0.45}
+                  roughness={0.6}
+                  metalness={0}
+                  side={THREE.DoubleSide}
+                  depthWrite={false}
+                />
+              </mesh>
+            ) : null}
             {assembly && showSockets && workAids ? <SocketPreview assembly={assembly} /> : null}
             <Rattles assembly={assembly} visible={workAids && (showMarkers || xray)} />
             {sculpting ? (

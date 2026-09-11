@@ -68,6 +68,8 @@ import { MaterialPanel } from './components/MaterialPanel';
 import { TacklePanel } from './components/TacklePanel';
 import { PhysicsSimulator } from './components/PhysicsSimulator';
 import { ProjectsPanel } from './components/ProjectsPanel';
+import { ImportPanel } from './components/ImportPanel';
+import { toGeometry, type ImportedMesh } from './lib/importMesh';
 import { ShapeEditor } from './components/ShapeEditor';
 import { ShapeGallery } from './components/ShapeGallery';
 import { Viewport3D } from './components/Viewport3D';
@@ -80,6 +82,7 @@ type PanelTab =
   | 'tackle'
   | 'reference'
   | 'physics'
+  | 'import'
   | 'projects';
 type Pane = 'shape' | 'panel';
 
@@ -100,6 +103,11 @@ const PANEL_META: Record<PanelTab, { title: string; subtitle: string; tab: strin
   },
   reference: { title: 'Reference', subtitle: 'Images calees a l echelle', tab: 'Reference' },
   physics: { title: 'Simulation', subtitle: 'Flottabilite, nage, tenue mecanique', tab: 'Physique' },
+  import: {
+    title: 'Import',
+    subtitle: 'Partir d un maillage existant',
+    tab: 'Import',
+  },
   projects: { title: 'Projets', subtitle: 'Creations de la session', tab: 'Projets' },
 };
 
@@ -128,6 +136,13 @@ export default function App() {
   const [calibratingId, setCalibratingId] = useState<string | null>(null);
   const [picks, setPicks] = useState<{ u: number; v: number }[]>([]);
   const [sculpting, setSculpting] = useState(false);
+  // Maillage importe (module W) : mesure et juge pour de bon, affiche a cote
+  // du corps parametrique tant qu'il ne le pilote pas.
+  const [imported, setImported] = useState<ImportedMesh | null>(null);
+  const importedGeometry = useMemo(
+    () => (imported ? toGeometry(imported) : null),
+    [imported],
+  );
   const [selectedSculpt, setSelectedSculpt] = useState<string | null>(null);
   // Arbre de scene : la selection pilote l'inspecteur, et l'editeur de
   // contour s'ouvre sur la piece qui le demande.
@@ -1207,6 +1222,7 @@ export default function App() {
 
             <Viewport3D
               geo={geo}
+              importedMesh={importedGeometry}
               params={params}
               physics={physics}
               fitKey={fitKey}
@@ -1557,6 +1573,15 @@ export default function App() {
                     water={water}
                     onWaterChange={setWater}
                     sockets={plans.sockets}
+                  />
+                ) : null}
+                {panelTab === 'import' ? (
+                  <ImportPanel
+                    params={params}
+                    water={water}
+                    mesh={imported}
+                    onMesh={setImported}
+                    onToast={(message, kind) => pushToast(kind ?? 'ok', message)}
                   />
                 ) : null}
                 {panelTab === 'projects' ? (
