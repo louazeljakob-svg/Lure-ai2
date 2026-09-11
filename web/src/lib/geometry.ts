@@ -858,7 +858,13 @@ export function buildSegments(
     // --- Face de coupe en V, fente comprise ------------------------------
     const cutRow = front ? grid[nStations] : grid[0];
     const slot = plan.slot;
-    const h = Math.min(slot.halfThickness, plan.halfWidth * 0.65);
+    // Le logement est un SECTEUR : sa demi-largeur croit de la bouche vers le
+    // fond, du demi-angle balaye par la quincaillerie. Les deux cotes sont
+    // bornes par la largeur du corps a la coupe, sinon la poche sortirait par
+    // le flanc ; le test de collision signale alors ce qui ne passe plus.
+    const room = plan.halfWidth * 0.65;
+    const h = Math.min(slot.halfMouth, room);
+    const hFloor = Math.min(slot.halfFloor, room);
     const faceX = (z: number) => xApex - Math.abs(z) * tan;
     const half = Math.round(nRadial / 2);
     const yAt = (j: number) => positions[cutRow[j] * 3 + 1];
@@ -890,7 +896,8 @@ export function buildSegments(
           ]
         : [
             new THREE.Vector3(faceX(z), y, z),
-            new THREE.Vector3(floorX, y, z),
+            // Le fond s'ecarte : c'est la course de la quincaillerie.
+            new THREE.Vector3(floorX, y, Math.sign(z) * hFloor),
             new THREE.Vector3(floorX, y, 0),
           ];
 

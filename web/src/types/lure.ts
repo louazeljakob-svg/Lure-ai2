@@ -713,6 +713,14 @@ export interface ArticulationConfig {
   slotHeight: number;
   slotDepth: number;
   slotWidth: number;
+  /**
+   * Jeu de fonctionnement du mecanisme, en mm.
+   *
+   * Il s'ajoute sur TOUTES les faces du volume balaye par la quincaillerie,
+   * pas seulement autour de la piece au repos : c'est lui qui fait la
+   * difference entre un joint qui tourne et un joint qui coince.
+   */
+  jointFit: number;
 }
 
 /**

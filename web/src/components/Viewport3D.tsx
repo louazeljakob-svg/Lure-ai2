@@ -35,6 +35,7 @@ import type { ThreeEvent } from '@react-three/fiber';
 import { FINISHES } from '../lib/materials';
 import { createLiveryNormalMap, createPaintTexture, createScaleNormalMap } from '../lib/paint';
 import { useReducedMotion } from '../lib/hooks';
+import { jointTravel } from '../lib/jointCheck';
 import type { PhysicsResult } from '../lib/physics';
 import { waterlineY } from '../lib/physics';
 
@@ -915,7 +916,14 @@ export function Viewport3D({
   const [swingAngle, setSwingAngle] = useState(0);
   const dragging = useRef<string | null>(null);
 
-  const swingLimit = geo.jointPlan ? THREE.MathUtils.degToRad(geo.jointPlan.swing) / 2 : 0;
+  // Course REELLE du joint, mesuree par pas d'un degre sur la quincaillerie
+  // et le logement : c'est elle que l'animation rejoue, pas le debattement
+  // demande. Ce qui bouge a l'ecran est ce qui bougera une fois imprime.
+  const jointRun = useMemo(
+    () => (geo.jointPlan ? jointTravel(createProfile(params), geo.jointPlan) : null),
+    [geo.jointPlan, params],
+  );
+  const swingLimit = jointRun ? THREE.MathUtils.degToRad(jointRun.free) / 2 : 0;
   useEffect(() => {
     if (!animateSwing || swingLimit <= 0 || reducedMotion) {
       setSwingAngle(0);
@@ -924,8 +932,13 @@ export function Viewport3D({
     let frame = 0;
     const start = performance.now();
     const tick = () => {
+      // Aller-retour a vitesse constante, butee a butee : une oscillation
+      // sinusoidale ralentit aux extremes et masque justement l'endroit ou
+      // le mecanisme coince.
       const t = (performance.now() - start) / 1000;
-      setSwingAngle(Math.sin(t * 1.8) * swingLimit);
+      const phase = ((t * 0.5) % 1) * 4;
+      const wave = phase < 1 ? phase : phase < 3 ? 2 - phase : phase - 4;
+      setSwingAngle(wave * swingLimit);
       frame = requestAnimationFrame(tick);
     };
     frame = requestAnimationFrame(tick);
@@ -1225,15 +1238,21 @@ export function Viewport3D({
           type="button"
           className="toolbtn"
           aria-pressed={animateSwing}
-          disabled={!geo.jointPlan || geo.jointPlan.swing <= 0}
+          disabled={!jointRun || jointRun.free <= 0}
           title={
-            geo.jointPlan
-              ? `Debat d environ ${(geo.jointPlan.swing / 2).toFixed(0)} deg de chaque cote`
+            jointRun
+              ? jointRun.free + 1e-9 < jointRun.wanted
+                ? `Course reelle ${(jointRun.free / 2).toFixed(0)} deg de chaque cote au lieu de ` +
+                  `${(jointRun.wanted / 2).toFixed(0)} : ${jointRun.first?.part ?? 'une piece'} bloque a ` +
+                  `${Math.abs(jointRun.first?.angleDeg ?? 0).toFixed(0)} deg`
+                : `Course reelle ${(jointRun.free / 2).toFixed(0)} deg de chaque cote, sans interference`
               : 'Ajoutez une articulation pour animer le debattement'
           }
           onClick={() => setAnimateSwing((value) => !value)}
         >
-          Animer le joint
+          {animateSwing
+            ? `Joint ${THREE.MathUtils.radToDeg(swingAngle) >= 0 ? '+' : ''}${THREE.MathUtils.radToDeg(swingAngle).toFixed(0)} deg`
+            : 'Animer le joint'}
         </button>
       </div>
 

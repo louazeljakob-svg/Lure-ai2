@@ -982,6 +982,14 @@ export function JointSlotInspector({
         hint="Etendue verticale de la fente ; elle se cale sur les colonnes du maillage."
         onChange={(slotWidth) => onChange({ slotWidth })}
       />
+      <RangeSlider
+        label="Jeu de fonctionnement"
+        value={config.jointFit}
+        range={LIMITS.jointFit}
+        format={(v) => `${v.toFixed(2)} mm`}
+        hint="Ajoute sur toutes les faces du volume BALAYE par la quincaillerie, pas seulement autour de la piece au repos. C est ce jeu qui fait tourner le joint."
+        onChange={(jointFit) => onChange({ jointFit })}
+      />
     </Fieldset>
   );
 }

@@ -122,6 +122,7 @@ export const LIMITS = {
   slotHeight: { min: 0.5, max: 8, step: 0.1 },
   slotDepth: { min: 1, max: 20, step: 0.5 },
   slotWidth: { min: 2, max: 60, step: 0.5 },
+  jointFit: { min: 0.05, max: 1.5, step: 0.05 },
   // --- Atelier -----------------------------------------------------------
   perimeters: { min: 1, max: 6, step: 1 },
   layerHeight: { min: 0.05, max: 0.4, step: 0.01 },
@@ -292,6 +293,7 @@ const articulation = (
   slotHeight: 2,
   slotDepth: 5,
   slotWidth: 23,
+  jointFit: 0.35,
   ...overrides,
 });
 
@@ -1278,5 +1280,16 @@ export const clonePreset = (id: ShapeId): LureParams => {
     catalogue: params.catalogue.map((item) => ({ ...item })),
     mounts: params.mounts.map((mount, i) => ({ ...mount, id: `${mount.id}-${i}-${Date.now()}` })),
     paint: { ...params.paint, livery: cloneLivery(params.paint.livery) },
+    // Ces sous-objets etaient partages par reference : regler le debattement
+    // d'un projet modifiait le MODELE, et donc tous les projets ouverts
+    // ensuite. Une copie par clone, comme pour les autres.
+    articulation: { ...params.articulation },
+    dowels: { ...params.dowels },
+    print: { ...params.print },
+    scales: { ...params.scales },
+    outline: { ...params.outline, nodes: params.outline.nodes.map((node) => ({ ...node })) },
+    outlineReference: { ...params.outlineReference },
+    decals: params.decals.map((decal, i) => ({ ...decal, id: `${decal.id}-${i}-${Date.now()}` })),
+    inlays: params.inlays.map((inlay, i) => ({ ...inlay, id: `${inlay.id}-${i}-${Date.now()}` })),
   };
 };

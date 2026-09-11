@@ -372,6 +372,7 @@ function sanitizeArticulation(
     slotHeight: num(raw.slotHeight, LIMITS.slotHeight, fallback.slotHeight),
     slotDepth: num(raw.slotDepth, LIMITS.slotDepth, fallback.slotDepth),
     slotWidth: num(raw.slotWidth, LIMITS.slotWidth, fallback.slotWidth),
+    jointFit: num(raw.jointFit, LIMITS.jointFit, fallback.jointFit),
   };
 }
 

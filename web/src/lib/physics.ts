@@ -17,6 +17,7 @@ import { clamp, createProfile, MM_TO_CM, type ProfileSampler } from './profile';
 import { assemblyActive, assemblyBlocker, buildAssembly, resolvePin } from './assembly';
 import { printedBodies } from './geometry';
 import type { BillSlotPlan } from './billTemplate';
+import { jointTravel, type JointTravel } from './jointCheck';
 import type { ArticulationPlan } from './articulation';
 import { dowelVolumes, type DowelPlacement } from './dowels';
 import { planThroughWire, throughWireBlocker } from './throughWire';
@@ -585,6 +586,7 @@ export function computePhysics(
       bill: cavities.bill,
       billProblem: cavities.billProblem,
       joint: geo.jointPlan,
+      jointRun: geo.jointPlan ? jointTravel(profile, geo.jointPlan) : null,
       dowels: cavities.dowels,
       tackleMass,
       mountWarnings: checkMounts(
@@ -663,6 +665,8 @@ interface WarningInput {
   billProblem: string | null;
   /** Cotes du joint articule, ou null. */
   joint: ArticulationPlan | null;
+  /** Course reelle du joint, mesuree par pas d'un degre. */
+  jointRun: JointTravel | null;
   /** Goupilles cylindriques d'assemblage et leur controle. */
   dowels: DowelPlacement[];
   tackleMass: number;
@@ -838,6 +842,37 @@ function buildWarnings(
       level: 'warn',
       title: 'Logement de goupille non creuse',
       detail: dowel.problem,
+    });
+  }
+
+  // Course reelle du joint : mesuree par pas d'un degre sur toute la garde,
+  // pas deduite des cotes. C'est le seul moyen de savoir si le mecanisme
+  // tourne pour de bon une fois imprime.
+  const run = r.jointRun;
+  if (run && run.hits.length > 0) {
+    const first = run.first;
+    const blocked = run.free + 1e-9 < run.wanted;
+    list.push({
+      id: 'joint-collision',
+      level: blocked ? 'error' : 'warn',
+      title: blocked
+        ? `Debattement bloque a ${run.free.toFixed(0)} deg sur ${run.wanted.toFixed(0)} demandes`
+        : 'Interference dans le joint articule',
+      detail:
+        (first
+          ? `A ${Math.abs(first.angleDeg).toFixed(0)} deg, ${first.part} entre de ` +
+            `${first.depthMm.toFixed(2)} mm dans ${first.against}. ${first.remedy} `
+          : '') +
+        (run.hits.length > 1
+          ? `Au total ${run.hits.length} interferences relevees sur la course : ` +
+            run.hits
+              .map(
+                (hit) =>
+                  `${hit.part} / ${hit.against} a ${Math.abs(hit.angleDeg).toFixed(0)} deg`,
+              )
+              .join(' ; ') +
+            '.'
+          : ''),
     });
   }
 

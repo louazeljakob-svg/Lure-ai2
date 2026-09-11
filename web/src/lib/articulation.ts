@@ -55,13 +55,42 @@ export interface ArticulationPlan {
   eyes: EyePlacement[];
   /** Goupille verticale : rayon et hauteur, en cm. */
   pin: { radius: number; from: number; to: number } | null;
-  /** Fente de logement, en cm : demi-epaisseur, hauteur, profondeur. */
-  slot: { halfThickness: number; from: number; to: number; depth: number };
+  /**
+   * Logement de la quincaillerie, en cm.
+   *
+   * Ce n'est PAS un jeu statique autour de la piece au repos : `halfMouth` et
+   * `halfFloor` decrivent un secteur angulaire, ouvert de `sweep` de chaque
+   * cote de l'axe de charniere, qui contient tout le volume balaye par la
+   * quincaillerie sur sa course. Un logement a parois paralleles bloquerait
+   * le mecanisme des le premier degre.
+   */
+  slot: {
+    /** Demi-epaisseur de la piece au repos, jeu compris, en cm. */
+    halfThickness: number;
+    from: number;
+    to: number;
+    depth: number;
+    /** Demi-angle du secteur balaye : debattement / 2 + marge de securite. */
+    sweep: number;
+    /** Jeu de fonctionnement applique sur toutes les faces, en cm. */
+    fit: number;
+    /** Demi-largeur du secteur a la bouche et au fond, en cm. */
+    halfMouth: number;
+    halfFloor: number;
+  };
   /** Masse totale de la quincaillerie, en g. */
   hardwareMass: number;
   /** Vrai tant que les masses ne sont pas renseignees. */
   massUnknown: boolean;
 }
+
+/**
+ * Marge de securite ajoutee de chaque cote du debattement demande.
+ *
+ * Trois degres : de quoi absorber le retrait d'impression et le jeu des
+ * oeillets sans que la quincaillerie vienne toucher le fond du secteur.
+ */
+const SWEEP_MARGIN = THREE.MathUtils.degToRad(3);
 
 /** Recherche de la station qui tombe sur une abscisse donnee. */
 function pAtX(profile: ProfileSampler, x: number): number {
@@ -108,14 +137,54 @@ export function articulationPlan(
   const wireRadius = (config.eyeWire * MM_TO_CM) / 2;
   const loopRadius = Math.max((config.eyeLoop * MM_TO_CM) / 2 - wireRadius, wireRadius);
 
-  // Oeillets repartis sur la hauteur utile de la section, sans toucher la
-  // peau. `section.bottom` est negatif : c'est l'ordonnee du ventre.
-  const margin = loopRadius + wireRadius + 0.1;
-  const low = section.bottom + margin;
-  const high = section.top - margin;
+  const pin =
+    config.hardware === 'pin'
+      ? {
+          radius: Math.max(wireRadius * 1.15, 0.045),
+          from: section.bottom + 0.04,
+          to: section.top - 0.04,
+        }
+      : null;
+
+  const fit = Math.max(config.jointFit, 0) * MM_TO_CM;
+  const halfThickness = Math.max((config.slotHeight * MM_TO_CM) / 2, 0.03) + fit;
+  // La fente est bornee par la hauteur utile : deux millimetres de peau au
+  // dos et au ventre, sinon elle deboucherait par le dessus.
+  const usableHalf = Math.max((section.top - section.bottom) / 2 - 0.2, 0.05);
+  const slotHalf = Math.min((config.slotWidth * MM_TO_CM) / 2, usableHalf);
+  const mid = (section.top + section.bottom) / 2;
+  const depth = Math.max(config.slotDepth * MM_TO_CM, 0.05);
+
+  // Secteur balaye : la moitie du debattement de chaque cote, plus une marge
+  // de securite de trois degres. La demi-largeur du logement croit avec la
+  // distance a l'axe — c'est ce qui en fait un secteur et non un couloir.
+  const sweep = Math.min(swingRad / 2 + SWEEP_MARGIN, Math.PI / 2 - 0.05);
+  const halfFloor = halfThickness / Math.cos(sweep) + depth * Math.tan(sweep);
+  // La bouche est sur la face en V : plus le biseau est ouvert, plus elle
+  // recule, donc plus le secteur s'y est deja elargi.
+  const lever = Math.max(1 - Math.tan(sweep) * Math.tan(faceAngle), 0.2);
+  const halfMouth = Math.min(halfThickness / Math.cos(sweep) / lever, halfFloor);
+  const slot = {
+    halfThickness,
+    from: mid - slotHalf,
+    to: mid + slotHalf,
+    depth,
+    sweep,
+    fit,
+    halfMouth,
+    halfFloor,
+  };
+
+  // Oeillets repartis dans la FENTE, pas sur la hauteur de la section : une
+  // boucle posee au-dela du bord de la fente est noyee dans la matiere, et
+  // c'est la premiere raison pour laquelle rien ne tournait. La peau garde
+  // son millimetre de marge, la fente le sien.
+  const margin = loopRadius + wireRadius;
+  const low = Math.max(section.bottom + margin + 0.1, slot.from + margin);
+  const high = Math.min(section.top - margin - 0.1, slot.to - margin);
   const count = Math.max(1, Math.min(Math.round(config.eyeCount), 4));
   const eyes: EyePlacement[] = [];
-  if (high > low) {
+  if (high >= low) {
     for (let i = 0; i < count; i++) {
       const t = count === 1 ? 0.5 : i / (count - 1);
       eyes.push({
@@ -129,28 +198,6 @@ export function articulationPlan(
       });
     }
   }
-
-  const pin =
-    config.hardware === 'pin'
-      ? {
-          radius: Math.max(wireRadius * 1.15, 0.045),
-          from: section.bottom + 0.04,
-          to: section.top - 0.04,
-        }
-      : null;
-
-  const halfThickness = Math.max((config.slotHeight * MM_TO_CM) / 2, 0.03);
-  // La fente est bornee par la hauteur utile : deux millimetres de peau au
-  // dos et au ventre, sinon elle deboucherait par le dessus.
-  const usableHalf = Math.max((section.top - section.bottom) / 2 - 0.2, 0.05);
-  const slotHalf = Math.min((config.slotWidth * MM_TO_CM) / 2, usableHalf);
-  const mid = (section.top + section.bottom) / 2;
-  const slot = {
-    halfThickness,
-    from: mid - slotHalf,
-    to: mid + slotHalf,
-    depth: Math.max(config.slotDepth * MM_TO_CM, 0.05),
-  };
 
   const hardwareMass = eyes.length * config.eyeMass + (pin ? config.pinMass : 0);
   return {
