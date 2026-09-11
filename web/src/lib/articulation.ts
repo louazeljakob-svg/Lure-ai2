@@ -53,8 +53,25 @@ export interface ArticulationPlan {
   bottom: number;
   top: number;
   eyes: EyePlacement[];
-  /** Goupille verticale : rayon et hauteur, en cm. */
-  pin: { radius: number; from: number; to: number } | null;
+  /**
+   * Cylindre de retention imprime, traversant les boucles du joint.
+   *
+   * Meme principe que les barreaux d'assemblage : il s'imprime a plat a cote
+   * des segments et s'engage dans une portee chanfreinee, en haut et en bas
+   * de la fente. C'est lui qui tient le joint ferme.
+   */
+  pin: {
+    /** Rayon du barreau imprime, en cm. */
+    radius: number;
+    /** Rayon de la portee, jeu compris, en cm. */
+    seat: number;
+    /** Chanfrein d'entree, en cm. */
+    chamfer: number;
+    /** Jeu entre le barreau et la boucle de quincaillerie, en cm. */
+    loopFit: number;
+    from: number;
+    to: number;
+  } | null;
   /**
    * Logement de la quincaillerie, en cm.
    *
@@ -137,10 +154,15 @@ export function articulationPlan(
   const wireRadius = (config.eyeWire * MM_TO_CM) / 2;
   const loopRadius = Math.max((config.eyeLoop * MM_TO_CM) / 2 - wireRadius, wireRadius);
 
+
+  const retentionRadius = Math.max((config.retentionDiameter * MM_TO_CM) / 2, 0.045);
   const pin =
     config.hardware === 'pin'
       ? {
-          radius: Math.max(wireRadius * 1.15, 0.045),
+          radius: retentionRadius,
+          seat: retentionRadius + (config.retentionSeatFit * MM_TO_CM) / 2,
+          chamfer: config.retentionChamfer * MM_TO_CM,
+          loopFit: config.retentionLoopFit * MM_TO_CM,
           from: section.bottom + 0.04,
           to: section.top - 0.04,
         }
@@ -277,8 +299,11 @@ export function buildJointHardware(plan: ArticulationPlan): THREE.BufferGeometry
   for (const eye of plan.eyes) {
     // Boucle : un tore centre sur l'axe de charniere, dans le plan vertical
     // de la goupille — c'est par la que passe le fil de la goupille.
+    // Anneau HORIZONTAL, autour de l'axe vertical : c'est le seul plan qu'un
+    // barreau de retention vertical puisse traverser. Un anneau dresse dans
+    // le plan de joint aurait la goupille DANS son plan, jamais dedans.
     const loop = new THREE.TorusGeometry(eye.loopRadius, eye.wireRadius, 10, 24);
-    loop.rotateY(Math.PI / 2);
+    loop.rotateX(Math.PI / 2);
     loop.translate(plan.xJoint, eye.y, 0);
     parts.push(loop);
 
@@ -298,9 +323,12 @@ export function buildJointHardware(plan: ArticulationPlan): THREE.BufferGeometry
     );
   }
 
-  if (parts.length === 0) return null;
+  return mergeParts(parts);
+}
 
-  // Fusion manuelle : eviter une dependance de plus pour trois cylindres.
+/** Fusion manuelle : eviter une dependance de plus pour quelques cylindres. */
+function mergeParts(parts: THREE.BufferGeometry[]): THREE.BufferGeometry | null {
+  if (parts.length === 0) return null;
   let count = 0;
   for (const part of parts) count += part.getAttribute('position').count;
   const positions = new Float32Array(count * 3);
@@ -329,6 +357,36 @@ export function buildJointHardware(plan: ArticulationPlan): THREE.BufferGeometry
   merged.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
   merged.setIndex(indices);
   return merged;
+}
+
+/**
+ * Barreaux de retention imprimes, poses a plat a cote des segments.
+ *
+ * Un par segment : le cylindre traverse la boucle de quincaillerie et
+ * s'engage dans la portee taillee a l'axe de charniere. Le chanfrein est
+ * repris sur le barreau, comme sur les goupilles d'assemblage, de sorte
+ * qu'on l'engage sans forcer.
+ */
+export function buildRetentionPins(plan: ArticulationPlan): THREE.BufferGeometry | null {
+  if (!plan.pin) return null;
+  const { radius, chamfer, from, to } = plan.pin;
+  const length = to - from;
+  if (length <= chamfer) return null;
+  const parts: THREE.BufferGeometry[] = [];
+  for (const [index, offset] of [0, plan.slot.depth * 2.2].entries()) {
+    const cylinder = new THREE.CylinderGeometry(
+      radius - chamfer * 0.25,
+      radius - chamfer * 0.25,
+      length - chamfer * 0.5,
+      24,
+      1,
+    );
+    // Couche sur le plateau, a cote du segment qu'il tient.
+    cylinder.rotateZ(Math.PI / 2);
+    cylinder.translate(plan.xJoint + offset, plan.bottom - radius * 2.5 * (index + 1), 0);
+    parts.push(cylinder);
+  }
+  return mergeParts(parts);
 }
 
 /**

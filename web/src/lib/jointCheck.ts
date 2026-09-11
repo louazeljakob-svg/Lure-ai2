@@ -172,7 +172,7 @@ export function jointTravel(
   };
 
   // --- Controles independants de l'angle ----------------------------------
-  const fitCm = plan.slot.fit;
+
   for (const [index, eye] of plan.eyes.entries()) {
     const label = plan.eyes.length > 1 ? `Oeillet ${index + 1}` : 'Oeillet';
     if (eye.y - eye.loopRadius - eye.wireRadius < plan.slot.from - 1e-9) {
@@ -193,35 +193,36 @@ export function jointTravel(
         'Elargissez la fente (hauteur utile) ou descendez les oeillets.',
       );
     }
-    if (plan.pin && eye.loopRadius < plan.pin.radius + fitCm) {
+    if (plan.pin && eye.loopRadius < plan.pin.radius + plan.pin.loopFit / 2) {
       record(
         0,
         label,
-        'goupille verticale',
-        plan.pin.radius + fitCm - eye.loopRadius,
-        'Prenez un oeillet a plus grande boucle, ou une goupille plus fine.',
+        'cylindre de retention',
+        plan.pin.radius + plan.pin.loopFit / 2 - eye.loopRadius,
+        `Le cylindre de ${((plan.pin.radius * 2) / MM_TO_CM).toFixed(1)} mm ne passe pas dans ` +
+          'la boucle. Prenez un oeillet a plus grande boucle, ou reduisez le diametre du cylindre.',
       );
     }
   }
 
-  // La goupille verticale traverse le segment avant a l'axe de charniere :
-  // hors de la bande de la fente, elle n'a aucun logement.
+  // La portee du cylindre de retention est taillee a l'axe de charniere sur
+  // toute la hauteur du barreau. Reste a verifier qu'elle tient dans la
+  // largeur du segment : au-dela, le cylindre ressortirait par le flanc.
   if (plan.pin) {
-    const above = plan.pin.to - plan.slot.to;
-    const below = plan.slot.from - plan.pin.from;
-    const worst = Math.max(above, below);
-    if (worst > 1e-6) {
+    const room = plan.halfWidth * 0.65;
+    if (plan.pin.seat > room) {
       record(
         0,
-        'Goupille verticale',
-        'matiere pleine du segment avant',
-        plan.pin.radius,
-        `Percez un demi-logement de ${((plan.pin.radius + fitCm) * 2 * 10).toFixed(1)} mm a ` +
-          'l axe de charniere avant l impression, ou passez a des oeillets entrelaces.',
+        'Cylindre de retention',
+        'flanc du segment',
+        plan.pin.seat - room,
+        `Le corps n offre que ${((room * 2) / MM_TO_CM).toFixed(1)} mm a la charniere. ` +
+          'Reduisez le diametre du cylindre, ou deplacez le joint vers une section plus large.',
         false,
       );
     }
   }
+
 
   // --- Balayage par pas d'un degre ----------------------------------------
   const step = THREE.MathUtils.degToRad(1);

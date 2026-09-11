@@ -990,6 +990,35 @@ export function JointSlotInspector({
         hint="Ajoute sur toutes les faces du volume BALAYE par la quincaillerie, pas seulement autour de la piece au repos. C est ce jeu qui fait tourner le joint."
         onChange={(jointFit) => onChange({ jointFit })}
       />
+      <RangeSlider
+        label="Cylindre de retention"
+        value={config.retentionDiameter}
+        range={LIMITS.retentionDiameter}
+        format={(v) => `${v.toFixed(1)} mm`}
+        hint="Barreau imprime a part qui traverse les boucles et s appuie dans une portee taillee a l axe de charniere."
+        onChange={(retentionDiameter) => onChange({ retentionDiameter })}
+      />
+      <RangeSlider
+        label="Jeu cylindre / portee"
+        value={config.retentionSeatFit}
+        range={LIMITS.retentionSeatFit}
+        format={(v) => `${v.toFixed(2)} mm`}
+        onChange={(retentionSeatFit) => onChange({ retentionSeatFit })}
+      />
+      <RangeSlider
+        label="Jeu cylindre / boucle"
+        value={config.retentionLoopFit}
+        range={LIMITS.retentionLoopFit}
+        format={(v) => `${v.toFixed(2)} mm`}
+        onChange={(retentionLoopFit) => onChange({ retentionLoopFit })}
+      />
+      <RangeSlider
+        label="Chanfrein d entree"
+        value={config.retentionChamfer}
+        range={LIMITS.retentionChamfer}
+        format={(v) => `${v.toFixed(2)} mm`}
+        onChange={(retentionChamfer) => onChange({ retentionChamfer })}
+      />
     </Fieldset>
   );
 }

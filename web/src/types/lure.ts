@@ -721,6 +721,18 @@ export interface ArticulationConfig {
    * difference entre un joint qui tourne et un joint qui coince.
    */
   jointFit: number;
+
+  // --- Cylindre de retention (module V) -----------------------------------
+  // Meme principe que les goupilles d'assemblage : un barreau imprime a part,
+  // qui traverse les boucles et s'appuie dans une portee de chaque cote.
+  /** Diametre du cylindre imprime, en mm. */
+  retentionDiameter: number;
+  /** Jeu cylindre / portee, en mm. */
+  retentionSeatFit: number;
+  /** Jeu cylindre / boucle de goupille, en mm. */
+  retentionLoopFit: number;
+  /** Chanfrein d'entree de la portee, en mm. */
+  retentionChamfer: number;
 }
 
 /**

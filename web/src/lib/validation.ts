@@ -373,6 +373,10 @@ function sanitizeArticulation(
     slotDepth: num(raw.slotDepth, LIMITS.slotDepth, fallback.slotDepth),
     slotWidth: num(raw.slotWidth, LIMITS.slotWidth, fallback.slotWidth),
     jointFit: num(raw.jointFit, LIMITS.jointFit, fallback.jointFit),
+    retentionDiameter: num(raw.retentionDiameter, LIMITS.retentionDiameter, fallback.retentionDiameter),
+    retentionSeatFit: num(raw.retentionSeatFit, LIMITS.retentionSeatFit, fallback.retentionSeatFit),
+    retentionLoopFit: num(raw.retentionLoopFit, LIMITS.retentionLoopFit, fallback.retentionLoopFit),
+    retentionChamfer: num(raw.retentionChamfer, LIMITS.retentionChamfer, fallback.retentionChamfer),
   };
 }
 

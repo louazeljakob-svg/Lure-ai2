@@ -123,6 +123,10 @@ export const LIMITS = {
   slotDepth: { min: 1, max: 20, step: 0.5 },
   slotWidth: { min: 2, max: 60, step: 0.5 },
   jointFit: { min: 0.05, max: 1.5, step: 0.05 },
+  retentionDiameter: { min: 1.5, max: 5, step: 0.1 },
+  retentionSeatFit: { min: 0.05, max: 0.4, step: 0.01 },
+  retentionLoopFit: { min: 0.1, max: 0.5, step: 0.01 },
+  retentionChamfer: { min: 0.2, max: 1, step: 0.05 },
   // --- Atelier -----------------------------------------------------------
   perimeters: { min: 1, max: 6, step: 1 },
   layerHeight: { min: 0.05, max: 0.4, step: 0.01 },
@@ -287,13 +291,21 @@ const articulation = (
   eyeMass: 0,
   pinMass: 0,
   showHardware: true,
-  eyeLoop: 3.9,
+  // Une boucle de 5 mm laisse passer le cylindre de retention de 3 mm avec
+  // son quart de millimetre de jeu ; une fente de 6 mm laisse passer la
+  // boucle. Ces trois cotes vont ensemble : c'est le test de collision qui
+  // les a mises d'accord.
+  eyeLoop: 5,
   eyeWire: 1.25,
   eyeLength: 12,
-  slotHeight: 2,
+  slotHeight: 6,
   slotDepth: 5,
   slotWidth: 23,
   jointFit: 0.35,
+  retentionDiameter: 3,
+  retentionSeatFit: 0.15,
+  retentionLoopFit: 0.25,
+  retentionChamfer: 0.4,
   ...overrides,
 });
 

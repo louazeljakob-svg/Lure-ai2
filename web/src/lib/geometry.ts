@@ -16,7 +16,12 @@ import { getClip, STEEL_DENSITY } from './materials';
 import { clamp, createProfile, MM_TO_CM, type ProfileSampler } from './profile';
 import { bibShape, clipHalfPlane } from './billTemplate';
 import { createSurfaceDetail } from './surfaceDetail';
-import { articulationPlan, buildJointHardware, type ArticulationPlan } from './articulation';
+import {
+  articulationPlan,
+  buildJointHardware,
+  buildRetentionPins,
+  type ArticulationPlan,
+} from './articulation';
 
 /** Densite du plomb, conservee comme repere pour l'interface. */
 export const LEAD_DENSITY = 11.34;
@@ -128,6 +133,8 @@ export interface LureGeometry {
   body: THREE.BufferGeometry;
   /** Segments articules, ou null si le corps est d'une seule piece. */
   segments: { front: THREE.BufferGeometry; rear: THREE.BufferGeometry } | null;
+  /** Barreaux de retention du joint, imprimes a part. */
+  retentionPins: THREE.BufferGeometry | null;
   /** Quincaillerie du joint : affichee et pesee, jamais imprimee. */
   joint: THREE.BufferGeometry | null;
   /** Cotes du joint, pour l'inspecteur et la simulation. */
@@ -612,7 +619,9 @@ export interface SurfaceSampler {
  * corps d'un seul tenant. Volume, masse et export partent tous de la.
  */
 export const printedBodies = (geo: LureGeometry): THREE.BufferGeometry[] =>
-  geo.segments ? [geo.segments.front, geo.segments.rear] : [geo.body];
+  geo.segments
+    ? [geo.segments.front, geo.segments.rear, ...(geo.retentionPins ? [geo.retentionPins] : [])]
+    : [geo.body];
 
 export function createSurfaceSampler(
   profile: ProfileSampler,
@@ -670,6 +679,9 @@ export function buildLure(
       ? articulationPlan(profile, params)
       : null;
   const segments = jointPlan ? buildSegments(profile, params, fine, jointPlan, bakeScales) : null;
+  // Les barreaux de retention s'impriment a part, comme les goupilles
+  // d'assemblage : ils accompagnent les segments dans l'export.
+  const retentionPins = jointPlan ? buildRetentionPins(jointPlan) : null;
   const joint =
     jointPlan && params.articulation.showHardware ? buildJointHardware(jointPlan) : null;
   // La bavette rapportee est modelisee malgre tout : l'utilisateur doit voir
@@ -692,6 +704,7 @@ export function buildLure(
   return {
     body,
     segments,
+    retentionPins,
     joint,
     jointPlan,
     bib,
@@ -708,6 +721,7 @@ export function buildLure(
       body.dispose();
       segments?.front.dispose();
       segments?.rear.dispose();
+      retentionPins?.dispose();
       joint?.dispose();
       bib?.dispose();
       tail?.dispose();
@@ -886,20 +900,32 @@ export function buildSegments(
     //
     // Tout decrire d'un seul tenant evite d'avoir a raccorder deux maillages
     // au bord de la fente — c'est precisement la que les trous se logent.
-    const floorX = front ? xApex - slot.depth : xApex + slot.depth;
-    const path = (y: number, z: number): THREE.Vector3[] =>
-      z === 0
-        ? [
-            new THREE.Vector3(xApex, y, 0),
-            new THREE.Vector3(xApex, y, 0),
-            new THREE.Vector3(xApex, y, 0),
-          ]
-        : [
-            new THREE.Vector3(faceX(z), y, z),
-            // Le fond s'ecarte : c'est la course de la quincaillerie.
-            new THREE.Vector3(floorX, y, Math.sign(z) * hFloor),
-            new THREE.Vector3(floorX, y, 0),
-          ];
+    // Deux gabarits de poche se succedent sur la hauteur de la coupe :
+    //   1 = la fente, qui recoit la quincaillerie et s'ouvre en secteur ;
+    //   2 = la portee du cylindre de retention, un demi-canal vertical taille
+    //       a l'axe de charniere, qui court sur toute la hauteur du barreau.
+    // Sans le second, le barreau n'aurait aucun logement hors de la fente et
+    // ne pourrait tout simplement pas etre engage.
+    const seat = plan.pin ? Math.min(plan.pin.seat, room) : 0;
+    const inSeat = (y: number) =>
+      plan.pin !== null && seat > 1e-4 && y >= plan.pin.from - 1e-9 && y <= plan.pin.to + 1e-9;
+    const kindAt = (y: number): 0 | 1 | 2 => (inBand(y) ? 1 : inSeat(y) ? 2 : 0);
+    const halfOf = (kind: 0 | 1 | 2) => (kind === 1 ? h : kind === 2 ? seat : 0);
+    const floorOf = (kind: 0 | 1 | 2) => (kind === 1 ? slot.depth : kind === 2 ? seat : 0);
+    const floorHalfOf = (kind: 0 | 1 | 2) => (kind === 1 ? hFloor : kind === 2 ? seat : 0);
+    const path = (y: number, z: number, kind: 0 | 1 | 2): THREE.Vector3[] => {
+      if (z === 0 || kind === 0) {
+        const apexPoint = new THREE.Vector3(xApex, y, 0);
+        return [apexPoint, apexPoint.clone(), apexPoint.clone()];
+      }
+      const depthX = front ? xApex - floorOf(kind) : xApex + floorOf(kind);
+      return [
+        new THREE.Vector3(faceX(z), y, z),
+        // Le fond s'ecarte : c'est la course de la quincaillerie.
+        new THREE.Vector3(depthX, y, Math.sign(z) * floorHalfOf(kind)),
+        new THREE.Vector3(depthX, y, 0),
+      ];
+    };
 
     // Aux deux transitions, le bord revient sur l'arete a la MEME hauteur :
     // la fente garde ainsi des bouts droits. Entree et sortie sont traitees
@@ -917,9 +943,9 @@ export function buildSegments(
     const canonY: number[] = [];
     for (let k = 0; k <= half; k++) canonY.push(yAt(k));
 
-    const shape: { y: number; z: number; canon: number; role: number }[] = [];
+    const shape: { y: number; z: number; canon: number; role: number; kind: 0 | 1 | 2 }[] = [];
     const owner: number[] = [];
-    let previousBand = false;
+    let previousKind: 0 | 1 | 2 = 0;
     let previousY = 0;
     let previousCanon = 0;
     for (let j = 0; j <= nRadial; j++) {
@@ -928,17 +954,26 @@ export function buildSegments(
       // Cote du point : positif sur la premiere moitie du tour, negatif sur
       // la seconde. Les colonnes 0, half et nRadial sont sur l'arete meme.
       const side = j === 0 || j === half || j === nRadial ? 0 : j < half ? 1 : -1;
-      const band = inBand(y) && side !== 0;
-      if (band && !previousBand) {
-        shape.push({ y, z: 0, canon: key, role: 1 });
-        owner.push(j);
-      } else if (!band && previousBand) {
-        shape.push({ y: previousY, z: 0, canon: previousCanon, role: 1 });
-        owner.push(j - 1);
+      const kind: 0 | 1 | 2 = side === 0 ? 0 : kindAt(y);
+      // A chaque changement de gabarit, un point intermediaire au gabarit le
+      // plus etroit : le bord de la poche reste droit, et le passage de la
+      // fente a la portee est une marche franche et non un biseau.
+      if (kind !== previousKind) {
+        const narrow: 0 | 1 | 2 =
+          halfOf(kind) <= halfOf(previousKind) ? kind : previousKind;
+        const entering = halfOf(kind) > halfOf(previousKind);
+        shape.push({
+          y: entering ? y : previousY,
+          z: side * halfOf(narrow),
+          canon: entering ? key : previousCanon,
+          role: 1,
+          kind: narrow,
+        });
+        owner.push(entering ? j : j - 1);
       }
-      shape.push({ y, z: band ? side * h : 0, canon: key, role: 0 });
+      shape.push({ y, z: side * halfOf(kind), canon: key, role: 0, kind });
       owner.push(j);
-      previousBand = band;
+      previousKind = kind;
       previousY = y;
       previousCanon = key;
     }
@@ -955,7 +990,7 @@ export function buildSegments(
     };
 
     const rails = shape.map((point) => {
-      const trio = path(point.y, point.z);
+      const trio = path(point.y, point.z, point.kind);
       return trio.map((v, r) =>
         Math.abs(v.z) < 1e-12
           ? sharedPush(`${point.canon}:${point.role}:${r}:${v.x.toFixed(6)}`, v)
