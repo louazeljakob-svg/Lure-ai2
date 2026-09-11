@@ -193,7 +193,9 @@ export function jointTravel(
         'Elargissez la fente (hauteur utile) ou descendez les oeillets.',
       );
     }
-    if (plan.pin && eye.loopRadius < plan.pin.radius + plan.pin.loopFit / 2) {
+    // Un jeu pose a la cote exacte n'est pas une interference : la tolerance
+    // absorbe l'arrondi des cotes en millimetres.
+    if (plan.pin && eye.loopRadius < plan.pin.radius + plan.pin.loopFit / 2 - 1e-9) {
       record(
         0,
         label,

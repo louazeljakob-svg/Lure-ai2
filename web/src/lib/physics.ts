@@ -913,6 +913,19 @@ function buildWarnings(
     });
   }
 
+  if (params.screws.enabled && !assemblyActive(params)) {
+    list.push({
+      id: 'screw-shells',
+      level: 'warn',
+      title: 'Assemblage visse sans demi-coques',
+      detail:
+        'La vis traverse le plan de joint et serre les deux moities l une contre l autre : ' +
+        'elle n a de sens que sur un corps en deux coques. Activez « Corps en deux parties » ' +
+        'dans l onglet Assemblage — un corps articule, lui, est coupe en travers et se visse ' +
+        'segment par segment, ce que la generation ne cumule pas encore.',
+    });
+  }
+
   for (const screw of r.screws) {
     if (screw.valid) continue;
     list.push({

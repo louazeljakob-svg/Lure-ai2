@@ -43,8 +43,18 @@ function articulated(
   // La quincaillerie suit la taille du leurre : un oeillet de 12 mm sur un
   // glide de 180 mm ne tient pas, et le meme sur 95 mm ressort du corps.
   const eyeLength = Math.round(length * 0.1 * 10) / 10;
-  const eyeLoop = Math.round(length * 0.032 * 10) / 10;
   const eyeWire = Math.round(Math.max(length * 0.011, 0.9) * 100) / 100;
+  // La boucle doit laisser passer le cylindre de retention, et la fente doit
+  // laisser passer la boucle. Les trois cotes se deduisent l'une de l'autre :
+  // les poser separement produisait un joint qui se bloquait des le repos, ce
+  // que le test de collision refuse maintenant.
+  const retention = scaled.articulation.retentionDiameter;
+  const loopFit = scaled.articulation.retentionLoopFit;
+  const fit = scaled.articulation.jointFit;
+  // Arrondi au dixieme SUPERIEUR : arrondir au plus proche pose parfois la
+  // boucle au jeu exact, ou le moindre arrondi la fait passer sous la cote.
+  const eyeLoop =
+    Math.ceil(Math.max(length * 0.032, eyeWire + retention + loopFit) * 10 + 1) / 10;
 
   return {
     ...scaled,
@@ -67,7 +77,7 @@ function articulated(
       eyeLoop,
       eyeWire,
       eyeLength,
-      slotHeight: Math.round(Math.max(eyeWire * 1.8, 1.6) * 10) / 10,
+      slotHeight: Math.round((eyeLoop + 2 * fit) * 10) / 10,
       slotDepth: Math.round(eyeLength * 0.6 * 10) / 10,
       slotWidth: Math.round(length * 0.17 * 10) / 10,
     },
