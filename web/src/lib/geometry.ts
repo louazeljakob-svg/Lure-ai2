@@ -179,11 +179,10 @@ export function createDetailField(
   const allowed = params.shape !== 'spoon';
   const gills = allowed && params.gills.enabled ? params.gills : null;
   const eyes = allowed && params.eyes.enabled ? params.eyes : null;
-  const sculpt = params.sculpt.filter((point) => Math.abs(point.amount) > 1e-4);
   // Decals et ecailles vivent dans le meme champ : ils deforment la peau au
   // lieu d'ajouter des pieces, donc ils suivent partout sans effort.
   const surface = createSurfaceDetail(profile, params, bakeScales);
-  if (!gills && !eyes && sculpt.length === 0 && !surface) return null;
+  if (!gills && !eyes && !surface) return null;
 
   const lengthCm = profile.lengthCm;
 
@@ -198,17 +197,6 @@ export function createDetailField(
 
   return (p: number, theta: number): number => {
     let displacement = surface ? surface.displace(p, theta) : 0;
-
-    // Cage de sculpture : chaque point tire ou repousse la peau autour de lui,
-    // avec une retombee douce, par-dessus la forme des sliders.
-    for (const point of sculpt) {
-      const along = (p - point.position) / Math.max(point.radius, 0.02);
-      let delta = Math.abs(theta - THREE.MathUtils.degToRad(point.angle));
-      if (delta > Math.PI) delta = Math.PI * 2 - delta;
-      const around = delta / Math.max(point.radius * 6, 0.1);
-      const weight = Math.exp(-(along * along + around * around) * 2);
-      if (weight > 1e-3) displacement += point.amount * MM_TO_CM * weight;
-    }
 
     if (gills) {
       const height = Math.cos(theta);

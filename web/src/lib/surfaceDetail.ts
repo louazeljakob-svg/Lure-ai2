@@ -2,7 +2,7 @@
  * Decals projetes et trame d'ecailles.
  *
  * Les deux vivent dans le meme champ de deplacement que les branchies, les
- * yeux et la cage de sculpture : ils DEFORMENT la peau au lieu d'ajouter des
+ * yeux et l'anatomie de tete : ils DEFORMENT la peau au lieu d'ajouter des
  * pieces. C'est ce qui garantit qu'ils se retrouvent partout sans effort — a
  * l'affichage, dans les deux coques imprimables, dans le STL, dans le STEP,
  * et jusque dans le volume qui decide de la flottabilite.

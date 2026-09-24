@@ -21,6 +21,7 @@ import type {
   ShellConfig,
 } from '../types/lure';
 import { LIMITS, type Range } from '../lib/presets';
+import { tailHasFin } from '../lib/profile';
 import { ribSlantEffective } from '../lib/surfaceDetail';
 import { MATERIALS, getMaterial, materialsFor } from '../lib/materials';
 import { autoDowels, type DowelPlacement } from '../lib/dowels';
@@ -547,7 +548,7 @@ export function SoftTailInspector({
 }) {
   const tail = params.softTail;
   const set = (patch: Partial<SoftTailConfig>) => onChange({ softTail: { ...tail, ...patch } });
-  const moulded = params.tailShape !== 'taper';
+  const moulded = tailHasFin(params);
 
   return (
     <Fieldset
@@ -565,7 +566,7 @@ export function SoftTailInspector({
             <h4>Deux queues sur le meme corps</h4>
             <p>
               Le corps porte deja une nageoire caudale moulee. Reglez la forme de queue sur
-              « effilee » dans l onglet Forme, sinon les deux se superposent.
+              « Ronde » dans le panneau Forme, sinon les deux se superposent.
             </p>
           </div>
         </div>

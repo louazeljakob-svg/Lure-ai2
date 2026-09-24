@@ -19,7 +19,6 @@ import type {
   BillProfile,
   FabricationConfig,
   PinAnchor,
-  SculptPoint,
   ClipId,
   Decal,
   DowelConfig,
@@ -60,7 +59,6 @@ import type {
   PrintConfig,
   ProcessId,
   RattleChamber,
-  RattlePocket,
   SavedPalette,
   ScaleFit,
   ScaleShape,
@@ -96,7 +94,7 @@ const SHAPES: ShapeId[] = [
   'lipless',
   'minnownervure',
 ];
-const TAILS: TailShape[] = ['taper', 'round', 'forked', 'paddle', 'fan'];
+const TAILS: TailShape[] = ['round', 'forked', 'paddle', 'fan'];
 const MATERIALS: MaterialId[] = [
   'pla',
   'lwpla',
@@ -206,24 +204,7 @@ function sanitizeFabrication(
     sweepExtra: num(raw.sweepExtra, LIMITS.sweepExtra, fallback.sweepExtra),
     tenonFit: num(raw.tenonFit, LIMITS.tenonFit, fallback.tenonFit),
     billFit: num(raw.billFit, LIMITS.billFit, fallback.billFit),
-    rattleFit: num(raw.rattleFit, LIMITS.rattleFit, fallback.rattleFit),
   };
-}
-
-function sanitizeRattles(value: unknown, fallback: RattlePocket[]): RattlePocket[] {
-  if (!Array.isArray(value)) return fallback.map((item) => ({ ...item }));
-  return value.slice(0, 10).map((raw, index) => {
-    const item = (raw ?? {}) as Partial<RattlePocket>;
-    return {
-      id:
-        typeof item.id === 'string' && item.id.length > 0 && item.id.length <= 64
-          ? item.id
-          : `bille-${index}-${Math.random().toString(36).slice(2, 8)}`,
-      position: num(item.position, LIMITS.ballastPosition, 0.55),
-      height: num(item.height, LIMITS.ballastHeight, -0.2),
-      ball: num(item.ball, LIMITS.rattleBall, 6),
-    };
-  });
 }
 
 function sanitizeChamber(value: unknown, fallback: RattleChamber): RattleChamber {
@@ -238,23 +219,6 @@ function sanitizeChamber(value: unknown, fallback: RattleChamber): RattleChamber
     ball: num(raw.ball, LIMITS.rattleBall, fallback.ball),
     balls: Math.round(num(raw.balls, LIMITS.chamberBalls, fallback.balls)),
   };
-}
-
-function sanitizeSculpt(value: unknown, fallback: SculptPoint[]): SculptPoint[] {
-  if (!Array.isArray(value)) return fallback.map((point) => ({ ...point }));
-  return value.slice(0, 120).map((raw, index) => {
-    const item = (raw ?? {}) as Partial<SculptPoint>;
-    return {
-      id:
-        typeof item.id === 'string' && item.id.length > 0 && item.id.length <= 64
-          ? item.id
-          : `cage-${index}`,
-      position: num(item.position, LIMITS.anchorPosition, 0.5),
-      angle: num(item.angle, { min: 0, max: 360, step: 1 }, 0),
-      amount: num(item.amount, LIMITS.sculptAmount, 0),
-      radius: num(item.radius, LIMITS.sculptRadius, 0.12),
-    };
-  });
 }
 
 /**
@@ -715,7 +679,9 @@ export function sanitizeParams(input: unknown): LureParams {
     bibAngle: num(raw.bibAngle, LIMITS.bibAngle, base.bibAngle),
     bibLength: num(raw.bibLength, LIMITS.bibLength, base.bibLength),
     bibWidth: num(raw.bibWidth, LIMITS.bibWidth, base.bibWidth),
-    tailShape: pick(raw.tailShape, TAILS, base.tailShape),
+    // La queue « Pointe » n'existe plus : un ancien projet qui la portait se
+    // ferme en queue ronde plutot que de retomber sur la queue du modele.
+    tailShape: pick((raw.tailShape as string) === 'taper' ? 'round' : raw.tailShape, TAILS, base.tailShape),
     tailSize: num(raw.tailSize, LIMITS.tailSize, base.tailSize),
     gills: sanitizeDetail(raw.gills, base.gills, {
       position: LIMITS.gillPosition,
@@ -732,7 +698,6 @@ export function sanitizeParams(input: unknown): LureParams {
     assembly: sanitizeAssembly(raw.assembly, base.assembly),
     dowels: sanitizeDowels(raw.dowels, base.dowels),
     fabrication: sanitizeFabrication(raw.fabrication, base.fabrication),
-    sculpt: sanitizeSculpt(raw.sculpt, base.sculpt),
     articulation: sanitizeArticulation(raw.articulation, base.articulation),
     screws: sanitizeScrews(raw.screws, base.screws),
     outline: sanitizeOutline(raw.outline, base.outline),
@@ -746,7 +711,6 @@ export function sanitizeParams(input: unknown): LureParams {
     hardwareMass: num(raw.hardwareMass, LIMITS.hardwareMass, base.hardwareMass),
     ballastDensity: num(raw.ballastDensity, LIMITS.ballastDensity, base.ballastDensity),
     ballasts: sanitizeBallasts(raw.ballasts, base.ballasts),
-    rattles: sanitizeRattles(raw.rattles, base.rattles),
     chamber: sanitizeChamber(raw.chamber, base.chamber),
     ribs: sanitizeRibs(raw.ribs, base.ribs),
     popperFace: sanitizePopperFace(raw.popperFace, base.popperFace),

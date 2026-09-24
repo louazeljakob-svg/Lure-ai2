@@ -14,7 +14,6 @@ import type {
   PinAnchor,
   Project,
   SavedPalette,
-  SculptPoint,
   ShapeId,
   WaterId,
 } from './types/lure';
@@ -135,7 +134,6 @@ export default function App() {
   const [references, setReferences] = useState<ReferenceImage[]>([]);
   const [calibratingId, setCalibratingId] = useState<string | null>(null);
   const [picks, setPicks] = useState<{ u: number; v: number }[]>([]);
-  const [sculpting, setSculpting] = useState(false);
   // Maillage importe (module W) : mesure et juge pour de bon, affiche a cote
   // du corps parametrique tant qu'il ne le pilote pas.
   const [imported, setImported] = useState<ImportedMesh | null>(null);
@@ -143,7 +141,6 @@ export default function App() {
     () => (imported ? toGeometry(imported) : null),
     [imported],
   );
-  const [selectedSculpt, setSelectedSculpt] = useState<string | null>(null);
   // Arbre de scene : la selection pilote l'inspecteur, et l'editeur de
   // contour s'ouvre sur la piece qui le demande.
   const [selectedNode, setSelectedNode] = useState<string>('body');
@@ -550,55 +547,6 @@ export default function App() {
     [calibratingId, picks, pushToast],
   );
 
-  // --- Cage de sculpture -----------------------------------------------------
-  const buildCage = useCallback(() => {
-    // Grille reguliere : cinq stations le long du corps, quatre directions.
-    const points: SculptPoint[] = [];
-    const stations = [0.2, 0.35, 0.5, 0.65, 0.8];
-    const angles = [0, 90, 180, 270];
-    for (const position of stations) {
-      for (const angle of angles) {
-        points.push({
-          id: `cage-${position}-${angle}`,
-          position,
-          angle,
-          amount: 0,
-          radius: 0.12,
-        });
-      }
-    }
-    setParams((current) => ({ ...current, sculpt: points }));
-    setSculpting(true);
-  }, []);
-
-  const clearCage = useCallback(() => {
-    setParams((current) => ({ ...current, sculpt: [] }));
-    setSelectedSculpt(null);
-  }, []);
-
-  const updateSculpt = useCallback(
-    (id: string, patch: { amount?: number; radius?: number }) => {
-      setParams((current) => ({
-        ...current,
-        sculpt: current.sculpt.map((point) =>
-          point.id === id ? { ...point, ...patch } : point,
-        ),
-      }));
-    },
-    [],
-  );
-
-  const dragSculpt = useCallback((id: string, deltaMm: number) => {
-    setParams((current) => ({
-      ...current,
-      sculpt: current.sculpt.map((point) =>
-        point.id === id
-          ? { ...point, amount: Math.min(Math.max(point.amount + deltaMm, -8), 8) }
-          : point,
-      ),
-    }));
-  }, []);
-
   // --- Export de fichiers --------------------------------------------------
   const runExport = useCallback(
     async (task: () => Promise<SaveOutcome>, label: string) => {
@@ -971,8 +919,9 @@ export default function App() {
       if (what === 'softTail') {
         updateParams({
           softTail: { ...params.softTail, enabled: true },
-          // Une queue moulee et une queue rapportee feraient double emploi.
-          tailShape: 'taper',
+          // Une caudale moulee et une queue rapportee feraient double emploi :
+          // le corps se ferme en queue ronde, sur laquelle la queue s'enfile.
+          tailShape: 'round',
         });
         setSelectedNode('softTail');
         setSelectedKind('softTail');
@@ -1211,12 +1160,6 @@ export default function App() {
                 onChange={updateParams}
                 onAddArticulation={addArticulation}
                 onLoadPreset={loadPreset}
-                sculpting={sculpting}
-                onSculptingChange={setSculpting}
-                selectedSculpt={selectedSculpt}
-                onBuildCage={buildCage}
-                onClearCage={clearCage}
-                onUpdateSculpt={updateSculpt}
               />
             </section>
 
@@ -1234,10 +1177,6 @@ export default function App() {
               references={references}
               calibratingId={calibratingId}
               onPickCalibration={pickCalibration}
-              sculpting={sculpting}
-              selectedSculpt={selectedSculpt}
-              onSelectSculpt={setSelectedSculpt}
-              onDragSculpt={dragSculpt}
               jointFocus={selectedKind.startsWith('joint') || selectedKind === 'articulation'}
             />
 

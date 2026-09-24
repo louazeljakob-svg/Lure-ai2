@@ -20,16 +20,9 @@ interface Props {
   /** Coupe le corps en deux segments articules, depuis le panneau de forme. */
   onAddArticulation: () => void;
   onLoadPreset: (shape: ShapeId) => void;
-  sculpting: boolean;
-  onSculptingChange: (active: boolean) => void;
-  selectedSculpt: string | null;
-  onBuildCage: () => void;
-  onClearCage: () => void;
-  onUpdateSculpt: (id: string, patch: { amount?: number; radius?: number }) => void;
 }
 
 const TAIL_OPTIONS: { value: TailShape; label: string; title: string }[] = [
-  { value: 'taper', label: 'Pointe', title: 'Corps effile qui se ferme en pointe' },
   { value: 'round', label: 'Ronde', title: 'Arriere arrondi, tres flottant' },
   { value: 'forked', label: 'Fourchue', title: 'Caudale echancree, type poisson fourrage' },
   { value: 'paddle', label: 'Palette', title: 'Palette de swimbait, forte battue' },
@@ -58,14 +51,7 @@ export function ShapeEditor({
   onChange,
   onAddArticulation,
   onLoadPreset,
-  sculpting,
-  onSculptingChange,
-  selectedSculpt,
-  onBuildCage,
-  onClearCage,
-  onUpdateSculpt,
 }: Props) {
-  const active = params.sculpt.find((point) => point.id === selectedSculpt) ?? null;
   const jointBlocker = articulationBlocker(params);
   const setDetail = (key: 'gills' | 'eyes', patch: Partial<DetailConfig>) =>
     onChange({ [key]: { ...params[key], ...patch } });
@@ -425,58 +411,6 @@ export function ShapeEditor({
         />
       </Fieldset>
 
-      <Fieldset
-        legend="Cage de sculpture"
-        hint="Une grille de points superposee au corps. Glissez une poignee vers le haut ou vers le bas dans la vue 3D pour tirer ou creuser la peau localement, par-dessus la forme des sliders."
-      >
-        <Switch
-          label="Afficher la cage"
-          checked={sculpting}
-          onChange={onSculptingChange}
-        />
-        <div className="export-dock__actions">
-          <button type="button" className="btn btn--sm" onClick={onBuildCage}>
-            {params.sculpt.length > 0 ? 'Regenerer' : 'Creer la cage'}
-          </button>
-          <button
-            type="button"
-            className="btn btn--sm btn--ghost btn--danger"
-            onClick={onClearCage}
-            disabled={params.sculpt.length === 0}
-          >
-            Effacer
-          </button>
-        </div>
-        {params.sculpt.length === 0 ? (
-          <p className="control__hint">
-            Aucune cage : la forme suit uniquement les parametres.
-          </p>
-        ) : (
-          <p className="control__hint">
-            {params.sculpt.length} points ·{' '}
-            {params.sculpt.filter((point) => Math.abs(point.amount) > 0.05).length} deplaces.
-          </p>
-        )}
-        {active ? (
-          <>
-            <Slider
-              label="Deplacement"
-              value={active.amount}
-              {...LIMITS.sculptAmount}
-              display={`${active.amount > 0 ? '+' : ''}${active.amount.toFixed(2)} mm`}
-              onChange={(amount) => onUpdateSculpt(active.id, { amount })}
-            />
-            <Slider
-              label="Rayon d influence"
-              value={active.radius}
-              {...LIMITS.sculptRadius}
-              display={`${Math.round(active.radius * 100)} % de la longueur`}
-              onChange={(radius) => onUpdateSculpt(active.id, { radius })}
-            />
-          </>
-        ) : null}
-      </Fieldset>
-
       <Fieldset legend="Queue">
         <Segmented
           label="Forme de la queue"
@@ -490,9 +424,9 @@ export function ShapeEditor({
           value={params.tailSize}
           {...LIMITS.tailSize}
           display={`x ${params.tailSize.toFixed(2)}`}
-          disabled={params.tailShape === 'taper' || params.tailShape === 'round'}
+          disabled={params.tailShape === 'round'}
           hint={
-            params.tailShape === 'taper' || params.tailShape === 'round'
+            params.tailShape === 'round'
               ? 'Disponible pour les queues fourchue, palette et eventail.'
               : 'Une grande caudale amplifie la battue mais freine le leurre.'
           }

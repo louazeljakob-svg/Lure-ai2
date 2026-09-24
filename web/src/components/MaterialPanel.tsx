@@ -8,7 +8,6 @@ import type {
   PaintConfig,
   PatternId,
   RattleChamber,
-  RattlePocket,
   SavedPalette,
 } from '../types/lure';
 import { FINISHES, MATERIALS, getMaterial } from '../lib/materials';
@@ -28,7 +27,6 @@ interface Props {
 }
 
 const MAX_BALLASTS = 8;
-const MAX_RATTLES = 6;
 
 /** Diametre du lest equivalent, en mm, pour la densite choisie. */
 const ballastDiameter = (mass: number, density: number, shape: 'sphere' | 'cylinder'): number => {
@@ -147,26 +145,6 @@ export function MaterialPanel({
 
   const removeBallast = (id: string) =>
     onChange({ ballasts: params.ballasts.filter((item) => item.id !== id) });
-
-  const setRattle = (id: string, patch: Partial<RattlePocket>) =>
-    onChange({
-      rattles: params.rattles.map((item) => (item.id === id ? { ...item, ...patch } : item)),
-    });
-
-  const addRattle = () => {
-    if (params.rattles.length >= MAX_RATTLES) return;
-    onChange({
-      rattles: [
-        ...params.rattles,
-        {
-          id: `bille-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-          position: 0.55,
-          height: -0.2,
-          ball: 6,
-        },
-      ],
-    });
-  };
 
   const setChamber = (patch: Partial<RattleChamber>) =>
     onChange({ chamber: { ...params.chamber, ...patch } });
@@ -302,73 +280,6 @@ export function MaterialPanel({
           disabled={params.ballasts.length >= MAX_BALLASTS}
         >
           + Ajouter un lest
-        </button>
-      </Fieldset>
-
-      <Fieldset
-        legend="Billes mobiles"
-        hint="Une bille inox libre dans une portee plus large qu elle : c est le jeu qui fait le bruit. Le logement est une demi-sphere creusee dans chaque coque, il exige donc le corps en deux parties."
-      >
-        {!params.assembly.enabled ? (
-          <p className="control__hint">
-            Activez « Corps en deux parties » dans l onglet Assemblage : une bille ne peut pas
-            etre enfermee dans un corps imprime d un seul tenant.
-          </p>
-        ) : null}
-
-        {params.rattles.length === 0 ? (
-          <p className="empty">Aucune bille mobile.</p>
-        ) : null}
-
-        {params.rattles.map((rattle, index) => (
-          <div className="ballast" key={rattle.id}>
-            <div className="ballast__head">
-              <span className="ballast__name">Bille {index + 1}</span>
-              <span className="ballast__spec">
-                {rattle.ball.toFixed(1)} mm dans {(rattle.ball + params.fabrication.rattleFit).toFixed(1)} mm
-              </span>
-              <button
-                type="button"
-                className="btn btn--sm btn--ghost btn--danger"
-                onClick={() =>
-                  onChange({ rattles: params.rattles.filter((item) => item.id !== rattle.id) })
-                }
-              >
-                Retirer<span className="sr-only"> la bille {index + 1}</span>
-              </button>
-            </div>
-            <Slider
-              label="Position"
-              value={rattle.position}
-              {...LIMITS.ballastPosition}
-              display={`${Math.round(rattle.position * 100)} %`}
-              onChange={(position) => setRattle(rattle.id, { position })}
-            />
-            <Slider
-              label="Hauteur"
-              value={rattle.height}
-              {...LIMITS.ballastHeight}
-              display={rattle.height < -0.35 ? 'Ventre' : rattle.height > 0.35 ? 'Dos' : 'Axe'}
-              onChange={(height) => setRattle(rattle.id, { height })}
-            />
-            <Slider
-              label="Diametre de bille"
-              value={rattle.ball}
-              {...LIMITS.rattleBall}
-              display={`${rattle.ball.toFixed(1)} mm`}
-              hint="La portee vaut ce diametre plus le jeu de fabrication."
-              onChange={(ball) => setRattle(rattle.id, { ball })}
-            />
-          </div>
-        ))}
-
-        <button
-          type="button"
-          className="btn btn--block"
-          onClick={addRattle}
-          disabled={params.rattles.length >= MAX_RATTLES}
-        >
-          + Ajouter une bille
         </button>
       </Fieldset>
 

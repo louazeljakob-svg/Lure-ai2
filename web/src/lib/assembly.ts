@@ -382,7 +382,7 @@ interface Pocket {
   depth: number;
   /**
    * Fond bombe : la profondeur suit une sphere ou une capsule de rayon
-   * `depth` d'axe [a, b]. C'est la forme d'un logement de bille mobile.
+   * `depth` d'axe [a, b]. C'est la forme de la chambre de bruit.
    */
   dome?: { a: THREE.Vector2; b: THREE.Vector2 };
   /** Matiere laissee au niveau du joint : embase du goujon, ou collerette. */
@@ -480,7 +480,7 @@ export interface AssemblyResult {
   tenons: THREE.BufferGeometry | null;
   /** Volume des portees, rendu en surbrillance pour verification visuelle. */
   socketPreview: THREE.BufferGeometry | null;
-  /** Billes mobiles, affichees dans leur logement. */
+  /** Billes libres de la chambre de bruit, pour la masse et l'affichage. */
   rattles: { position: [number, number, number]; radius: number; mass: number }[];
   /** Plan du fil traversant, ou null si le montage n'est pas retenu. */
   throughWire: ThroughWirePlan | null;
@@ -2128,9 +2128,8 @@ export function buildAssembly(
     }
   }
 
-  // --- Logements de billes mobiles ----------------------------------------
+  // --- Chambre de bruit : tube creuse dans le plan de joint ----------------
   const rattles: AssemblyResult['rattles'] = [];
-  const clearance = (fabrication.rattleFit * MM_TO_CM) / 2;
   const STAINLESS = 7.9;
 
   const fitCavity = (station: Station, height: number, radius: number): THREE.Vector2 | null => {
@@ -2141,27 +2140,6 @@ export function buildAssembly(
     const t = Math.min(Math.max(wanted, tMin + radius + WALL), tMax - radius - WALL);
     return new THREE.Vector2(station.x, t);
   };
-
-  for (const item of params.rattles) {
-    const p = Math.min(Math.max(item.position, 0.03), profile.bodyEnd - 0.03);
-    const station = stationAt(stations, profile.xAt(p));
-    if (!station) continue;
-    const radius = (item.ball * MM_TO_CM) / 2 + clearance;
-    const center = fitCavity(station, item.height, radius);
-    if (!center) continue;
-    pockets.push({
-      outline: capsuleOutline(center, center, radius),
-      depth: radius,
-      dome: { a: center, b: center },
-    });
-    const world = frame.toWorld(center.y, 0);
-    const ballRadius = (item.ball * MM_TO_CM) / 2;
-    rattles.push({
-      position: [center.x, world.y, world.z],
-      radius: ballRadius,
-      mass: (4 / 3) * Math.PI * ballRadius ** 3 * STAINLESS,
-    });
-  }
 
   const chamber = params.chamber;
   if (chamber.enabled) {

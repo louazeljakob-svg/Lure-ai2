@@ -80,25 +80,6 @@ export interface PinAnchor {
 }
 
 /**
- * Point de la cage de sculpture.
- *
- * Chaque point tire ou repousse localement la peau du corps, par-dessus la
- * forme pilotee par les sliders : de quoi rattraper un galbe que les
- * parametres seuls ne savent pas decrire, sans quitter le parametrique.
- */
-export interface SculptPoint {
-  id: string;
-  /** Position sur l'axe : 0 = nez, 1 = queue. */
-  position: number;
-  /** Angle autour de la section, en degres : 0 = dos, 180 = ventre. */
-  angle: number;
-  /** Deplacement radial, en mm. Positif = vers l'exterieur. */
-  amount: number;
-  /** Rayon d'influence, en fraction de la longueur. */
-  radius: number;
-}
-
-/**
  * Jeux de fabrication, tous exposes dans l'interface : ce sont des valeurs
  * qui se mesurent sur l'imprimante et se reajustent, jamais des constantes.
  */
@@ -113,27 +94,6 @@ export interface FabricationConfig {
   tenonFit: number;
   /** Jeu d'insertion de la bavette rapportee, en mm. */
   billFit: number;
-  /**
-   * Jeu diametral entre une bille mobile et sa portee, en mm.
-   *
-   * A l'oppose des precedents, celui-ci est volontairement large : c'est lui
-   * qui laisse la bille rouler et claquer (effet rattle).
-   */
-  rattleFit: number;
-}
-
-/**
- * Logement de bille mobile : une bille inox libre dans une portee spherique
- * plus large qu'elle. Le jeu est le bruit.
- */
-export interface RattlePocket {
-  id: string;
-  /** Position sur l'axe du corps : 0 = nez, 1 = queue. */
-  position: number;
-  /** Hauteur dans la section : -1 = ventre, 0 = axe, 1 = dos. */
-  height: number;
-  /** Diametre de la bille, en mm. */
-  ball: number;
 }
 
 /**
@@ -158,7 +118,7 @@ export interface RattleChamber {
 
 /** Forme de la queue. `taper` et `round` sont portees par le corps lui-meme, */
 /** les autres ajoutent une nageoire caudale plate generee par extrusion.     */
-export type TailShape = 'taper' | 'round' | 'forked' | 'paddle' | 'fan';
+export type TailShape = 'round' | 'forked' | 'paddle' | 'fan';
 
 export type MaterialId =
   | 'pla'
@@ -382,7 +342,7 @@ export type WireMaterialId = 'inox304' | 'inox316' | 'ressort' | 'laiton';
  *
  * Des anneaux en relief perpendiculaires a l'axe, sur tout ou partie du
  * corps. Elles vivent dans le MEME champ de deplacement que les ecailles,
- * les decals et la sculpture : c'est ce qui garantit qu'elles suivent
+ * les decals et les reliefs : c'est ce qui garantit qu'elles suivent
  * partout — affichage, coques d'assemblage, exports et calcul de volume —
  * sans un seul chemin de code special.
  */
@@ -910,8 +870,6 @@ export interface LureParams {
   dowels: DowelConfig;
   /** Jeux de fabrication, mesures sur l'imprimante et reglables. */
   fabrication: FabricationConfig;
-  /** Cage de sculpture : deformations locales par-dessus les sliders. */
-  sculpt: SculptPoint[];
   /** Articulation : corps coupe en segments relies par une quincaillerie. */
   articulation: ArticulationConfig;
   /** Assemblage visse des demi-coques (module U). */
@@ -944,8 +902,6 @@ export interface LureParams {
   /** Densite des lests internes, en g/cm3 (inox ~7,9 ; plomb 11,34). */
   ballastDensity: number;
   ballasts: BallastWeight[];
-  /** Logements de billes mobiles (rattle ponctuel). */
-  rattles: RattlePocket[];
   /** Chambre a billes tubulaire. */
   chamber: RattleChamber;
 

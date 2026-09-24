@@ -69,18 +69,16 @@ export const tailHasFin = (params: LureParams): boolean =>
 
 /**
  * Rayon relatif a l'extremite arriere du corps, avant arrondi de fermeture.
- * Une queue en pointe se ferme sur elle-meme, une queue a nageoire garde un
+ * Une queue ronde se ferme par une calotte, une queue a nageoire garde un
  * pedoncule sur lequel la nageoire vient se greffer.
  */
 const endRadiusFor = (params: LureParams): number => {
-  if (params.tailShape === 'taper') return 0;
   if (params.tailShape === 'round') return 0.34;
   return 0.28;
 };
 
 /** Longueur (en fraction de la longueur totale) de l'arrondi de fermeture. */
 const capLengthFor = (params: LureParams): number => {
-  if (params.tailShape === 'taper') return 0;
   if (params.tailShape === 'round') return 0.09;
   return 0.035;
 };

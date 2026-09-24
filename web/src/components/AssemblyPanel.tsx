@@ -563,14 +563,6 @@ export function AssemblyPanel({
           hint="S ajoute a l epaisseur du polycarbonate pour dimensionner la fente."
           onChange={(billFit) => setFabrication({ billFit })}
         />
-        <Slider
-          label="Jeu des billes mobiles"
-          value={fabrication.rattleFit}
-          {...LIMITS.rattleFit}
-          display={mm(fabrication.rattleFit)}
-          hint="Volontairement large, a l inverse des precedents : c est ce jeu qui laisse la bille claquer dans son logement."
-          onChange={(rattleFit) => setFabrication({ rattleFit })}
-        />
       </Fieldset>
 
       <Fieldset

@@ -21,7 +21,6 @@ import {
   worldToAnchor,
   type AssemblyResult,
 } from '../lib/assembly';
-import { createSurfaceSampler } from '../lib/geometry';
 import { createProfile } from '../lib/profile';
 import {
   buildInsert,
@@ -35,7 +34,6 @@ import type { ThreeEvent } from '@react-three/fiber';
 import { FINISHES } from '../lib/materials';
 import { createLiveryNormalMap, createPaintTexture, createScaleNormalMap } from '../lib/paint';
 import { useReducedMotion } from '../lib/hooks';
-import { jointTravel } from '../lib/jointCheck';
 import type { PhysicsResult } from '../lib/physics';
 import { waterlineY } from '../lib/physics';
 
@@ -218,7 +216,6 @@ function LureModel({
   params,
   xray,
   jointFocus = false,
-  swingAngle = 0,
   interactive,
   onPointerDown,
   onPointerMove,
@@ -228,8 +225,6 @@ function LureModel({
   xray: boolean;
   /** Vrai quand l'articulation est selectionnee : le corps devient translucide. */
   jointFocus?: boolean;
-  /** Angle d'oscillation du segment arriere, en radians. */
-  swingAngle?: number;
   interactive?: boolean;
   onPointerDown?: (event: ThreeEvent<PointerEvent>) => void;
   onPointerMove?: (event: ThreeEvent<PointerEvent>) => void;
@@ -307,13 +302,9 @@ function LureModel({
           <mesh geometry={geo.segments.front} castShadow={false}>
             <meshPhysicalMaterial {...bodySurface} />
           </mesh>
-          <group position={[geo.jointPlan.xJoint, 0, 0]} rotation={[0, swingAngle, 0]}>
-            <group position={[-geo.jointPlan.xJoint, 0, 0]}>
-              <mesh geometry={geo.segments.rear} castShadow={false}>
-                <meshPhysicalMaterial {...bodySurface} />
-              </mesh>
-            </group>
-          </group>
+          <mesh geometry={geo.segments.rear} castShadow={false}>
+            <meshPhysicalMaterial {...bodySurface} />
+          </mesh>
         </>
       ) : (
         <mesh
@@ -576,7 +567,7 @@ function Ballasts({
   );
 }
 
-/** Billes mobiles, dessinees dans leur logement comme les lests. */
+/** Billes de la chambre de bruit, dessinees dans leur tube comme les lests. */
 function Rattles({
   assembly,
   visible,
@@ -779,79 +770,6 @@ function AnchorHandles({
   );
 }
 
-/**
- * Poignees de la cage de sculpture : un glisser vertical tire ou repousse
- * localement la peau, par-dessus la forme pilotee par les sliders.
- */
-function CageHandles({
-  params,
-  radius,
-  selected,
-  onSelect,
-  onDrag,
-}: {
-  params: LureParams;
-  radius: number;
-  selected: string | null;
-  onSelect: (id: string | null) => void;
-  onDrag: (id: string, deltaMm: number) => void;
-}) {
-  const dragging = useRef<string | null>(null);
-  const points = useMemo(() => {
-    const surface = createSurfaceSampler(createProfile(params), params);
-    return params.sculpt.map((point) => ({
-      point,
-      world: surface(point.position, THREE.MathUtils.degToRad(point.angle)),
-    }));
-  }, [params]);
-
-  useEffect(() => {
-    const move = (event: PointerEvent) => {
-      const id = dragging.current;
-      // Vers le haut = matiere qui ressort : 0,04 mm par pixel.
-      if (id) onDrag(id, -event.movementY * 0.04);
-    };
-    const up = () => {
-      dragging.current = null;
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
-    return () => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
-    };
-  }, [onDrag]);
-
-  const size = Math.max(radius * 0.045, 0.07);
-  return (
-    <group renderOrder={30}>
-      {points.map(({ point, world }) => (
-        <mesh
-          key={point.id}
-          position={world}
-          renderOrder={30}
-          onPointerDown={(event: ThreeEvent<PointerEvent>) => {
-            event.stopPropagation();
-            dragging.current = point.id;
-            onSelect(point.id);
-          }}
-        >
-          <sphereGeometry args={[point.id === selected ? size * 1.5 : size, 16, 12]} />
-          <meshBasicMaterial
-            color={
-              point.id === selected
-                ? '#e30613'
-                : Math.abs(point.amount) > 0.05
-                  ? '#17794a'
-                  : '#101114'
-            }
-            depthTest={false}
-          />
-        </mesh>
-      ))}
-    </group>
-  );
-}
 
 export interface Viewport3DProps {
   geo: LureGeometry;
@@ -870,11 +788,6 @@ export interface Viewport3DProps {
   /** Reference en cours de calibration : son plan devient cliquable. */
   calibratingId: string | null;
   onPickCalibration: (id: string, u: number, v: number) => void;
-  /** Cage de sculpture : poignees affichees et deplacables. */
-  sculpting: boolean;
-  selectedSculpt: string | null;
-  onSelectSculpt: (id: string | null) => void;
-  onDragSculpt: (id: string, deltaMm: number) => void;
   /** Vrai quand l'articulation est selectionnee dans l'arbre de scene. */
   jointFocus?: boolean;
   /** Maillage importe (module W), affiche a cote du corps parametrique. */
@@ -894,10 +807,6 @@ export function Viewport3D({
   references,
   calibratingId,
   onPickCalibration,
-  sculpting,
-  selectedSculpt,
-  onSelectSculpt,
-  onDragSculpt,
   jointFocus = false,
   importedMesh = null,
 }: Viewport3DProps) {
@@ -913,40 +822,7 @@ export function Viewport3D({
   const [env, setEnv] = useState<PreviewEnv>('atelier');
   const [shotSignal, setShotSignal] = useState(0);
   const [showTackle, setShowTackle] = useState(true);
-  // Previsualisation du debattement : le segment arriere oscille dans les
-  // limites calculees, ce qui rend le reglage lisible d'un coup d'oeil.
-  const [animateSwing, setAnimateSwing] = useState(false);
-  const [swingAngle, setSwingAngle] = useState(0);
   const dragging = useRef<string | null>(null);
-
-  // Course REELLE du joint, mesuree par pas d'un degre sur la quincaillerie
-  // et le logement : c'est elle que l'animation rejoue, pas le debattement
-  // demande. Ce qui bouge a l'ecran est ce qui bougera une fois imprime.
-  const jointRun = useMemo(
-    () => (geo.jointPlan ? jointTravel(createProfile(params), geo.jointPlan) : null),
-    [geo.jointPlan, params],
-  );
-  const swingLimit = jointRun ? THREE.MathUtils.degToRad(jointRun.free) / 2 : 0;
-  useEffect(() => {
-    if (!animateSwing || swingLimit <= 0 || reducedMotion) {
-      setSwingAngle(0);
-      return;
-    }
-    let frame = 0;
-    const start = performance.now();
-    const tick = () => {
-      // Aller-retour a vitesse constante, butee a butee : une oscillation
-      // sinusoidale ralentit aux extremes et masque justement l'endroit ou
-      // le mecanisme coince.
-      const t = (performance.now() - start) / 1000;
-      const phase = ((t * 0.5) % 1) * 4;
-      const wave = phase < 1 ? phase : phase < 3 ? 2 - phase : phase - 4;
-      setSwingAngle(wave * swingLimit);
-      frame = requestAnimationFrame(tick);
-    };
-    frame = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(frame);
-  }, [animateSwing, swingLimit, reducedMotion]);
 
   const radius =
     Math.hypot(geo.bounds.length, geo.bounds.height, geo.bounds.width) / 20 || 5;
@@ -959,7 +835,7 @@ export function Viewport3D({
   const shotName = `sakuma-${params.shape}`;
   // L'assemblage n'est calcule que lorsqu'il sert : vue eclatee, apercu des
   // portees ou placement d'ancrages.
-  const hasCavity = params.rattles.length > 0 || params.chamber.enabled;
+  const hasCavity = params.chamber.enabled;
   const needsAssembly =
     assemblyActive(params) && (exploded || showSockets || placing || hasCavity);
   const assembly = useMemo(
@@ -1047,7 +923,6 @@ export function Viewport3D({
                 params={params}
                 xray={xray}
                 jointFocus={jointFocus}
-                swingAngle={swingAngle}
                 interactive={placing}
                 onPointerDown={(event) => handleSurfacePointer(event, true)}
                 onPointerMove={(event) => handleSurfacePointer(event, false)}
@@ -1073,15 +948,6 @@ export function Viewport3D({
             ) : null}
             {assembly && showSockets && workAids ? <SocketPreview assembly={assembly} /> : null}
             <Rattles assembly={assembly} visible={workAids && (showMarkers || xray)} />
-            {sculpting ? (
-              <CageHandles
-                params={params}
-                radius={radius}
-                selected={selectedSculpt}
-                onSelect={onSelectSculpt}
-                onDrag={onDragSculpt}
-              />
-            ) : null}
             {assembly && placing ? (
               <AnchorHandles
                 assembly={assembly}
@@ -1254,26 +1120,6 @@ export function Viewport3D({
           onClick={() => setShowSockets((value) => !value)}
         >
           Portees
-        </button>
-        <button
-          type="button"
-          className="toolbtn"
-          aria-pressed={animateSwing}
-          disabled={!jointRun || jointRun.free <= 0}
-          title={
-            jointRun
-              ? jointRun.free + 1e-9 < jointRun.wanted
-                ? `Course reelle ${(jointRun.free / 2).toFixed(0)} deg de chaque cote au lieu de ` +
-                  `${(jointRun.wanted / 2).toFixed(0)} : ${jointRun.first?.part ?? 'une piece'} bloque a ` +
-                  `${Math.abs(jointRun.first?.angleDeg ?? 0).toFixed(0)} deg`
-                : `Course reelle ${(jointRun.free / 2).toFixed(0)} deg de chaque cote, sans interference`
-              : 'Ajoutez une articulation pour animer le debattement'
-          }
-          onClick={() => setAnimateSwing((value) => !value)}
-        >
-          {animateSwing
-            ? `Joint ${THREE.MathUtils.radToDeg(swingAngle) >= 0 ? '+' : ''}${THREE.MathUtils.radToDeg(swingAngle).toFixed(0)} deg`
-            : 'Animer le joint'}
         </button>
       </div>
 

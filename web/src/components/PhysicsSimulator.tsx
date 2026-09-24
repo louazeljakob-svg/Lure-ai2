@@ -138,7 +138,7 @@ export function PhysicsSimulator({ params, physics, water, onWaterChange, socket
         </div>
         {physics.rattleMass > 0 ? (
           <div className="stat">
-            <span className="stat__label">Billes mobiles</span>
+            <span className="stat__label">Billes de chambre</span>
             <div className="stat__value">
               {physics.rattleMass.toFixed(2)}
               <span className="stat__unit">g</span>
