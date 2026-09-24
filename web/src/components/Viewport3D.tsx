@@ -18,6 +18,8 @@ import type { LureGeometry } from '../lib/geometry';
 import {
   assemblyActive,
   buildAssembly,
+  disposeAssembly,
+  ASSEMBLY_DISPLAY,
   worldToAnchor,
   type AssemblyResult,
 } from '../lib/assembly';
@@ -792,6 +794,8 @@ export interface Viewport3DProps {
   jointFocus?: boolean;
   /** Maillage importe (module W), affiche a cote du corps parametrique. */
   importedMesh?: THREE.BufferGeometry | null;
+  /** Assemblage leger deja calcule par l'application (portees, reperes). */
+  preview?: AssemblyResult | null;
 }
 
 export function Viewport3D({
@@ -809,6 +813,7 @@ export function Viewport3D({
   onPickCalibration,
   jointFocus = false,
   importedMesh = null,
+  preview = null,
 }: Viewport3DProps) {
   const reducedMotion = useReducedMotion();
   const [view, setView] = useState<ViewId>('iso');
@@ -838,21 +843,17 @@ export function Viewport3D({
   const hasCavity = params.chamber.enabled;
   const needsAssembly =
     assemblyActive(params) && (exploded || showSockets || placing || hasCavity);
-  const assembly = useMemo(
-    () => (needsAssembly ? buildAssembly(createProfile(params), params) : null),
-    [needsAssembly, params],
+  // Les coques ne se voient qu'en vue eclatee : c'est la seule qui demande
+  // la resolution d'affichage. Portees, goupilles et chambre ne dependent pas
+  // de la finesse des coques : l'assemblage leger deja calcule par
+  // l'application suffit, et le curseur reste fluide sur un corps dense.
+  const detailed = useMemo(
+    () =>
+      needsAssembly && exploded ? buildAssembly(createProfile(params), params, ASSEMBLY_DISPLAY) : null,
+    [needsAssembly, exploded, params],
   );
-  useEffect(
-    () => () => {
-      if (!assembly) return;
-      assembly.male.dispose();
-      assembly.female.dispose();
-      assembly.tenons?.dispose();
-      assembly.socketPreview?.dispose();
-      for (const pin of assembly.pins) pin.geometry.dispose();
-    },
-    [assembly],
-  );
+  useEffect(() => () => disposeAssembly(detailed), [detailed]);
+  const assembly = needsAssembly ? (detailed ?? preview) : null;
 
   const handleSurfacePointer = (event: ThreeEvent<PointerEvent>, place: boolean) => {
     if (!placing) return;

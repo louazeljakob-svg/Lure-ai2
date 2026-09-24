@@ -747,6 +747,49 @@ function shellThickness(
   );
 }
 
+/**
+ * Epaisseur de coque tabulee pour une station : les deux arcs echantillonnes
+ * une fois, puis interpoles. Les placements automatiques (ergots, gorge de
+ * colle) sondent des dizaines de hauteurs par station ; une bisection a
+ * chaque sonde rendait le curseur lourd.
+ */
+function thicknessTable(
+  surface: SurfaceSampler,
+  frame: JointFrame,
+  station: Station,
+): (t: number) => number {
+  if (station.degenerate) return () => 0;
+  const arcs = [
+    [station.theta1, station.theta2],
+    [station.theta2, station.theta1 + Math.PI * 2],
+  ].map(([from, to]) => {
+    const samples: { t: number; n: number }[] = [];
+    for (let k = 0; k <= 96; k++) {
+      const point = surface(station.p, from + ((to - from) * k) / 96);
+      samples.push({
+        t: frame.transverseOf(point.y, point.z),
+        n: Math.abs(frame.normalOf(point.y, point.z)),
+      });
+    }
+    return samples.sort((a, b) => a.t - b.t);
+  });
+  const at = (samples: { t: number; n: number }[], t: number) => {
+    if (t <= samples[0].t || t >= samples[samples.length - 1].t) return 0;
+    let lo = 0;
+    let hi = samples.length - 1;
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1;
+      if (samples[mid].t <= t) lo = mid;
+      else hi = mid;
+    }
+    const a = samples[lo];
+    const b = samples[hi];
+    const f = (t - a.t) / Math.max(b.t - a.t, 1e-12);
+    return a.n + (b.n - a.n) * f;
+  };
+  return (t) => Math.min(at(arcs[0], t), at(arcs[1], t));
+}
+
 /** Epaisseur maximale de la demi-coque a cette station, en cm. */
 function maxBulge(surface: SurfaceSampler, frame: JointFrame, station: Station): number {
   let best = 0;
@@ -2201,10 +2244,10 @@ export function buildAssembly(
   if (bill) {
     const x0 = bill.mouth.x - 0.4;
     const x1 = Math.max(
-      bill.along(bill.depthU(bill.maxInsertion), -bill.halfPlate).x,
-      bill.along(bill.depthU(bill.maxInsertion), bill.halfPlate).x,
+      bill.along(bill.depthU(bill.insertion), -bill.halfPlate).x,
+      bill.along(bill.depthU(bill.insertion), bill.halfPlate).x,
     ) + 0.05;
-    for (let x = x0; x <= x1; x += 0.025) {
+    for (let x = x0; x <= x1; x += 0.04) {
       const p = pAtX(profile, x);
       if (p > pStart + 1e-4 && p < pEnd - 1e-4) extra.push(p);
     }
@@ -2979,10 +3022,28 @@ export function buildAssembly(
   // Tout ce qui est deja creuse ou ouvert dans la face de joint, sous forme de
   // polygones : les ergots et la gorge de colle s'en ecartent, et chaque
   // ecart est dit, jamais tu.
+  const tables = new Map<Station, (t: number) => number>();
+  const thicknessAt = (station: Station, t: number): number => {
+    let table = tables.get(station);
+    if (!table) {
+      table = thicknessTable(surface, frame, station);
+      tables.set(station, table);
+    }
+    return table(t);
+  };
+  const rangeCache = new Map<Station, [number, number]>();
+  const rangeAt = (station: Station): [number, number] => {
+    let range = rangeCache.get(station);
+    if (!range) {
+      range = stationRange(surface, frame, station);
+      rangeCache.set(station, range);
+    }
+    return range;
+  };
   const obstacles: { polygon: THREE.Vector2[]; label: string }[] = [];
   const nearStation = (x: number) => stationAt(stations, x);
   const rimAt = (i: number, rail: 'lo' | 'hi') => {
-    const [lo, hi] = stationRange(surface, frame, stations[i]);
+    const [lo, hi] = rangeAt(stations[i]);
     return new THREE.Vector2(stations[i].x, rail === 'lo' ? lo : hi);
   };
   for (const pocket of pockets) obstacles.push({ polygon: pocket.outline, label: 'un logement' });
@@ -3062,7 +3123,7 @@ export function buildAssembly(
       const p = 0.1 + ((profile.bodyEnd - 0.2) * k) / SAMPLES;
       const station = nearStation(profile.xAt(p));
       if (!station || station.degenerate) continue;
-      const [lo, hi] = stationRange(surface, frame, station);
+      const [lo, hi] = rangeAt(station);
       if (hi - lo < 2 * rimKeep) {
         note('section trop basse');
         continue;
@@ -3073,7 +3134,7 @@ export function buildAssembly(
       let bestRoom = -1;
       for (let j = 0; j <= 8; j++) {
         const t = lo + rimKeep + ((hi - lo - 2 * rimKeep) * j) / 8;
-        const room = shellThickness(surface, frame, station, t);
+        const room = thicknessAt(station, t);
         if (room > bestRoom) {
           bestRoom = room;
           bestT = t;
@@ -3152,12 +3213,12 @@ export function buildAssembly(
       const inset: number[] = rim.map((point, i) => {
         const n = normal[i];
         if (!point || !n) return Infinity;
-        const [lo, hi] = stationRange(surface, frame, stations[i]);
+        const [lo, hi] = rangeAt(stations[i]);
         for (let extra = 0; extra <= 0.4; extra += 0.02) {
           const d = gInset + extra;
           const probe = (offset: number) => {
             const t = point.y + n.y * offset;
-            return t > lo && t < hi ? shellThickness(surface, frame, stations[i], t) : 0;
+            return t > lo && t < hi ? thicknessAt(stations[i], t) : 0;
           };
           if (Math.min(probe(d), probe(d + gWidth / 2), probe(d + gWidth)) >= gDepth + SKIN) return d;
         }
@@ -3185,26 +3246,49 @@ export function buildAssembly(
       // Blocage station par station, puis troncons continus.
       let run: number[] = [];
       let lastWhy = '';
-      const flush = (why: string, at: number) => {
-        if (run.length >= 5) {
-          const outer: THREE.Vector2[] = [];
-          const inner: THREE.Vector2[] = [];
-          for (const i of run) {
-            const point = rim[i]!;
-            const n = normal[i]!;
-            outer.push(point.clone().addScaledVector(n, smooth[i]));
-            inner.push(point.clone().addScaledVector(n, smooth[i] + gWidth));
-          }
-          const strip = [...outer, ...inner.reverse()];
-          if (simplePolygon(strip)) {
-            pockets.push({ outline: strip, depth: gDepth });
-            obstacles.push({ polygon: strip, label: 'la gorge de colle' });
-            segments++;
-            for (let k = 1; k < run.length; k++) {
-              length += outer[k].distanceTo(outer[k - 1]);
-            }
+      /** Troncon de gorge : un ruban entre deux decalages du rail. */
+      const emit = (run: number[]) => {
+        if (run.length < 5) return;
+        const outer: THREE.Vector2[] = [];
+        const inner: THREE.Vector2[] = [];
+        for (const i of run) {
+          const point = rim[i]!;
+          const n = normal[i]!;
+          outer.push(point.clone().addScaledVector(n, smooth[i]));
+          inner.push(point.clone().addScaledVector(n, smooth[i] + gWidth));
+        }
+        // La ou le rail tourne plus serre que le decalage, le ruban se
+        // replierait sur lui-meme : on coupe le troncon a cet endroit plutot
+        // que de le perdre en entier.
+        const tangent = (k: number) => {
+          const a = rim[run[Math.max(k - 1, 0)]]!;
+          const b = rim[run[Math.min(k + 1, run.length - 1)]]!;
+          return new THREE.Vector2(b.x - a.x, b.y - a.y);
+        };
+        for (let k = 0; k + 1 < run.length; k++) {
+          const t = tangent(k);
+          const forwardOuter = new THREE.Vector2().subVectors(outer[k + 1], outer[k]).dot(t);
+          const forwardInner = new THREE.Vector2().subVectors(inner[k + 1], inner[k]).dot(t);
+          if (forwardOuter <= 0 || forwardInner <= 0) {
+            emit(run.slice(0, k));
+            emit(run.slice(k + 2));
+            return;
           }
         }
+        const strip = [...outer, ...[...inner].reverse()];
+        if (!simplePolygon(strip)) {
+          const middle = Math.floor(run.length / 2);
+          emit(run.slice(0, middle));
+          emit(run.slice(middle + 1));
+          return;
+        }
+        pockets.push({ outline: strip, depth: gDepth });
+        obstacles.push({ polygon: strip, label: 'la gorge de colle' });
+        segments++;
+        for (let k = 1; k < run.length; k++) length += outer[k].distanceTo(outer[k - 1]);
+      };
+      const flush = (why: string, at: number) => {
+        emit(run);
         if (why && run.length > 0) {
           interruptions.push(`${rail === 'hi' ? 'Dos' : 'Ventre'} a ${fromNose(stations[at].x).toFixed(0)} mm : ${why}`);
         }
@@ -3218,7 +3302,7 @@ export function buildAssembly(
         let why = '';
         if (!point || !n || !Number.isFinite(smooth[i])) why = 'coque trop mince';
         else {
-          const [lo, hi] = stationRange(surface, frame, stations[i]);
+          const [lo, hi] = rangeAt(stations[i]);
           if (hi - lo < 2 * (smooth[i] + gWidth) + 0.1) why = 'section trop basse';
           else if (vJoint && stations[i].x > vJoint.xZoneStart - 0.1 && stations[i].x < vJoint.xZoneEnd + 0.1) {
             why = 'coque trop mince';
@@ -3496,17 +3580,38 @@ export function assemblyBlocker(params: LureParams): string | null {
   return null;
 }
 
-export function assemblyPlans(
-  profile: ProfileSampler,
-  params: LureParams,
-): { sockets: SocketPlan[]; billPlan: BillSlotPlan | null } {
-  if (!assemblyActive(params)) return { sockets: [], billPlan: null };
-  const result = buildAssembly(profile, params, { stations: 40, arcSamples: 10 });
+/** Resolution des calculs d'interface : portees, fente, volume des coques. */
+export const ASSEMBLY_PREVIEW: AssemblyResolution = { stations: 40, arcSamples: 10 };
+
+/**
+ * Assemblage leger, calcule UNE fois par reglage et partage : l'interface y
+ * lit les portees et la fente, la physique le volume des coques, la vue 3D
+ * les reperes. Trois calculs identiques rendaient le curseur lourd.
+ */
+export function assemblyPreview(profile: ProfileSampler, params: LureParams): AssemblyResult | null {
+  return assemblyActive(params) ? buildAssembly(profile, params, ASSEMBLY_PREVIEW) : null;
+}
+
+/** Libere les maillages d'un resultat d'assemblage. */
+export function disposeAssembly(result: AssemblyResult | null): void {
+  if (!result) return;
   result.male.dispose();
   result.female.dispose();
   result.tenons?.dispose();
   result.socketPreview?.dispose();
+  result.dowelPins?.dispose();
   for (const pin of result.pins) pin.geometry.dispose();
+}
+
+export function assemblyPlans(
+  profile: ProfileSampler,
+  params: LureParams,
+  preview?: AssemblyResult | null,
+): { sockets: SocketPlan[]; billPlan: BillSlotPlan | null } {
+  if (!assemblyActive(params)) return { sockets: [], billPlan: null };
+  if (preview) return { sockets: preview.sockets, billPlan: preview.billPlan };
+  const result = buildAssembly(profile, params, ASSEMBLY_PREVIEW);
+  disposeAssembly(result);
   return { sockets: result.sockets, billPlan: result.billPlan };
 }
 

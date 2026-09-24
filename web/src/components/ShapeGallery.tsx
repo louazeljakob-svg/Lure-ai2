@@ -12,6 +12,7 @@ import {
 } from '../lib/archetypes';
 import { ArchetypePreview } from './ArchetypePreview';
 import { getPreset } from '../lib/presets';
+import { THUMBNAILS } from '../lib/thumbnails';
 import { ProjectsPanel } from './ProjectsPanel';
 
 interface Props {
@@ -175,6 +176,16 @@ export function ShapeGallery({
                   </span>
                   <span className="tag">elancement {ratio.toFixed(1)}</span>
                   <span className="tag">{FLOAT_LABEL[item.buoyancy]}</span>
+                  {THUMBNAILS[item.shape] ? (
+                    <span className="tag" title="Mesure sur le modele livre, quincaillerie comprise">
+                      {THUMBNAILS[item.shape].massG.toFixed(1).replace('.', ',')} g
+                    </span>
+                  ) : null}
+                  {THUMBNAILS[item.shape] ? (
+                    <span className="tag" title="Triangles du corps a la resolution d export">
+                      {Math.round(THUMBNAILS[item.shape].bodyTriangles / 1000)} k triangles
+                    </span>
+                  ) : null}
                   <span className="tag">{item.hasBib ? 'Bavette' : 'Sans bavette'}</span>
                   {item.articulated ? <span className="tag">Articule</span> : null}
                 </div>

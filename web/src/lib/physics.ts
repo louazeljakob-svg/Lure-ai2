@@ -14,7 +14,15 @@ import type { LureParams, WaterId } from '../types/lure';
 import type { LureGeometry } from './geometry';
 import { getMaterial, solidFraction, WATER_DENSITY } from './materials';
 import { clamp, createProfile, MM_TO_CM, type ProfileSampler } from './profile';
-import { assemblyActive, assemblyBlocker, buildAssembly, resolvePin } from './assembly';
+import {
+  ASSEMBLY_PREVIEW,
+  assemblyActive,
+  assemblyBlocker,
+  buildAssembly,
+  disposeAssembly,
+  resolvePin,
+  type AssemblyResult,
+} from './assembly';
 import { printedBodies } from './geometry';
 import {
   billPlateVolume,
@@ -263,6 +271,8 @@ export function computePhysics(
   params: LureParams,
   geo: LureGeometry,
   water: WaterId = 'fresh',
+  /** Assemblage leger deja calcule pour l'interface, s'il existe. */
+  preview: AssemblyResult | null = null,
 ): PhysicsResult {
   // La bavette rapportee ne fait pas partie du corps imprime : elle ne pese
   // pas dans le calcul et ne deplace pas d'eau au titre du corps.
@@ -284,7 +294,7 @@ export function computePhysics(
   // de sortie, fente de bavette, billes. Plutot que de les estimer un par un,
   // on mesure ce qui est reellement imprime — le volume des deux coques.
   const cavities = assemblyActive(params)
-    ? shellContent(params, profile)
+    ? shellContent(params, profile, preview)
     : {
         printed: printedBodies(geo).reduce((sum, part) => sum + massProperties(part).volume, 0),
         mass: 0,
@@ -655,6 +665,7 @@ export function computePhysics(
 function shellContent(
   params: LureParams,
   profile: ReturnType<typeof createProfile>,
+  preview: AssemblyResult | null,
 ): {
   printed: number;
   mass: number;
@@ -667,7 +678,8 @@ function shellContent(
   /** Refus motives de l'assemblage : charniere, fente de queue, ergots. */
   problems: { id: string; title: string; detail: string }[];
 } {
-  const assembly = buildAssembly(profile, params, { stations: 40, arcSamples: 10 });
+  const owned = preview ? null : buildAssembly(profile, params, ASSEMBLY_PREVIEW);
+  const assembly = preview ?? owned!;
   const printed =
     massProperties(assembly.male).volume +
     massProperties(assembly.female).volume +
@@ -688,12 +700,8 @@ function shellContent(
     });
   }
   const mass = points.reduce((sum, point) => sum + point.mass, 0);
-  assembly.male.dispose();
-  assembly.female.dispose();
-  assembly.tenons?.dispose();
-  assembly.socketPreview?.dispose();
-  for (const pin of assembly.pins) pin.geometry.dispose();
-  assembly.dowelPins?.dispose();
+  // Un assemblage partage appartient a l'appelant : on ne libere que le sien.
+  disposeAssembly(owned);
   return {
     printed,
     mass,

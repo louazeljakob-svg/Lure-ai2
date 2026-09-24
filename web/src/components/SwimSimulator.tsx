@@ -11,7 +11,8 @@
 import { useMemo, useState } from 'react';
 import type { LureParams } from '../types/lure';
 import type { PhysicsResult } from '../lib/physics';
-import type { SocketPlan } from '../lib/assembly';
+import { EXIT_LABEL, type SocketPlan } from '../lib/assembly';
+import { createProfile } from '../lib/profile';
 import {
   CURRENT_PRESETS,
   DEFAULT_ASSUMPTIONS,
@@ -193,7 +194,11 @@ export function SwimSimulator({ params, physics, sockets }: Props) {
     () =>
       sockets.map((socket) =>
         anchorStrength(
-          socket.spec.label,
+          // Deux ancrages peuvent porter la meme goupille : le libelle dit
+          // lequel des deux cede, par sa sortie et sa position.
+          `${socket.spec.label} — ${EXIT_LABEL[socket.exit].toLowerCase()} a ${(
+            (socket.center.x - createProfile(params).xAt(0)) * 10
+          ).toFixed(0)} mm`,
           socket.spec.wire,
           socket.spec.loopWidth,
           socket.seatDepth * 10,

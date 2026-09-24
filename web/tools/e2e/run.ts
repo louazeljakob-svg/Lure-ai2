@@ -36,6 +36,7 @@ import {
   type SwimInput,
 } from '../../src/lib/swim';
 import type { LureParams } from '../../src/types/lure';
+import { THUMBNAILS } from '../../src/lib/thumbnails';
 
 export interface Report {
   failures: string[];
@@ -230,6 +231,11 @@ export function run(): Report {
   if (ids.join() !== expected.join()) report.failures.push(`bibliotheque : ${ids.join(', ')}`);
 
   for (const preset of SHAPE_PRESETS) {
+    // Vignette pre-calculee et stockee : affichage instantane (AB.5).
+    const thumb = THUMBNAILS[preset.id];
+    if (!thumb || !thumb.image.startsWith('data:image/')) {
+      report.failures.push(`${preset.id} : vignette pre-calculee absente`);
+    }
     // Chargement comme un projet : aller-retour JSON et nettoyage.
     const params = sanitizeParams(JSON.parse(JSON.stringify(clonePreset(preset.id))));
     if (!params.anatomy) report.failures.push(`${preset.id} : anatomie perdue au chargement`);

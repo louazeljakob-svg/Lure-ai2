@@ -5,7 +5,7 @@
  * La persistance passe par les fichiers JSON que l utilisateur telecharge.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   Decal,
   Inlay,
@@ -17,7 +17,7 @@ import type {
   ShapeId,
   WaterId,
 } from './types/lure';
-import { assemblyPlans, suggestExit } from './lib/assembly';
+import { assemblyPlans, assemblyPreview, disposeAssembly, suggestExit } from './lib/assembly';
 import { createProfile } from './lib/profile';
 import {
   applyCalibration,
@@ -218,22 +218,35 @@ export default function App() {
   // Cotes d'assemblage a resolution reduite : l'interface doit signaler un
   // ancrage invalide des la frappe, sans reconstruire tout le maillage. La
   // bavette fantome se pose ensuite dans la fente que ce calcul a retenue.
-  const plans = useMemo(() => assemblyPlans(createProfile(params), params), [params]);
+  //
+  // Rendu differe : les curseurs suivent la main immediatement, la geometrie
+  // et la physique se recalculent des que le navigateur a un instant. Sur un
+  // corps anatomique dense, c'est ce qui garde l'edition fluide.
+  const scene = useDeferredValue(params);
+  const preview = useMemo(() => assemblyPreview(createProfile(scene), scene), [scene]);
+  useEffect(() => () => disposeAssembly(preview), [preview]);
+  const plans = useMemo(
+    () => assemblyPlans(createProfile(scene), scene, preview),
+    [scene, preview],
+  );
   const sockets = plans.sockets;
   const geo = useMemo(
     () =>
       buildLure(
-        params,
-        PREVIEW_RESOLUTION[params.print.preview],
+        scene,
+        PREVIEW_RESOLUTION[scene.print.preview],
         plans.billPlan?.root ?? null,
         // Ecailles cuites : le relief existe pour de bon dans le maillage, au
         // prix d'un maillage bien plus dense. Sinon, normal map.
-        params.scales.baked,
+        scene.scales.baked,
       ),
-    [params, plans],
+    [scene, plans],
   );
   useEffect(() => () => geo.dispose(), [geo]);
-  const physics = useMemo(() => computePhysics(params, geo, water), [params, geo, water]);
+  const physics = useMemo(
+    () => computePhysics(scene, geo, water, preview),
+    [scene, geo, water, preview],
+  );
 
   // Un changement d'ecran repart du haut : sinon on arrive au milieu du panneau.
   useEffect(() => {
@@ -1012,7 +1025,7 @@ export default function App() {
 
   const selectedDecal = params.decals.find((decal) => decal.id === selectedNode) ?? null;
   const selectedInlay = params.inlays.find((item) => item.id === selectedNode) ?? null;
-  const checks = useMemo(() => runPrintChecks(params, geo), [params, geo]);
+  const checks = useMemo(() => runPrintChecks(scene, geo), [scene, geo]);
 
   const panelMeta = PANEL_META[panelTab];
 
@@ -1191,8 +1204,9 @@ export default function App() {
 
             <Viewport3D
               geo={geo}
+              preview={preview}
               importedMesh={importedGeometry}
-              params={params}
+              params={scene}
               physics={physics}
               fitKey={fitKey}
               placing={placing}

@@ -489,10 +489,13 @@ export function RankBars({ items, unit, digits = 1, weakestLabel }: RankBarsProp
   const max = Math.max(...items.map((i) => i.value), 1e-6);
   return (
     <ul className="rank">
-      {items.map((item) => {
+      {items.map((item, index) => {
         const weak = item.label === weakestLabel;
         return (
-          <li key={item.label} className={weak ? 'rank__row rank__row--weak' : 'rank__row'}>
+          <li
+            key={`${item.label}-${index}`}
+            className={weak ? 'rank__row rank__row--weak' : 'rank__row'}
+          >
             <div className="rank__head">
               <span className="rank__label">
                 {weak ? '⚠ ' : ''}
