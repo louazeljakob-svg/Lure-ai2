@@ -694,10 +694,9 @@ export function buildLure(
   // L'articulation coupe le corps d'un seul tenant. Elle ne se cumule pas
   // avec l'impression en deux coques, qui coupe deja dans l'autre sens : la
   // simulation le signale plutot que de produire quatre pieces bancales.
-  const jointPlan =
-    params.articulation.enabled && !params.assembly.enabled
-      ? articulationPlan(profile, params)
-      : null;
+  // Un leurre articule montre ses segments, qu'il soit imprime d'un seul
+  // tenant par segment ou en demi-coques : ce sont les memes segments.
+  const jointPlan = params.articulation.enabled ? articulationPlan(profile, params) : null;
   const segments = jointPlan ? buildSegments(profile, params, fine, jointPlan, bakeScales) : null;
   // Les barreaux de retention s'impriment a part, comme les goupilles
   // d'assemblage : ils accompagnent les segments dans l'export.

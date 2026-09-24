@@ -139,6 +139,24 @@ export function bibShape(_profile: ProfileSampler, params: LureParams): BibShape
   };
 }
 
+/** Masse volumique du polycarbonate, en g/cm3. */
+export const POLYCARBONATE_DENSITY = 1.2;
+
+/**
+ * Volume de la plaque, en cm3 : surface du contour fois epaisseur. C'est la
+ * meme plaque dans les deux modes ; seule sa matiere change.
+ */
+export function billPlateVolume(profile: ProfileSampler, params: LureParams): number {
+  const { points } = bibShape(profile, params);
+  let area = 0;
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i];
+    const b = points[(i + 1) % points.length];
+    area += a.x * b.y - b.x * a.y;
+  }
+  return (Math.abs(area) / 2) * billSize(params).thickness * MM_TO_CM;
+}
+
 /** Contour du gabarit a decouper, aux cotes reelles. */
 export const bibOutline = (profile: ProfileSampler, params: LureParams): THREE.Vector2[] =>
   bibShape(profile, params).points;

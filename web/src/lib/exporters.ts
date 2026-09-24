@@ -29,13 +29,15 @@ import {
 } from './assembly';
 import { bibOutline, bibShape, billHalfWidthAt, billSize } from './billTemplate';
 import { createProfile } from './profile';
+import { buildRetentionPins } from './articulation';
 import { buildStepFile } from './step';
 
 /** Piece a exporter : ensemble assemble, ou l'une des deux coques. */
-export type ExportKind = 'assembly' | 'male' | 'female' | 'insert' | 'softTail';
+export type ExportKind = 'assembly' | 'male' | 'female' | 'insert' | 'softTail' | 'bib';
 
 export const EXPORT_LABEL: Record<ExportKind, string> = {
   assembly: 'assemble',
+  bib: 'bavette',
   insert: 'insert',
   softTail: 'queue-souple',
   male: 'male',
@@ -87,6 +89,18 @@ export function collectParts(
   // decoupee a part, son modele 3D n'est qu'une aide au placement.
   const printedBib = geo.bib && !geo.bibIsGhost ? geo.bib : null;
 
+  // Bavette imprimee (module AE) : une piece STL a part entiere, la meme
+  // plaque que la polycarbonate, posee a son emplacement dans la fente.
+  if (kind === 'bib') {
+    if (!printedBib) return { parts, owned };
+    const profile = createProfile(params);
+    const plan = assemblyActive(params) ? billPlanFor(profile, params) : null;
+    const bib = buildBib(profile, params, 'full', plan?.root ?? null);
+    owned.push(bib);
+    parts.push(bib);
+    return { parts, owned };
+  }
+
   // Combinaison bloquee : on sort la piece entiere plutot que deux coques
   // qui ne se refermeraient pas.
   if (kind === 'assembly' || !assemblyActive(params)) {
@@ -112,6 +126,13 @@ export function collectParts(
     parts.push(assembly.male);
     if (assembly.tenons) parts.push(assembly.tenons);
     if (assembly.dowelPins) parts.push(assembly.dowelPins);
+    // Leurre articule : le cylindre de retention, imprime a part, accompagne
+    // la coque male, a la hauteur de portee reellement creusee.
+    const retention = assembly.jointPlan ? buildRetentionPins(assembly.jointPlan) : null;
+    if (retention) {
+      owned.push(retention);
+      parts.push(retention);
+    }
   } else {
     parts.push(assembly.female);
   }
@@ -123,7 +144,10 @@ export function collectParts(
   const vertical = params.assembly.planeAngle < 5;
   const share: ShellPart = vertical ? kind : 'full';
   if (vertical || kind === 'male') {
-    if (printedBib) {
+    // Une bavette imprimee logee dans sa fente sort a part (piece « bavette ») :
+    // elle se prend en sandwich au montage. Sans fente, elle reste solidaire
+    // des coques, comme avant.
+    if (printedBib && !assembly.billPlan) {
       const bib = buildBib(profile, params, share);
       owned.push(bib);
       parts.push(bib);

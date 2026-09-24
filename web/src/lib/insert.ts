@@ -335,6 +335,57 @@ export function softTailRoot(
   return null;
 }
 
+/**
+ * Fente de la queue rapportee, fendue dans le plan de joint.
+ *
+ * Meme principe que la fente de bavette : la lame se prend en sandwich entre
+ * les deux demi-coques. Le bout de queue arrondi est tronque la ou la lame
+ * sort, et la fente recule jusqu'a la racine trouvee par `softTailRoot`. La
+ * partie enfoncee de la lame est un talon a la hauteur de la fente ; seule la
+ * partie libre s'evase.
+ */
+export interface SoftTailSlot {
+  /** Station de troncature du bout de queue. */
+  pCut: number;
+  /** Abscisse de la face de sortie et de la racine, en cm. */
+  xCut: number;
+  xRoot: number;
+  /** Centre et demi-hauteur du talon, en cm. */
+  centreY: number;
+  tangHalf: number;
+  /** Demi-hauteur et demi-epaisseur de la fente, jeu compris, en cm. */
+  halfBand: number;
+  depth: number;
+}
+
+export function softTailSlot(profile: ProfileSampler, params: LureParams): SoftTailSlot | null {
+  const cfg = params.softTail;
+  if (!cfg.enabled || profile.hasFin || !params.assembly.enabled) return null;
+  const root = softTailRoot(profile, params);
+  if (!root) return null;
+  // La troncature tombe au debut de l'arrondi de queue : c'est la que la
+  // lame reprend la silhouette.
+  const pCut = Math.max(profile.bodyEnd - 0.035, root.p + 0.01);
+  const section = profile.section(pCut);
+  const xCut = profile.xAt(pCut);
+  // L'enfoncement se compte depuis la face de sortie, pas depuis le bout de
+  // queue retire.
+  const xRoot = Math.min(root.x, xCut - cfg.insertion * MM_TO_CM);
+  if (xCut <= xRoot + 0.05) return null;
+  const clearance = cfg.clearance * MM_TO_CM;
+  const halfHeight = Math.min(section.top, -section.bottom);
+  const tangHalf = Math.min((cfg.height * MM_TO_CM) / 2, Math.max(halfHeight * 0.55 - clearance, 0.05));
+  return {
+    pCut,
+    xCut,
+    xRoot,
+    centreY: (section.top + section.bottom) / 2 + section.offset,
+    tangHalf,
+    halfBand: tangHalf + clearance,
+    depth: (cfg.baseThickness * MM_TO_CM) / 2 + clearance,
+  };
+}
+
 export interface SoftTailPart {
   geometry: THREE.BufferGeometry;
   volumeCm3: number;
@@ -367,17 +418,39 @@ export function buildSoftTail(
   if (!root) return null;
 
   const lengthCm = cfg.length * MM_TO_CM;
-  const insertCm = Math.min(root.insertionMm * MM_TO_CM, lengthCm * 0.6);
+  const insertCm = Math.min(
+    (() => {
+      const slot = softTailSlot(profile, params);
+      return slot ? slot.xCut - slot.xRoot : root.insertionMm * MM_TO_CM;
+    })(),
+    lengthCm * 0.6,
+  );
   const halfBase = (cfg.height * MM_TO_CM) / 2;
   const halfTip = halfBase * Math.max(cfg.spread, 0.1);
   const tBase = (cfg.baseThickness * MM_TO_CM) / 2;
   const tTip = Math.min((cfg.tipThickness * MM_TO_CM) / 2, tBase);
 
-  // La base part de la racine trouvee, la ou il y a de la matiere.
-  const rootX = root.x;
-  const rootY = root.y;
+  // La base part de la racine trouvee, la ou il y a de la matiere. Montee
+  // dans la fente des demi-coques, la partie enfoncee est un talon a la
+  // hauteur de la fente.
+  const slot = softTailSlot(profile, params);
+  const rootX = slot ? slot.xRoot : root.x;
+  const rootY = slot ? slot.centreY : root.y;
+  const tang = (x: number, half: number) =>
+    slot && x <= slot.xCut + 1e-9 ? Math.min(half, slot.tangHalf) : half;
 
-  const nU = 20;
+  // Stations de la lame ; avec une fente, deux stations encadrent la sortie
+  // du corps pour que le talon s'arrete net a la face de sortie.
+  const us: number[] = [];
+  for (let i = 0; i <= 20; i++) us.push(i / 20);
+  if (slot) {
+    const uCut = (slot.xCut - rootX) / lengthCm;
+    const uOut = uCut + 0.05 / lengthCm;
+    if (uCut > 0 && uOut < 1) us.push(uCut, uOut);
+  }
+  us.sort((a, b) => a - b);
+  const stationsU = us.filter((u, i) => i === 0 || u - us[i - 1] > 1e-6);
+  const nU = stationsU.length - 1;
   const nV = 12;
   const cols = nV + 1;
   const positions: number[] = [];
@@ -385,9 +458,9 @@ export function buildSoftTail(
 
   for (const side of [1, -1]) {
     for (let i = 0; i <= nU; i++) {
-      const u = i / nU;
+      const u = stationsU[i];
       const x = rootX + u * lengthCm;
-      const half = halfBase + (halfTip - halfBase) * u;
+      const half = tang(x, halfBase + (halfTip - halfBase) * u);
       const thick = tBase + (tTip - tBase) * u;
       for (let j = 0; j <= nV; j++) {
         const v = (j / nV) * 2 - 1;
@@ -445,7 +518,7 @@ export function softTailBlocker(profile: ProfileSampler, params: LureParams): st
   const cfg = params.softTail;
   if (!cfg.enabled) return null;
   if (profile.hasFin) {
-    return "Le corps porte deja une nageoire caudale moulee. Une queue souple rapportee la doublerait : reglez la forme de queue sur « effilee » avant de la monter.";
+    return "Le corps porte deja une nageoire caudale moulee. Une queue souple rapportee la doublerait : reglez la forme de queue sur « Ronde » avant de la monter.";
   }
   if (!softTailRoot(profile, params)) {
     const need = cfg.baseThickness + cfg.clearance * 2;

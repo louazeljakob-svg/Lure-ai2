@@ -50,6 +50,9 @@ export function ExportManager({
   // Pieces rapportees : elles s'ajoutent a la liste des choix des qu'elles
   // existent, que le corps soit en une ou en deux parties.
   const extras: { value: ExportKind; label: string }[] = [
+    ...(params.hasBib && params.billMode === 'printed' && split
+      ? [{ value: 'bib' as ExportKind, label: 'Bavette' }]
+      : []),
     ...(params.shell.enabled && params.insert.enabled
       ? [{ value: 'insert' as ExportKind, label: 'Insert' }]
       : []),

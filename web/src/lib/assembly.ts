@@ -26,6 +26,7 @@ import * as THREE from 'three';
 import type { LureParams, PinAnchor, PinExit, SocketMethod } from '../types/lure';
 import { createSurfaceSampler, type SurfaceSampler } from './geometry';
 import { warpArc } from './anatomy';
+import { articulationPlan, type ArticulationPlan } from './articulation';
 import { PINS, autoPin, buildPin, getPin, type PinPart, type PinSpec } from './hardware';
 import { MM_TO_CM, type ProfileSampler } from './profile';
 import {
@@ -36,6 +37,7 @@ import {
 } from './billTemplate';
 import { buildDowelPins, planDowels, type DowelPlacement } from './dowels';
 import { planScrews, type ScrewPlan } from './screws';
+import { softTailSlot } from './insert';
 import {
   planThroughWire,
   throughWireBlocker,
@@ -443,6 +445,38 @@ interface EndExit {
   path: THREE.Vector2[];
   /** Puits plus profonds au fond de la poche. */
   bores?: { outline: THREE.Vector2[]; depth: number }[];
+  /** Profil de l'encoche dans la face de coupe, (t, n), bornes comprises. */
+  profile?: THREE.Vector2[];
+  /** Logement de charniere d'une face en V : il remplace la poche simple. */
+  hinge?: HingeSpec;
+}
+
+/**
+ * Logement de charniere dans une face de joint en V (demi-coque de segment).
+ *
+ * Deux caissons fendus dans le plan de joint : la fente de la quincaillerie
+ * (bande `slot`, profondeur `slotDepth` hors du plan) et la portee du
+ * cylindre de retention (bande `seat`, plus haute et moins profonde). Les
+ * deux s'ouvrent sur la face en V et reculent de `reach` dans le segment.
+ * Les caissons englobent le secteur balaye par la quincaillerie : ils ne
+ * peuvent que degager davantage, jamais coincer.
+ */
+interface HingeSpec {
+  /** Abscisse de la ligne de coupe dans le plan de joint. */
+  x0: number;
+  /** +1 si le segment est en arriere de la coupe, -1 s'il est devant. */
+  dir: 1 | -1;
+  reach: number;
+  slot: [number, number];
+  slotDepth: number;
+  seat: [number, number] | null;
+  seatDepth: number;
+}
+
+/** Face de joint en V : x = x0 - |n| . tan, pour les points de la ligne de coupe. */
+interface VFace {
+  x0: number;
+  tan: number;
 }
 
 /**
@@ -515,6 +549,15 @@ export interface AssemblyResult {
   screws: ScrewPlan[];
   /** Ergots d'alignement coniques, places ou refuses avec leur raison. */
   pegs: PegPlacement[];
+  /**
+   * Joint d'un leurre articule en demi-coques, portee du cylindre recalee sur
+   * la matiere reellement disponible ; null si le leurre n'est pas articule.
+   */
+  jointPlan: ArticulationPlan | null;
+  /** Pourquoi le logement de charniere n'a pas pu etre creuse, le cas echeant. */
+  jointProblem: string | null;
+  /** Pourquoi la fente de la queue rapportee n'a pas pu etre creusee. */
+  tailSlotProblem: string | null;
   /** Gorge de colle : troncons creuses et interruptions, ou null si inactive. */
   glueGroove: GlueGrooveReport | null;
   /** Barreaux imprimes, poses a plat a cote des coques. */
@@ -835,6 +878,10 @@ interface ShellInput {
   chinSlots: ChinSlot[];
   /** Ergots coniques : plot sur la coque male, logement en vis-a-vis sur la femelle. */
   pegs: PegSolid[];
+  /** Face de joint en V a l'avant de la coque (segment arriere). */
+  vFront?: VFace;
+  /** Face de joint en V a l'arriere de la coque (segment avant). */
+  vRear?: VFace;
 }
 
 /** Ergot d'alignement, en coordonnees du plan de joint. */
@@ -887,9 +934,19 @@ function buildShell(
   // Tout est emis avec l'orientation de la coque male ; la femelle, batie
   // dans un repere de main opposee, est retournee d'un bloc a l'arrivee.
   const mesh = new MeshBuilder(!maleSide);
+  // Sur un segment articule, la ligne de coupe du plan de joint est l'arete
+  // du V : tout point pose sur elle est reporte sur la face inclinee, a sa
+  // cote n. La face de coupe, les parois du logement et le bord de peau
+  // tombent ainsi exactement sur le meme plan.
+  const snap = (x: number, n: number): number => {
+    const a = Math.abs(n);
+    if (input.vRear && Math.abs(x - input.vRear.x0) < 1e-9) return input.vRear.x0 - a * input.vRear.tan;
+    if (input.vFront && Math.abs(x - input.vFront.x0) < 1e-9) return input.vFront.x0 - a * input.vFront.tan;
+    return x;
+  };
   const lift = (t: number, n: number, x: number): THREE.Vector3 => {
     const { y, z } = frame.toWorld(t, maleSide ? n : -n);
-    return new THREE.Vector3(x, y, z);
+    return new THREE.Vector3(snap(x, n), y, z);
   };
   /** Releve un point (x, t) du plan de joint a la cote n. */
   const planar = (n: number): Lift => (point) => lift(point.y, n, point.x);
@@ -1253,6 +1310,10 @@ function buildShell(
     const hi = arcSamples;
     section.push(new THREE.Vector2(ring.t[lo], 0));
     for (const notch of [...notches].sort((a, b) => a.tLo - b.tLo)) {
+      if (notch.profile) {
+        section.push(...notch.profile);
+        continue;
+      }
       section.push(new THREE.Vector2(notch.tLo, 0));
       section.push(new THREE.Vector2(notch.tLo, notch.depth));
       section.push(new THREE.Vector2(notch.tHi, notch.depth));
@@ -1270,6 +1331,10 @@ function buildShell(
 
   // --- Poches des passages par une extremite ------------------------------
   for (const exit of input.endExits) {
+    if (exit.hinge) {
+      emitHinge(mesh, exit.hinge, planar, lift);
+      continue;
+    }
     // Le chemin part et revient sur la ligne de coupe : le fond se referme
     // de lui-meme, l'arete de fermeture est la bouche.
     const marked = ringMarked(
@@ -1305,6 +1370,81 @@ function emitCavity(
   for (const well of wells) {
     pocketWall(mesh, well.outline, exit.depth, well.depth, lift);
     fill(mesh, well.outline, [], planar(well.depth), true);
+  }
+}
+
+/**
+ * Logement de charniere : parois, fonds et contremarches des deux caissons.
+ *
+ * Chaque arete verticale est coupee a toutes les cotes ou une paroi voisine
+ * change de hauteur : c'est ce qui evite les jonctions en T entre la fente
+ * (profonde) et la portee du cylindre (moins profonde).
+ */
+function emitHinge(
+  mesh: MeshBuilder,
+  hinge: HingeSpec,
+  planar: (n: number) => Lift,
+  lift: Raise,
+): void {
+  const { x0, dir, reach, slot, slotDepth: hA, seat, seatDepth: hB } = hinge;
+  const xb = x0 + dir * reach;
+  const V = (x: number, t: number) => new THREE.Vector2(x, t);
+  const same = (a: number, b: number) => Math.abs(a - b) < 1e-9;
+  const wall = (outline: THREE.Vector2[], levels: (a: THREE.Vector2, b: THREE.Vector2) => number[] | null) => {
+    for (let i = 0; i < outline.length; i++) {
+      const a = outline[i];
+      const b = outline[(i + 1) % outline.length];
+      const cuts = levels(a, b);
+      if (!cuts) continue;
+      for (let k = 0; k + 1 < cuts.length; k++) {
+        mesh.quad(
+          lift(a.y, cuts[k], a.x),
+          lift(a.y, cuts[k + 1], a.x),
+          lift(b.y, cuts[k + 1], b.x),
+          lift(b.y, cuts[k], b.x),
+        );
+      }
+    }
+  };
+  const mouth = (a: THREE.Vector2, b: THREE.Vector2) => same(a.x, x0) && same(b.x, x0);
+  const inSlot = (a: THREE.Vector2, b: THREE.Vector2) =>
+    a.y >= slot[0] - 1e-9 && a.y <= slot[1] + 1e-9 && b.y >= slot[0] - 1e-9 && b.y <= slot[1] + 1e-9;
+
+  if (!seat) {
+    const box = contourOf([V(x0, slot[0]), V(xb, slot[0]), V(xb, slot[1]), V(x0, slot[1])]);
+    wall(box, (a, b) => (mouth(a, b) ? null : [0, hA]));
+    fill(mesh, box, [], planar(hA), true);
+    return;
+  }
+
+  // Contour du plan de joint : un rectangle sur la bande de la portee, coupe
+  // aux bornes de la fente sur son fond.
+  const outer = contourOf([
+    V(x0, seat[0]),
+    V(xb, seat[0]),
+    V(xb, slot[0]),
+    V(xb, slot[1]),
+    V(xb, seat[1]),
+    V(x0, seat[1]),
+  ]);
+  wall(outer, (a, b) => {
+    if (mouth(a, b)) return null;
+    if (same(a.x, xb) && same(b.x, xb) && inSlot(a, b)) return [0, hB, hA];
+    return [0, hB];
+  });
+  // Contremarches entre le fond de la fente et celui de la portee.
+  const slotBox = contourOf([V(x0, slot[0]), V(xb, slot[0]), V(xb, slot[1]), V(x0, slot[1])]);
+  wall(slotBox, (a, b) =>
+    same(a.y, b.y) && (same(a.y, slot[0]) || same(a.y, slot[1])) ? [hB, hA] : null,
+  );
+  fill(mesh, slotBox, [], planar(hA), true);
+  for (const band of [
+    [seat[0], slot[0]],
+    [slot[1], seat[1]],
+  ] as const) {
+    if (band[1] - band[0] < 1e-6) continue;
+    const box = contourOf([V(x0, band[0]), V(xb, band[0]), V(xb, band[1]), V(x0, band[1])]);
+    fill(mesh, box, [], planar(hB), true);
   }
 }
 
@@ -1380,6 +1520,9 @@ interface AnchorPlan {
 const pocketReach = (plan: AnchorPlan): number =>
   Math.hypot(plan.seatRadius, plan.channelHalf) + LEDGE;
 
+/** Demi-emprise d'une portee le long du corps, collerette comprise. */
+const outerReach = (plan: AnchorPlan): number => pocketReach(plan);
+
 /** Goujon : un pilier qui traverse les deux puits et enfile la petite boucle. */
 interface TenonSolid {
   center: THREE.Vector2;
@@ -1387,6 +1530,119 @@ interface TenonSolid {
   /** Cotes extremes dans le repere de la coque male. */
   from: number;
   to: number;
+}
+
+/** Deux maillages non indexes bout a bout : deux solides fermes dans un fichier. */
+function mergeParts(parts: THREE.BufferGeometry[]): THREE.BufferGeometry {
+  const chunks: number[] = [];
+  for (const part of parts) {
+    const position = part.getAttribute('position') as THREE.BufferAttribute;
+    for (let i = 0; i < position.count * 3; i++) chunks.push(position.array[i] as number);
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(chunks, 3));
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+interface VJointFrame {
+  /** Stations d'arete du V, segment avant et segment arriere. */
+  pA: number;
+  pB: number;
+  /** Abscisses exactes de ces stations : les lignes de coupe du plan de joint. */
+  xFront: number;
+  xRear: number;
+  tanFront: number;
+  tanRear: number;
+  /** Etendue des zones ou la peau est recalee sur une face en V. */
+  zoneStart: number;
+  zoneEnd: number;
+  xZoneStart: number;
+  xZoneEnd: number;
+  surface: SurfaceSampler;
+}
+
+/**
+ * Repere des faces en V d'un leurre articule, et peau recalee dessus.
+ *
+ * Pres du joint, chaque colonne de peau s'arrete la ou elle rencontre sa
+ * face : x = x0 - |z| . tan. Le point est cherche par iterations, a 1e-12
+ * pres, pour que l'anneau de la derniere station tombe EXACTEMENT sur le
+ * plan de la face — c'est la condition d'un solide ferme.
+ */
+function planVJoint(
+  profile: ProfileSampler,
+  base: SurfaceSampler,
+  plan: ArticulationPlan,
+): VJointFrame {
+  const exact = (x: number): number => {
+    let lo = 0;
+    let hi = profile.bodyEnd;
+    for (let i = 0; i < 60; i++) {
+      const mid = (lo + hi) / 2;
+      if (profile.xAt(mid) < x) lo = mid;
+      else hi = mid;
+    }
+    return (lo + hi) / 2;
+  };
+  const pA = exact(plan.xJoint);
+  const pB = exact(plan.xJoint + plan.clearance);
+  const xFront = profile.xAt(pA);
+  const xRear = profile.xAt(pB);
+  const tanFront = Math.tan(plan.faceAngle);
+  const tanRear = Math.tan(plan.rearAngle);
+  let half = 0;
+  for (const p of [pA, pB]) {
+    for (let k = 0; k < 64; k++) half = Math.max(half, Math.abs(base(p, (k / 64) * Math.PI * 2).z));
+  }
+  half *= 1.1;
+  const zoneStart = exact(xFront - half * tanFront - 0.05);
+  const zoneEnd = exact(xRear + 0.05);
+  const solve = (theta: number, x0: number, tan: number, guess: number): number => {
+    let p = guess;
+    for (let i = 0; i < 60; i++) {
+      const next = exact(x0 - Math.abs(base(p, theta).z) * tan);
+      if (Math.abs(next - p) < 1e-14) return next;
+      p = next;
+    }
+    return p;
+  };
+  const front = new Map<number, number>();
+  const rear = new Map<number, number>();
+  const surface: SurfaceSampler = (p, theta) => {
+    if (p > zoneStart && p <= pA + 1e-12) {
+      let face = front.get(theta);
+      if (face === undefined) {
+        face = solve(theta, xFront, tanFront, pA);
+        front.set(theta, face);
+      }
+      const s = (p - zoneStart) / (pA - zoneStart);
+      return base(zoneStart + s * (face - zoneStart), theta);
+    }
+    if (p >= pB - 1e-12 && p < zoneEnd) {
+      let face = rear.get(theta);
+      if (face === undefined) {
+        face = solve(theta, xRear, tanRear, pB);
+        rear.set(theta, face);
+      }
+      const s = (zoneEnd - p) / (zoneEnd - pB);
+      return base(zoneEnd - s * (zoneEnd - face), theta);
+    }
+    return base(p, theta);
+  };
+  return {
+    pA,
+    pB,
+    xFront,
+    xRear,
+    tanFront,
+    tanRear,
+    zoneStart,
+    zoneEnd,
+    xZoneStart: profile.xAt(zoneStart),
+    xZoneEnd: profile.xAt(zoneEnd),
+    surface,
+  };
 }
 
 /** Position parametrique correspondant a une abscisse, par iterations. */
@@ -1646,7 +1902,15 @@ export function buildAssembly(
         arcSamples: Math.round(requested.arcSamples * 2.4),
       }
     : requested;
-  const surface = createSurfaceSampler(profile, params, resolution.bakeScales === true);
+  const skin = createSurfaceSampler(profile, params, resolution.bakeScales === true);
+  // Leurre articule en demi-coques : chaque segment est coupe dans le plan de
+  // joint, et ses stations proches du joint sont recalees sur la face en V.
+  const jointPlan =
+    params.articulation.enabled && params.assembly.planeAngle < 5
+      ? articulationPlan(profile, params)
+      : null;
+  const vJoint = jointPlan ? planVJoint(profile, skin, jointPlan) : null;
+  const surface = vJoint ? vJoint.surface : skin;
   const frame = jointFrame(params.assembly.planeAngle);
   const fabrication = params.fabrication;
 
@@ -1885,6 +2149,14 @@ export function buildAssembly(
   // de sens que si le plan de joint est lui aussi vertical. La coupe imposee
   // par un passage de goupille de nez est connue : l'empreinte se mesure
   // depuis cette face-la, jamais depuis une pointe deja retiree.
+  // Queue rapportee : le bout de queue arrondi est tronque la ou la lame sort,
+  // et la fente se prend en sandwich entre les coques, comme la bavette.
+  const tailSlot = softTailSlot(profile, params);
+  if (tailSlot && !cutRear) {
+    pEnd = Math.min(pEnd, tailSlot.pCut);
+    cutRear = true;
+  }
+
   // Une seule fente pour les deux modes (module AE) : la plaque imprimee se
   // prend en sandwich entre les deux coques exactement comme la plaque en
   // polycarbonate.
@@ -1921,8 +2193,6 @@ export function buildAssembly(
   if (profile.openFront && pStart <= 0) cutFront = true;
   const stations: Station[] = [];
   const warp = profile.anatomy ?? null;
-  const t0 = warp ? warp.stationOf(pStart) : 0;
-  const t1 = warp ? warp.stationOf(pEnd) : 1;
   // Stations supplementaires sur l'emprise de la fente de bavette : la bouche
   // et le fond ferme doivent tomber sur des stations, quelle que soit la
   // resolution demandee — sinon une resolution grossiere refuserait une fente
@@ -1939,24 +2209,53 @@ export function buildAssembly(
       if (p > pStart + 1e-4 && p < pEnd - 1e-4) extra.push(p);
     }
   }
-  const base: number[] = [];
-  for (let i = 0; i <= resolution.stations; i++) {
-    // Repartition du corps entier : serree a la tete et au pedoncule.
-    const p = warp
-      ? i === 0
-        ? pStart
-        : i === resolution.stations
-          ? pEnd
-          : warp.stationAt(t0 + ((t1 - t0) * i) / resolution.stations)
-      : pStart + ((pEnd - pStart) * i) / resolution.stations;
-    base.push(p);
+  // Pres d'une face en V, la peau change de station a chaque colonne : on y
+  // resserre les stations pour que la face garde sa finesse.
+  if (vJoint) {
+    for (const [a, b] of [
+      [vJoint.zoneStart, vJoint.pA],
+      [vJoint.pB, vJoint.zoneEnd],
+    ]) {
+      for (let k = 1; k < 16; k++) extra.push(a + ((b - a) * k) / 16);
+    }
   }
-  const merged = [...base, ...extra].sort((a, b) => a - b);
-  for (let i = 0; i < merged.length; i++) {
-    const p = merged[i];
-    if (i > 0 && p - merged[i - 1] < 2e-5) continue;
-    stations.push(findStation(surface, frame, p, profile.xAt(p)));
+  // Un leurre articule a deux listes de stations, bout a bout : le segment
+  // avant s'arrete a l'arete de son V, l'arriere repart de la sienne.
+  const ranges: [number, number][] = vJoint
+    ? [
+        [pStart, vJoint.pA],
+        [vJoint.pB, pEnd],
+      ]
+    : [[pStart, pEnd]];
+  let split = -1;
+  for (const [ra, rb] of ranges) {
+    const count = vJoint
+      ? Math.max(Math.round((resolution.stations * (rb - ra)) / Math.max(pEnd - pStart, 1e-6)), 16)
+      : resolution.stations;
+    const t0 = warp ? warp.stationOf(ra) : 0;
+    const t1 = warp ? warp.stationOf(rb) : 1;
+    const base: number[] = [];
+    for (let i = 0; i <= count; i++) {
+      // Repartition du corps entier : serree a la tete et au pedoncule.
+      const p = warp
+        ? i === 0
+          ? ra
+          : i === count
+            ? rb
+            : warp.stationAt(t0 + ((t1 - t0) * i) / count)
+        : ra + ((rb - ra) * i) / count;
+      base.push(p);
+    }
+    const inside = extra.filter((p) => p > ra + 1e-5 && p < rb - 1e-5);
+    const merged = [...base, ...inside].sort((a, b) => a - b);
+    for (let i = 0; i < merged.length; i++) {
+      const p = merged[i];
+      if (i > 0 && p - merged[i - 1] < 2e-5) continue;
+      stations.push(findStation(surface, frame, p, profile.xAt(p)));
+    }
+    if (split < 0) split = stations.length;
   }
+  if (!vJoint) split = stations.length;
 
   // --- Recalage des portees longitudinales ---------------------------------
   // La portee doit tenir ENTIEREMENT en arriere de la coupe : si la coupe a
@@ -2065,6 +2364,9 @@ export function buildAssembly(
   // coque ouverte.
   const anatomy = params.anatomy;
   const finOnRail = (x0: number, x1: number, rail: 'lo' | 'hi'): string | null => {
+    if (vJoint && x1 >= vJoint.xZoneStart - 0.15 && x0 <= vJoint.xZoneEnd + 0.15) {
+      return 'la face du joint articule';
+    }
     if (!anatomy || params.assembly.planeAngle > 45) return null;
     const fins =
       rail === 'lo'
@@ -2087,6 +2389,7 @@ export function buildAssembly(
   // stations et les faces de coupe se recouperaient.
   const taken: [number, number][] = [];
   const reserve = (iStart: number, iEnd: number): boolean => {
+    if (vJoint && iStart < split && iEnd >= split - 1) return false;
     for (const [a, b] of taken) if (iStart <= b + 1 && a - 1 <= iEnd) return false;
     taken.push([iStart, iEnd]);
     return true;
@@ -2163,7 +2466,8 @@ export function buildAssembly(
         iStart = middle - 1;
         iEnd = middle + 1;
       }
-      const clash = finOnRail(stations[iStart].x, stations[iEnd].x, rail);
+      // Emprise exacte, independante de la resolution des stations.
+      const clash = finOnRail(center.x - outerReach(plan), center.x + outerReach(plan), rail);
       if (clash) {
         plan.valid = false;
         plan.problem =
@@ -2460,7 +2764,7 @@ export function buildAssembly(
       iStart = middle - 1;
       iEnd = middle + 1;
     }
-    const clash = finOnRail(stations[iStart].x, stations[iEnd].x, 'lo');
+    const clash = finOnRail(screw.x - halfX, screw.x + halfX, 'lo');
     if (clash) {
       screw.valid = false;
       screw.problem =
@@ -2639,6 +2943,38 @@ export function buildAssembly(
     }
   }
 
+  // --- Fente de la queue rapportee ------------------------------------------
+  let tailSlotProblem: string | null = null;
+  if (tailSlot && cutRear) {
+    const last = stations[stations.length - 1];
+    const xCut = last.x;
+    const tLo = tailSlot.centreY - tailSlot.halfBand;
+    const tHi = tailSlot.centreY + tailSlot.halfBand;
+    const [lo, hi] = stationRange(surface, frame, last);
+    let room = notchRoom(surface, frame, last, tLo, tHi);
+    for (const station of stations) {
+      if (station.x < tailSlot.xRoot || station.x > xCut) continue;
+      room = Math.min(room, notchRoom(surface, frame, station, tLo, tHi));
+    }
+    if (tLo < lo + SKIN || tHi > hi - SKIN || room < tailSlot.depth + SKIN) {
+      tailSlotProblem =
+        `La fente de la queue rapportee (${((tailSlot.depth * 2) / MM_TO_CM).toFixed(2)} mm jeu compris) ` +
+        'percerait le pedoncule : amincissez la lame ou reculez sa racine.';
+    } else if (freeNotch('rear', tLo, tHi)) {
+      const path = [
+        new THREE.Vector2(xCut, tLo),
+        new THREE.Vector2(tailSlot.xRoot, tLo),
+        new THREE.Vector2(tailSlot.xRoot, tHi),
+        new THREE.Vector2(xCut, tHi),
+      ];
+      const exit: EndExit = { end: 'rear', tLo, tHi, depth: tailSlot.depth, path };
+      maleEnds.push(exit);
+      femaleEnds.push(exit);
+    } else {
+      tailSlotProblem = 'La fente de la queue rapportee croise une sortie de goupille de queue.';
+    }
+  }
+
   // --- Obstacles du plan de joint -----------------------------------------
   // Tout ce qui est deja creuse ou ouvert dans la face de joint, sous forme de
   // polygones : les ergots et la gorge de colle s'en ecartent, et chaque
@@ -2650,6 +2986,14 @@ export function buildAssembly(
     return new THREE.Vector2(stations[i].x, rail === 'lo' ? lo : hi);
   };
   for (const pocket of pockets) obstacles.push({ polygon: pocket.outline, label: 'un logement' });
+  if (vJoint) {
+    const a = vJoint.xZoneStart - 0.1;
+    const b = vJoint.xZoneEnd + 0.1;
+    obstacles.push({
+      polygon: [new THREE.Vector2(a, -50), new THREE.Vector2(b, -50), new THREE.Vector2(b, 50), new THREE.Vector2(a, 50)],
+      label: 'le joint articule',
+    });
+  }
   for (const exit of maleSides) {
     const rim: THREE.Vector2[] = [];
     for (let i = exit.iEnd; i >= exit.iStart; i--) rim.push(rimAt(i, exit.rail));
@@ -2869,11 +3213,16 @@ export function buildAssembly(
       for (let i = 0; i < stations.length; i++) {
         const point = rim[i];
         const n = normal[i];
+        // Deux segments : la gorge s'arrete de part et d'autre du joint.
+        if (vJoint && i === split) flush('', i);
         let why = '';
         if (!point || !n || !Number.isFinite(smooth[i])) why = 'coque trop mince';
         else {
           const [lo, hi] = stationRange(surface, frame, stations[i]);
           if (hi - lo < 2 * (smooth[i] + gWidth) + 0.1) why = 'section trop basse';
+          else if (vJoint && stations[i].x > vJoint.xZoneStart - 0.1 && stations[i].x < vJoint.xZoneEnd + 0.1) {
+            why = 'coque trop mince';
+          }
           else {
             const mid = point.clone().addScaledVector(n, smooth[i] + gWidth / 2);
             const near = clearanceTo(mid);
@@ -2896,18 +3245,155 @@ export function buildAssembly(
 
   shared.pegs = pegSolids;
 
-  const male = buildShell(
-    surface,
-    frame,
-    { ...shared, sideExits: maleSides, endExits: maleEnds },
-    true,
-  );
-  const female = buildShell(
-    surface,
-    frame,
-    { ...shared, sideExits: femaleSides, endExits: femaleEnds },
-    false,
-  );
+  // --- Logements de charniere (leurre articule en demi-coques) ------------
+  let jointProblem: string | null = null;
+  let jointResult: ArticulationPlan | null = jointPlan;
+  const hingeExits: { front: EndExit | null; rear: EndExit | null } = { front: null, rear: null };
+  if (vJoint && jointPlan) {
+    const slotBand: [number, number] = [jointPlan.slot.from, jointPlan.slot.to];
+    const hA = Math.min(jointPlan.slot.halfFloor, jointPlan.halfWidth * 0.65);
+    const hB = jointPlan.pin ? jointPlan.pin.seat : 0;
+    const reachFront = Math.max(jointPlan.slot.depth, hA * vJoint.tanFront + 0.1);
+    const reachRear = Math.max(jointPlan.slot.depth, hA * vJoint.tanRear + 0.1);
+    // Matiere disponible au droit du logement, sur toute sa longueur : c'est
+    // elle qui borne la portee du cylindre en hauteur.
+    const thickness = (from: number, to: number, t: number) => {
+      let room = Infinity;
+      for (const station of stations) {
+        if (station.degenerate || station.x < Math.min(from, to) - 1e-9 || station.x > Math.max(from, to) + 1e-9) continue;
+        room = Math.min(room, shellThickness(surface, frame, station, t));
+      }
+      return room;
+    };
+    const fits = (t: number, depth: number) =>
+      thickness(vJoint.xFront - reachFront, vJoint.xFront, t) >= depth + SKIN &&
+      thickness(vJoint.xRear, vJoint.xRear + reachRear, t) >= depth + SKIN;
+    let slotOk = true;
+    for (let k = 0; k <= 8 && slotOk; k++) {
+      if (!fits(slotBand[0] + ((slotBand[1] - slotBand[0]) * k) / 8, hA)) slotOk = false;
+    }
+    let seat: [number, number] | null = null;
+    if (jointPlan.pin) {
+      let lo = Math.max(jointPlan.pin.from, slotBand[0] - 2);
+      let hi = Math.min(jointPlan.pin.to, slotBand[1] + 2);
+      while (lo < slotBand[0] && !fits(lo, hB)) lo += 0.01;
+      while (hi > slotBand[1] && !fits(hi, hB)) hi -= 0.01;
+      // Le cylindre doit porter au-dessus ET au-dessous de la fente.
+      if (slotBand[0] - lo >= 0.1 && hi - slotBand[1] >= 0.1) seat = [lo, hi];
+    }
+    if (!slotOk) {
+      jointProblem =
+        `La fente de charniere (${((hA * 2) / MM_TO_CM).toFixed(1)} mm de large) ne tient pas dans ` +
+        'les demi-coques au droit du joint : reduisez la hauteur de fente ou elargissez le corps.';
+    } else if (jointPlan.pin && !seat) {
+      jointProblem =
+        'Le cylindre de retention ne trouve pas de portee au-dessus et au-dessous de la fente : ' +
+        'reduisez la hauteur de fente pour lui laisser de la matiere.';
+    } else {
+      const make = (x0: number, dir: 1 | -1, reach: number, end: 'front' | 'rear'): EndExit => {
+        const band = seat ?? slotBand;
+        const xb = x0 + dir * reach;
+        const V = (x: number, t: number) => new THREE.Vector2(x, t);
+        const pathUp = [
+          V(x0, band[0]),
+          V(xb, band[0]),
+          ...(seat ? [V(xb, slotBand[0]), V(xb, slotBand[1])] : []),
+          V(xb, band[1]),
+          V(x0, band[1]),
+        ];
+        const profile = seat
+          ? [
+              V(seat[0], 0),
+              V(seat[0], hB),
+              V(slotBand[0], hB),
+              V(slotBand[0], hA),
+              V(slotBand[1], hA),
+              V(slotBand[1], hB),
+              V(seat[1], hB),
+              V(seat[1], 0),
+            ]
+          : [V(slotBand[0], 0), V(slotBand[0], hA), V(slotBand[1], hA), V(slotBand[1], 0)];
+        return {
+          end,
+          tLo: band[0],
+          tHi: band[1],
+          depth: hA,
+          path: end === 'rear' ? pathUp : [...pathUp].reverse(),
+          profile,
+          hinge: { x0, dir, reach, slot: slotBand, slotDepth: hA, seat, seatDepth: hB },
+        };
+      };
+      hingeExits.rear = make(vJoint.xFront, -1, reachFront, 'rear');
+      hingeExits.front = make(vJoint.xRear, 1, reachRear, 'front');
+      if (jointPlan.pin && seat) {
+        jointResult = { ...jointPlan, pin: { ...jointPlan.pin, from: seat[0], to: seat[1] } };
+      }
+    }
+  }
+
+  const buildHalf = (maleSide: boolean): THREE.BufferGeometry => {
+    const sides = maleSide ? maleSides : femaleSides;
+    const ends = maleSide ? maleEnds : femaleEnds;
+    if (!vJoint) {
+      return buildShell(surface, frame, { ...shared, sideExits: sides, endExits: ends }, maleSide);
+    }
+    // Deux segments : chacun recoit ses stations, ses logements et sa face en
+    // V, puis les deux demi-coques d'un meme cote sortent dans un seul fichier.
+    const xCutFront = vJoint.xFront;
+    const inFront = (x: number) => x < xCutFront;
+    const bbox = (outline: THREE.Vector2[]) => [
+      Math.min(...outline.map((v) => v.x)),
+      Math.max(...outline.map((v) => v.x)),
+    ];
+    const frontShell = buildShell(
+      surface,
+      frame,
+      {
+        ...shared,
+        stations: stations.slice(0, split),
+        pockets: pockets.filter((pocket) => bbox(pocket.outline)[1] < xCutFront),
+        pegs: pegSolids.filter((peg) => inFront(peg.center.x)),
+        chinSlots: chinSlots.filter((slot) => slot.iEnd < split),
+        sideExits: sides.filter((exit) => exit.iEnd < split),
+        endExits: [
+          ...ends.filter((exit) => exit.end === 'front'),
+          ...(hingeExits.rear ? [hingeExits.rear] : []),
+        ],
+        cutFront,
+        cutRear: true,
+        vRear: { x0: vJoint.xFront, tan: vJoint.tanFront },
+      },
+      maleSide,
+    );
+    const rearShell = buildShell(
+      surface,
+      frame,
+      {
+        ...shared,
+        stations: stations.slice(split),
+        pockets: pockets.filter((pocket) => bbox(pocket.outline)[0] > vJoint.xRear),
+        pegs: pegSolids.filter((peg) => peg.center.x > vJoint.xRear),
+        chinSlots: [],
+        sideExits: sides
+          .filter((exit) => exit.iStart >= split)
+          .map((exit) => ({ ...exit, iStart: exit.iStart - split, iEnd: exit.iEnd - split })),
+        endExits: [
+          ...ends.filter((exit) => exit.end === 'rear'),
+          ...(hingeExits.front ? [hingeExits.front] : []),
+        ],
+        cutFront: true,
+        cutRear,
+        vFront: { x0: vJoint.xRear, tan: vJoint.tanRear },
+      },
+      maleSide,
+    );
+    const merged = mergeParts([frontShell, rearShell]);
+    frontShell.dispose();
+    rearShell.dispose();
+    return merged;
+  };
+  const male = buildHalf(true);
+  const female = buildHalf(false);
   const tenons = buildTenonSolids(posts, frame);
   const socketPreview = buildSocketPreview(previews, frame);
 
@@ -2945,6 +3431,9 @@ export function buildAssembly(
     screws: screwPlans,
     pegs: pegPlacements,
     glueGroove: grooveReport,
+    jointPlan: jointResult,
+    jointProblem,
+    tailSlotProblem,
     dowelPins: buildDowelPins(dowels),
     pinSpec: plans[0]?.spec ?? fallback,
     pinMass: pins.reduce((sum, pin) => sum + pin.mass, 0),
@@ -2977,6 +3466,12 @@ export const assemblyActive = (params: LureParams): boolean =>
 
 export function assemblyBlocker(params: LureParams): string | null {
   if (!params.assembly.enabled) return null;
+
+  // Un leurre articule se coupe en demi-coques segment par segment : la face
+  // en V est verticale, le plan de joint doit l'etre aussi.
+  if (params.articulation.enabled && params.assembly.planeAngle >= 5) {
+    return "Un leurre articule se coupe en demi-coques dans son plan de symetrie : la face en V du joint est verticale, le plan de joint doit l'etre aussi. Ramenez l'orientation du joint a 0 deg.";
+  }
 
   // Invariant 1 : chaque section est coupee en deux par le plan de joint.
   // Un joint horizontal partage le corps dos / ventre ; l'inclinaison de

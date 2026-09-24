@@ -16,7 +16,12 @@ import { getMaterial, solidFraction, WATER_DENSITY } from './materials';
 import { clamp, createProfile, MM_TO_CM, type ProfileSampler } from './profile';
 import { assemblyActive, assemblyBlocker, buildAssembly, resolvePin } from './assembly';
 import { printedBodies } from './geometry';
-import type { BillSlotPlan } from './billTemplate';
+import {
+  billPlateVolume,
+  billSize,
+  POLYCARBONATE_DENSITY,
+  type BillSlotPlan,
+} from './billTemplate';
 import { jointTravel, type JointTravel } from './jointCheck';
 import { headOf, type ScrewPlan } from './screws';
 import type { ArticulationPlan } from './articulation';
@@ -261,9 +266,9 @@ export function computePhysics(
 ): PhysicsResult {
   // La bavette rapportee ne fait pas partie du corps imprime : elle ne pese
   // pas dans le calcul et ne deplace pas d'eau au titre du corps.
-  const parts = [geo.body, geo.bibIsGhost ? null : geo.bib, geo.tail].filter(
-    Boolean,
-  ) as THREE.BufferGeometry[];
+  // La bavette est comptee a part, avec sa propre matiere : c'est la meme
+  // plaque dans les deux modes (module AE), imprimee ou en polycarbonate.
+  const parts = [geo.body, geo.tail].filter(Boolean) as THREE.BufferGeometry[];
   let volume = 0;
   const weightedCentroid = new THREE.Vector3();
   for (const part of parts) {
@@ -289,10 +294,23 @@ export function computePhysics(
         dowelAdded: 0,
         dowels: [] as DowelPlacement[],
         screws: [] as ScrewPlan[],
+        problems: [] as { id: string; title: string; detail: string }[],
       };
-  // Bavette imprimee et caudale ne font pas partie des coques : leur volume
-  // s'ajoute a celui des deux demi-corps.
+  // La caudale ne fait pas partie des coques : son volume s'ajoute a celui
+  // des deux demi-corps.
   const appendages = Math.max(volume - massProperties(geo.body).volume, 0);
+
+  // Bavette : une plaque pleine, de la matiere de son mode. La partie
+  // enfoncee dans la fente est deja comptee dans l'enveloppe du corps ; seule
+  // la partie qui depasse deplace de l'eau en plus.
+  const plateVolume = params.hasBib && geo.bib ? billPlateVolume(profile, params) : 0;
+  const billDensity =
+    params.billMode === 'polycarbonate' ? POLYCARBONATE_DENSITY : getMaterial(params.material).density;
+  const bibMass = plateVolume * billDensity;
+  const plateLength = billSize(params).length * 0.1;
+  const buried = cavities.bill ? Math.min(cavities.bill.insertion / Math.max(plateLength, 1e-6), 1) : 0.1;
+  const bibDisplaced = plateVolume * (1 - buried);
+  const bibCentre = geo.bib ? massProperties(geo.bib).centroid : null;
   // Quincaillerie du joint : elle s'achete, elle ne s'imprime pas, mais elle
   // pese — a condition que l'utilisateur ait renseigne ses masses.
   const jointMass = geo.jointPlan ? geo.jointPlan.hardwareMass : 0;
@@ -365,6 +383,7 @@ export function computePhysics(
   const ringMass = tackleMass - hookMass;
   const totalMass =
     bodyMass +
+    bibMass +
     insertMass +
     softTailMass +
     ballastMass +
@@ -392,6 +411,7 @@ export function computePhysics(
     ...(softTailMass > 0 && softTailCentre
       ? [{ x: softTailCentre.x, y: softTailCentre.y, mass: softTailMass }]
       : []),
+    ...(bibMass > 0 && bibCentre ? [{ x: bibCentre.x, y: bibCentre.y, mass: bibMass }] : []),
     ...cavities.points,
     ...tackle,
   ];
@@ -406,7 +426,7 @@ export function computePhysics(
 
   // La queue souple deplace son propre volume : l'oublier ferait couler le
   // leurre sur le papier alors qu'il flotte dans le seau.
-  volume += softTailVolume;
+  volume += softTailVolume + bibDisplaced;
   const displacedMass = volume * WATER_DENSITY[water];
   const ratio = displacedMass > 1e-9 ? totalMass / displacedMass : 0;
   const density = volume > 1e-9 ? totalMass / volume : 0;
@@ -516,9 +536,12 @@ export function computePhysics(
     {
       key: 'insert',
       label: 'Insert / pieces rapportees',
-      massG: insertMass + softTailMass,
+      massG: insertMass + softTailMass + bibMass,
       provenance: 'geometrie',
       detail: [
+        bibMass > 0
+          ? `bavette ${params.billMode === 'polycarbonate' ? 'polycarbonate' : getMaterial(params.material).label} ${plateVolume.toFixed(2)} cm3`
+          : null,
         insertMass > 0
           ? `insert ${getMaterial(params.insert.material).label} ${insertVolume.toFixed(2)} cm3`
           : null,
@@ -587,6 +610,7 @@ export function computePhysics(
       totalMass,
       bill: cavities.bill,
       billProblem: cavities.billProblem,
+      problems: cavities.problems,
       joint: geo.jointPlan,
       // Module V.4 : une vis qui passe pres d'une boucle de goupille ou de son
       // chemin de debattement doit etre detectee par le test de collision. Les
@@ -640,6 +664,8 @@ function shellContent(
   dowelAdded: number;
   dowels: DowelPlacement[];
   screws: ScrewPlan[];
+  /** Refus motives de l'assemblage : charniere, fente de queue, ergots. */
+  problems: { id: string; title: string; detail: string }[];
 } {
   const assembly = buildAssembly(profile, params, { stations: 40, arcSamples: 10 });
   const printed =
@@ -679,6 +705,15 @@ function shellContent(
     dowelAdded: dowelVolumes(assembly.dowels).added,
     dowels: assembly.dowels,
     screws: assembly.screws,
+    problems: [
+      ...(assembly.jointProblem ? [{ id: 'joint-hinge', title: 'Logement de charniere refuse', detail: assembly.jointProblem }] : []),
+      ...(assembly.tailSlotProblem
+        ? [{ id: 'tail-slot', title: 'Fente de queue rapportee refusee', detail: assembly.tailSlotProblem }]
+        : []),
+      ...assembly.pegs
+        .filter((peg) => !peg.valid && peg.problem)
+        .map((peg, i) => ({ id: `peg-${i}`, title: 'Ergot non place', detail: peg.problem! })),
+    ],
   };
 }
 
@@ -698,6 +733,8 @@ interface WarningInput {
   bill: BillSlotPlan | null;
   /** Pourquoi la fente est absente ou moins enfoncee que demande. */
   billProblem: string | null;
+  /** Refus motives de l'assemblage. */
+  problems: { id: string; title: string; detail: string }[];
   /** Cotes du joint articule, ou null. */
   joint: ArticulationPlan | null;
   /** Course reelle du joint, mesuree par pas d'un degre. */
@@ -862,14 +899,9 @@ function buildWarnings(
     }
   }
 
-  if (params.articulation.enabled && params.assembly.enabled) {
-    list.push({
-      id: 'joint-shells',
-      level: 'warn',
-      title: 'Articulation et deux coques ne se cumulent pas',
-      detail:
-        'L articulation coupe le corps en travers, l impression en deux coques le coupe dans la longueur : les deux ensemble donneraient quatre pieces dont l assemblage n est pas genere. Desactivez « Corps en deux parties » pour obtenir les segments articules.',
-    });
+  // Refus de l'assemblage : dits, jamais tus.
+  for (const problem of r.problems) {
+    list.push({ id: problem.id, level: 'error', title: problem.title, detail: problem.detail });
   }
 
   for (const dowel of r.dowels) {
@@ -975,10 +1007,16 @@ function buildWarnings(
   }
 
   if (r.billProblem) {
+    // La fente est refusee plutot que creusee de travers : la plaque en
+    // polycarbonate ne peut plus etre montee. La bavette imprimee, elle,
+    // reste alors solidaire des coques, comme dans les projets anterieurs.
+    const printed = params.billMode === 'printed';
     list.push({
       id: 'bill-depth',
-      level: 'warn',
-      title: 'Fente de bavette bornee par la tete',
+      level: printed ? 'warn' : 'error',
+      title: printed
+        ? 'Fente refusee : bavette imprimee solidaire des coques'
+        : 'Fente de bavette refusee',
       detail: r.billProblem,
     });
   }
