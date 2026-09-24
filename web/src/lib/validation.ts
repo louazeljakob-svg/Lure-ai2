@@ -65,6 +65,12 @@ import type {
   ScalesConfig,
   ShapeId,
   TailShape,
+  Anatomy,
+  FinConfig,
+  GlueGrooveConfig,
+  HollowConfig,
+  PegConfig,
+  ProfileKnot,
 } from '../types/lure';
 import { clonePreset, emptyReference, LIMITS, type Range } from './presets';
 import { THROUGH_WIRE_LIMITS } from './throughWire';
@@ -79,21 +85,35 @@ const FINISH_STYLES: FinishStyle[] = ['smooth', 'faceted'];
 const PREVIEWS: PreviewQuality[] = ['low', 'medium', 'high'];
 
 const SHAPES: ShapeId[] = [
-  'stickbait165',
-  'ryoshi',
-  'model25',
-  'popper',
+  'minnow',
   'crankbait',
-  'jerkbait',
-  'spoon',
-  'swimbait',
-  'topwater',
-  'vibetraine',
-  'minnowtraine',
-  'chugger',
+  'deepdiver',
+  'popper',
+  'stickbait',
   'lipless',
-  'minnownervure',
+  'swimbait',
+  'spoon',
 ];
+
+/**
+ * Identifiants des bibliotheques precedentes.
+ *
+ * Les anciens modeles ont quitte la bibliotheque (module AA), pas les
+ * projets : un projet enregistre sur l'un d'eux garde toutes ses cotes et
+ * son profil historique — il n'a pas d'anatomie — et ne change que
+ * d'etiquette de famille.
+ */
+const LEGACY_SHAPES: Record<string, ShapeId> = {
+  stickbait165: 'stickbait',
+  ryoshi: 'minnow',
+  model25: 'minnow',
+  jerkbait: 'minnow',
+  topwater: 'stickbait',
+  vibetraine: 'lipless',
+  minnowtraine: 'deepdiver',
+  chugger: 'popper',
+  minnownervure: 'minnow',
+};
 const TAILS: TailShape[] = ['round', 'forked', 'paddle', 'fan'];
 const MATERIALS: MaterialId[] = [
   'pla',
@@ -190,6 +210,95 @@ function sanitizeAssembly(value: unknown, fallback: AssemblyConfig): AssemblyCon
     pin: pick(raw.pin, PIN_IDS, fallback.pin),
     roughWater: bool(raw.roughWater, fallback.roughWater),
     anchors: sanitizeAnchors(raw.anchors, fallback.anchors),
+    // Absents d'un projet anterieur au module AB : desactives, pour que les
+    // coques d'un ancien projet sortent exactement comme avant.
+    glueGroove: sanitizeGlueGroove(raw.glueGroove, fallback.glueGroove),
+    pegs: sanitizePegs(raw.pegs, fallback.pegs),
+    hollow: sanitizeHollow(raw.hollow, fallback.hollow),
+  };
+}
+
+function sanitizeGlueGroove(value: unknown, fallback: GlueGrooveConfig): GlueGrooveConfig {
+  if (value === undefined || value === null) return { ...fallback, enabled: false };
+  const raw = value as Partial<GlueGrooveConfig>;
+  return {
+    enabled: bool(raw.enabled, fallback.enabled),
+    width: num(raw.width, LIMITS.grooveWidth, fallback.width),
+    depth: num(raw.depth, LIMITS.grooveDepth, fallback.depth),
+    inset: num(raw.inset, LIMITS.grooveInset, fallback.inset),
+  };
+}
+
+function sanitizePegs(value: unknown, fallback: PegConfig): PegConfig {
+  if (value === undefined || value === null) return { ...fallback, enabled: false };
+  const raw = value as Partial<PegConfig>;
+  return {
+    enabled: bool(raw.enabled, fallback.enabled),
+    count: Math.round(num(raw.count, LIMITS.pegCount, fallback.count)),
+    diameter: num(raw.diameter, LIMITS.pegDiameter, fallback.diameter),
+    height: num(raw.height, LIMITS.pegHeight, fallback.height),
+    taper: num(raw.taper, LIMITS.pegTaper, fallback.taper),
+    clearance: num(raw.clearance, LIMITS.pegClearance, fallback.clearance),
+  };
+}
+
+function sanitizeHollow(value: unknown, fallback: HollowConfig): HollowConfig {
+  if (value === undefined || value === null) return { ...fallback, enabled: false };
+  const raw = value as Partial<HollowConfig>;
+  return {
+    enabled: bool(raw.enabled, fallback.enabled),
+    wall: num(raw.wall, LIMITS.hollowWall, fallback.wall),
+  };
+}
+
+const UNIT: Range = { min: 0, max: 1, step: 0.001 };
+const RELATIVE: Range = { min: 0, max: 3, step: 0.001 };
+const EXPONENT: Range = { min: 1.15, max: 5, step: 0.01 };
+
+function sanitizeKnots(value: unknown, fallback: ProfileKnot[], range: Range): ProfileKnot[] {
+  if (!Array.isArray(value) || value.length < 2) return fallback.map((k) => ({ ...k }));
+  return value.slice(0, 32).map((raw, index) => {
+    const item = (raw ?? {}) as Partial<ProfileKnot>;
+    const guess = fallback[Math.min(index, fallback.length - 1)] ?? { u: 0, v: 0 };
+    return { u: num(item.u, UNIT, guess.u), v: num(item.v, range, guess.v) };
+  });
+}
+
+function sanitizeFin(value: unknown, fallback: FinConfig): FinConfig {
+  const raw = (value ?? {}) as Partial<FinConfig>;
+  const from = num(raw.from, LIMITS.finPosition, fallback.from);
+  return {
+    enabled: bool(raw.enabled, fallback.enabled),
+    from,
+    to: Math.max(num(raw.to, LIMITS.finPosition, fallback.to), from + 0.005),
+    size: num(raw.size, LIMITS.finSize, fallback.size),
+    rays: Math.round(num(raw.rays, LIMITS.finRays, fallback.rays)),
+  };
+}
+
+function sanitizeAnatomy(value: unknown, fallback: Anatomy | null): Anatomy | null {
+  if (value === undefined || value === null || typeof value !== 'object') return null;
+  const raw = value as Partial<Anatomy>;
+  const base = fallback ?? clonePreset('minnow').anatomy!;
+  return {
+    jaw: num(raw.jaw, LIMITS.anatomyJaw, base.jaw),
+    peduncle: num(raw.peduncle, LIMITS.anatomyPeduncle, base.peduncle),
+    dorsal: sanitizeKnots(raw.dorsal, base.dorsal, RELATIVE),
+    ventral: sanitizeKnots(raw.ventral, base.ventral, RELATIVE),
+    width: sanitizeKnots(raw.width, base.width, RELATIVE),
+    upper: sanitizeKnots(raw.upper, base.upper, EXPONENT),
+    lower: sanitizeKnots(raw.lower, base.lower, EXPONENT),
+    noseCap: num(raw.noseCap, LIMITS.anatomyNoseCap, base.noseCap),
+    noseShape: num(raw.noseShape, LIMITS.anatomyNoseShape, base.noseShape),
+    jawDepth: num(raw.jawDepth, LIMITS.anatomyJawDepth, base.jawDepth),
+    opercleRelief: num(raw.opercleRelief, LIMITS.anatomyOpercle, base.opercleRelief),
+    orbitDepth: num(raw.orbitDepth, LIMITS.anatomyOrbit, base.orbitDepth),
+    lateralLine: num(raw.lateralLine, LIMITS.anatomyLateral, base.lateralLine),
+    dorsalFin: sanitizeFin(raw.dorsalFin, base.dorsalFin),
+    analFin: sanitizeFin(raw.analFin, base.analFin),
+    pectoralFin: sanitizeFin(raw.pectoralFin, base.pectoralFin),
+    pelvicFin: sanitizeFin(raw.pelvicFin, base.pelvicFin),
+    caudalRays: Math.round(num(raw.caudalRays, LIMITS.caudalRays, base.caudalRays)),
   };
 }
 
@@ -651,7 +760,8 @@ export function sanitizeParams(input: unknown): LureParams {
   const raw = (input ?? {}) as Partial<LureParams>;
   // Les gabarits Irresistible et Minnow ont ete retires de la bibliotheque :
   // un projet qui les reference retombe sur la premiere forme disponible.
-  const shape = pick(raw.shape, SHAPES, SHAPES[0]);
+  const legacy = typeof raw.shape === 'string' ? LEGACY_SHAPES[raw.shape] : undefined;
+  const shape = legacy ?? pick(raw.shape, SHAPES, SHAPES[0]);
   const base = clonePreset(shape);
   const paint = (raw.paint ?? {}) as Partial<LureParams['paint']>;
 
@@ -667,12 +777,17 @@ export function sanitizeParams(input: unknown): LureParams {
     noseAngle: num(raw.noseAngle, LIMITS.noseAngle, base.noseAngle),
     tailTaper: num(raw.tailTaper, LIMITS.tailTaper, base.tailTaper),
     crossSection: num(raw.crossSection, LIMITS.crossSection, base.crossSection),
+    // Un projet sans anatomie est un projet ancien : il garde son profil
+    // historique au lieu d'heriter de l'anatomie du modele de sa famille.
+    anatomy: sanitizeAnatomy(raw.anatomy, base.anatomy),
     mouthCup: num(raw.mouthCup, LIMITS.mouthCup, base.mouthCup),
     hasBib: bool(raw.hasBib, base.hasBib),
     billMode: pick(raw.billMode, BILL_MODES, base.billMode),
     billThickness: num(raw.billThickness, LIMITS.billThickness, base.billThickness),
     billUniform: bool(raw.billUniform, base.billUniform),
     billOffset: num(raw.billOffset, LIMITS.billOffset, base.billOffset),
+    // Absent d'un projet anterieur : enfoncement automatique, comme alors.
+    billInsertion: num(raw.billInsertion ?? 0, LIMITS.billInsertion, 0),
     billFillet: num(raw.billFillet, LIMITS.billFillet, base.billFillet),
     billProfile: pick(raw.billProfile, BILL_PROFILES, base.billProfile),
     billTwist: num(raw.billTwist, LIMITS.billTwist, base.billTwist),

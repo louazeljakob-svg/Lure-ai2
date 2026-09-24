@@ -12,6 +12,7 @@
 
 import type { LureParams, Outline } from '../types/lure';
 import { flattenOutline } from './outline';
+import { createAnatomicalProfile, type AnatomyField } from './anatomy';
 
 export const MM_TO_CM = 0.1;
 
@@ -32,6 +33,12 @@ export interface Section {
   top: number;
   /** Ordonnee du ventre (negative). */
   bottom: number;
+  /**
+   * Exposants de superellipse du dessus et du dessous (corps anatomique).
+   * Absents, c'est le coefficient de section global qui s'applique.
+   */
+  nUpper?: number;
+  nLower?: number;
 }
 
 export interface ProfileSampler {
@@ -56,6 +63,13 @@ export interface ProfileSampler {
   section: (p: number) => Section;
   /** Abscisse en cm, repere centre sur le leurre (nez a -L/2), creux de bouche inclus. */
   xAt: (p: number) => number;
+  /** Reliefs, cretes et repartition des stations d'un corps anatomique. */
+  anatomy?: AnatomyField;
+  /**
+   * Vrai si le corps commence par une section pleine — le fond d'une face de
+   * popper creusee : les coques y recoivent une face de coupe.
+   */
+  openFront?: boolean;
 }
 
 export const clamp = (v: number, min: number, max: number): number =>
@@ -90,6 +104,16 @@ export function createProfile(params: LureParams): ProfileSampler {
 
   const hasFin = tailHasFin(params);
   const bodyEnd = hasFin ? clamp(1 - 0.16 * params.tailSize, 0.68, 0.94) : 1;
+
+  // Corps anatomique (module AB) : meme interface, autre moteur. Un projet
+  // sans anatomie garde le profil historique au bit pres.
+  if (params.anatomy) {
+    return createAnatomicalProfile(params, params.anatomy, {
+      hasFin,
+      bodyEnd,
+      drawn: drawnEnvelope(params.outline),
+    });
+  }
 
   const belly = clamp(params.bellyPosition, 0.12, bodyEnd - 0.12);
   const noseExp = clamp(params.noseSharpness, 0.2, 1.6);

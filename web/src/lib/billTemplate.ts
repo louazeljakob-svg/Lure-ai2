@@ -84,18 +84,6 @@ function halfWidthAt(half: [number, number][], u: number): number {
   return half[half.length - 1][1];
 }
 
-/** Avance a laquelle la plaque atteint une demi-largeur donnee. */
-function advanceAtHalfWidth(half: [number, number][], target: number): number {
-  for (let i = 1; i < half.length; i++) {
-    const [u0, v0] = half[i - 1];
-    const [u1, v1] = half[i];
-    if (v1 >= target && v0 <= target) {
-      return u0 + ((u1 - u0) * (target - v0)) / Math.max(v1 - v0, 1e-9);
-    }
-  }
-  return target <= half[0][1] ? 0 : 1;
-}
-
 /**
  * Proportions de la bavette de reference, pour l'echelle liee : largeur et
  * epaisseur suivent la longueur.
@@ -158,25 +146,32 @@ export const bibOutline = (profile: ProfileSampler, params: LureParams): THREE.V
 /**
  * Plan de la fente d'insertion — l'empreinte negative de la plaque.
  *
- * La fente doit DEBOUCHER : une bavette qui ne ressort pas du corps ne sert
- * a rien. Elle sort par l'avant de la tete, la ou la plaque emerge sur un
- * vrai leurre. Le nez est donc coupe net a la premiere station ou la bande
- * de la plaque tient dans la section avec 0,5 mm de peau tout autour — deux
- * a quatre millimetres, invisibles a l'oeil.
+ * UNE seule fonction, pour la bavette imprimee comme pour la polycarbonate
+ * (module AE) : meme fente, meme profil, meme jeu d'insertion, meme bornage.
+ * Seules changent la matiere de la plaque et son epaisseur.
  *
- * La profondeur decoule de la plaque elle-meme : la bavette s'enfonce
- * jusqu'a ce que sa largeur atteigne celle du logement. C'est donc la
- * section de la tete qui fixe l'enfoncement, exactement comme sur une
- * bavette du commerce que l'on pousse jusqu'a ce qu'elle bute.
+ * Placement (module AF) : la fente debouche sous la tete, la ou l'axe de la
+ * plaque traverse la peau du menton, a la distance du NEZ donnee par le
+ * reglage — jamais depuis l'origine du repere. Elle ne bouge pas pour
+ * « trouver de la place » : si la plaque ne tient pas la, c'est dit.
+ *
+ * Bornage : le volume creuse est l'emprise reelle de la plaque — son
+ * epaisseur majoree du jeu, la largeur de sa partie enfoncee, la profondeur
+ * d'insertion — et rien au-dela. Le fond est ferme. Ce n'est jamais un plan
+ * de coupe traversant : la tete reste entiere autour de la fente.
+ *
+ * Refus : si l'enfoncement demande percerait la peau opposee ou sortirait de
+ * la tete, la fente n'est pas creusee, et la profondeur maximale admissible
+ * a cet emplacement est annoncee.
  */
 export interface BillSlotPlan {
-  /** Station de coupe du nez, en fraction de la longueur. */
+  /** Station du point de sortie de la plaque, en fraction de la longueur. */
   cutP: number;
   /** Centre de la fente, a une abscisse donnee. */
   centreAt: (x: number) => number;
   /** Demi-etendue de la fente mesuree a abscisse constante. */
   halfBand: number;
-  /** Profondeur creusee par coque, en cm. */
+  /** Profondeur creusee par coque, en cm : demi-largeur de la partie enfoncee, jeu compris. */
   depth: number;
   /** Longueur de plaque reellement enfoncee, en cm. */
   insertion: number;
@@ -184,139 +179,215 @@ export interface BillSlotPlan {
   along: (u: number, v: number) => THREE.Vector2;
   /** Demi-epaisseur de la fente, jeu d'insertion compris. */
   halfPlate: number;
-  /** Vrai si la plaque est plus large que ce que la tete peut recevoir. */
+  /** Vrai si le talon est plus large que ce que la tete peut recevoir. */
   tooWide: boolean;
   /** Position du talon de la plaque, en coordonnees du plan de joint. */
   root: THREE.Vector2;
+  /** Point ou l'axe de la plaque traverse la peau du menton. */
+  mouth: THREE.Vector2;
+  /** Enfoncement maximal admissible a cet emplacement, en cm. */
+  maxInsertion: number;
+  /** Abscisse d'axe (parametre de `along`) atteinte a un enfoncement donne depuis la peau. */
+  depthU: (insertion: number) => number;
 }
 
 /**
  * Epaisseur de matiere reellement disponible par coque sur une bande de la
- * face de coupe, en cm.
- *
- * La demi-largeur de la section ne suffit pas : la fente est basse dans la
- * tete, et la coque y est bien plus mince qu'a mi-hauteur. Sans cette mesure
- * la fente serait annoncee plus profonde qu'elle ne peut l'etre, et la
- * plaque buterait avant d'entrer. Le calcul vit dans l'assemblage, qui seul
- * connait la surface et le plan de joint.
+ * face de joint, en cm. Le calcul vit dans l'assemblage, qui seul connait la
+ * surface et le plan de joint.
  */
 export type BillRoomProbe = (x: number, tLo: number, tHi: number) => number;
+
+/** Etendue transverse du corps dans le plan de joint, a une abscisse. */
+export type BillRangeProbe = (x: number) => [number, number] | null;
+
+export interface BillPlacement {
+  plan: BillSlotPlan | null;
+  /** Refus motive, ou null. */
+  problem: string | null;
+}
+
+/** Enfoncement automatique : la plaque entre jusqu'a buter, comme sur un leurre du commerce. */
+export const BILL_AUTO = 0;
 
 export function billSlotPlan(
   profile: ProfileSampler,
   params: LureParams,
-  probe?: BillRoomProbe,
-  minCutP = 0,
-): BillSlotPlan | null {
+  room: BillRoomProbe,
+  range: BillRangeProbe,
+  /** Abscisse de la coupe de nez imposee par une goupille, ou -Infinity. */
+  minX = -Infinity,
+): BillPlacement {
   const size = billSize(params);
   const angle = THREE.MathUtils.degToRad(clamp(params.bibAngle, 5, 89));
   const cos = Math.cos(angle);
   const sin = Math.sin(angle);
 
-  // Empreinte = plaque + jeu d'insertion, sur toutes les dimensions.
+  // Empreinte = plaque + jeu d'insertion, sur toutes les dimensions. Le jeu
+  // est le meme pour les deux modes : il n'existe qu'une table de jeux.
   const fit = params.fabrication.billFit * MM_TO_CM;
-  const half = (size.thickness * MM_TO_CM + fit) / 2;
-  const halfBand = half / cos;
-
-  // La bavette sort de la FACE DE COUPE, au menton, a 55 % de la hauteur vers
-  // le ventre. C'est la face qui la porte : la pointe du nez, elle, a ete
-  // retiree pour laisser passer la plaque. Ancrer l'axe sur la pointe
-  // disparue le ferait grimper jusqu'a mi-hauteur de la tete, la ou passe
-  // deja la goupille de nez.
-  const centreOf = (p: number) => profile.section(p).bottom * 0.55;
-  /** Axe de la plaque pour une coupe donnee : u = 0 a la bouche de la fente. */
-  const axisFor = (p: number) => {
-    const x = profile.xAt(p);
-    const t = centreOf(p);
-    return {
-      along: (u: number, v: number) =>
-        new THREE.Vector2(x - u * cos + v * sin, t - u * sin - v * cos),
-      centreAt: (q: number) => t - ((x - q) / cos) * sin,
-    };
-  };
-
-  const fits = (p: number): boolean => {
-    const section = profile.section(p);
-    const t = centreOf(p);
-    return (
-      section.halfWidth - WALL >= 0.08 &&
-      section.bottom <= t - halfBand - WALL &&
-      t + halfBand <= section.top - WALL
-    );
-  };
-
+  const halfPlate = (size.thickness * MM_TO_CM + fit) / 2;
+  const halfBand = halfPlate / cos;
   const length = Math.max(size.length * MM_TO_CM, 0.2);
-  const plateHalf = Math.max((size.width * MM_TO_CM) / 2, 0.15);
-  const outline = halfOutline(params);
-  // Demi-largeur du talon de la plaque : c'est elle qu'il faut loger.
-  const tangHalf = (outline[0][1] / REFERENCE_HALF) * plateHalf + fit / 2;
 
-  // On coupe la tete la ou la bande de la plaque tient dans la section. On
-  // recule ensuite tant que la coupe gagne de l'enfoncement — la section
-  // s'epaissit, donc la fente s'approfondit et la plaque entre plus loin —
-  // sans jamais depasser un dixieme de la longueur ni douze millimetres,
-  // au-dela desquels la coupe se verrait sur le nez.
-  const roomAt = (p: number) => {
-    if (!probe) return profile.section(p).halfWidth - WALL;
-    const t = centreOf(p);
-    return Math.max(probe(profile.xAt(p), t - halfBand, t + halfBand) - WALL, 0);
-  };
-  const insertionAt = (p: number) => {
-    const depth = Math.min(roomAt(p), plateHalf + fit / 2);
-    const target = ((depth - fit / 2) / plateHalf) * REFERENCE_HALF;
-    return advanceAtHalfWidth(outline, target) * length;
-  };
+  // Repere : le NEZ. L'abscisse 0 du profil est la pointe du leurre, quelle
+  // que soit la longueur ou l'origine de la scene.
+  const nose = profile.xAt(0);
+  const offsetMm = clamp(params.billOffset, 0, (profile.lengthCm / MM_TO_CM) * 0.3);
+  const xA = nose + offsetMm * MM_TO_CM;
+  if (xA < minX + 0.02) {
+    return {
+      plan: null,
+      problem:
+        `La fente de bavette a ${offsetMm.toFixed(1)} mm du nez tombe dans la coupe du passage de ` +
+        `goupille de nez (${((minX - nose) / MM_TO_CM).toFixed(1)} mm). Reculez l ancrage de bavette ` +
+        'ou sortez la goupille de nez autrement.',
+    };
+  }
+  const at = range(xA);
+  if (!at) {
+    return { plan: null, problem: `A ${offsetMm.toFixed(1)} mm du nez, la tete n a pas encore de section.` };
+  }
+  // Point d'ancrage : sur l'axe de la plaque, a 55 % de la hauteur du ventre
+  // sous l'axe du corps — la convention historique de l'ancrage de bavette.
+  // L'inclinaison de tete est prise en compte : c'est un decalage de la
+  // section entiere, pas du repere.
+  let lo = 0;
+  let hi = profile.bodyEnd;
+  for (let i = 0; i < 40; i++) {
+    const mid = (lo + hi) / 2;
+    if (profile.xAt(mid) < xA) lo = mid;
+    else hi = mid;
+  }
+  const raise = profile.section((lo + hi) / 2).offset;
+  const tA = raise + 0.55 * (at[0] - raise);
+  const axis = (u: number) => new THREE.Vector2(xA - u * cos, tA - u * sin);
 
-  // La coupe ne peut pas etre plus en avant que celle qu'un passage de
-  // goupille de nez impose deja, ni que le recul demande par l'utilisateur.
-  const offset = clamp(params.billOffset * MM_TO_CM, 0, profile.lengthCm * 0.3);
-  const floor = clamp(Math.max(minCutP, offset / Math.max(profile.lengthCm, 1e-6)), 0, 0.45);
-  let cutP = -1;
-  const steps = 400;
-  for (let i = 0; i <= steps; i++) {
-    const p = floor + ((0.5 - floor) * i) / steps;
-    if (fits(p)) {
-      cutP = p;
-      break;
+  // Point de sortie : la ou l'axe traverse la peau du menton, vers l'avant.
+  // L'enfoncement se mesure depuis la, le long de la plaque.
+  let uSkin = 0;
+  for (let u = 0; u <= profile.lengthCm * 0.2; u += 0.005) {
+    const point = axis(u);
+    const span = range(point.x);
+    uSkin = u;
+    if (!span || point.y <= span[0]) break;
+  }
+  const along = (u: number, v: number) =>
+    new THREE.Vector2(xA - u * cos + v * sin, tA - u * sin - v * cos);
+  const centreAt = (x: number) => tA - ((xA - x) / cos) * sin;
+  const mouth = axis(uSkin);
+  /** Point de l'axe a une profondeur d'enfoncement donnee, depuis la peau. */
+  const depthU = (insertion: number) => uSkin - insertion;
+
+  // Profondeur creusee pour un enfoncement I : la demi-largeur de la partie
+  // de plaque reellement enfoncee (le talon s'elargit vers la sortie), plus
+  // la moitie du jeu. Pas davantage.
+  const depthFor = (insertion: number) =>
+    billHalfWidthAt(params, clamp(insertion / length, 0, 1)) + fit / 2;
+
+  // Releve le long de l'axe, une fois pour toutes, depuis la peau vers
+  // l'interieur : bande dans la section, et matiere disponible par coque sur
+  // la largeur de la bande.
+  const STEP = 0.02;
+  const reachMax = Math.min(length * 0.8, profile.lengthCm * 0.3);
+  const samples: { u: number; inside: boolean; fits: boolean; room: number }[] = [];
+  let entered = false;
+  for (let u = STEP; u <= reachMax + 1e-9; u += STEP) {
+    const point = along(depthU(u), 0);
+    const span = range(point.x);
+    if (!span) {
+      samples.push({ u, inside: false, fits: false, room: 0 });
+      continue;
     }
+    const [lo, hi] = span;
+    const base = point.y - halfBand;
+    const top = point.y + halfBand;
+    const inside = base >= lo + WALL;
+    const fits = top <= hi - WALL;
+    if (inside) entered = true;
+    samples.push({
+      u,
+      inside,
+      fits,
+      room: inside && fits ? room(point.x, base, top) : entered ? 0 : Infinity,
+    });
   }
-  if (cutP < 0) return null;
 
-  const wanted = length * 0.3;
-  const setback = Math.min(
-    cutP + 0.08,
-    cutP + 0.8 / Math.max(profile.lengthCm, 1e-6),
-    Math.max(0.4, floor + 0.02),
-  );
-  let best = cutP;
-  for (let i = 1; i <= steps; i++) {
-    const p = cutP + ((setback - cutP) * i) / steps;
-    if (!fits(p)) continue;
-    // A enfoncement egal — cas d'une tete trop fine pour le talon — on garde
-    // au moins la section la plus large, donc la fente la plus profonde.
-    const gain = insertionAt(p) - insertionAt(best);
-    if (gain > 1e-6 || (Math.abs(gain) <= 1e-6 && roomAt(p) > roomAt(best))) best = p;
-    if (insertionAt(best) >= wanted && roomAt(best) >= tangHalf) break;
+  // Enfoncement admissible pour une profondeur donnee. Juste derriere la
+  // peau, la plaque peut etre plus large que le menton : c'est la bouche,
+  // ouverte de part en part sur quelques millimetres au plus. Des que la
+  // tete la tient — bande dans la section ET coque assez epaisse pour sa
+  // largeur —, elle doit la tenir jusqu'au fond, peau comprise.
+  const MOUTH_MAX = 0.35;
+  const reachFor = (depth: number): number => {
+    let reach = 0;
+    let held = false;
+    for (const sample of samples) {
+      if (!sample.fits) break;
+      if (!sample.inside) {
+        if (held) break;
+        reach = sample.u;
+        continue;
+      }
+      if (sample.room >= depth + WALL) {
+        held = true;
+        reach = sample.u;
+        continue;
+      }
+      if (held || sample.u > MOUTH_MAX) break;
+      reach = sample.u;
+    }
+    return held ? reach : 0;
+  };
+  let maxInsertion = 0;
+  for (let insertion = STEP; insertion <= reachMax + 1e-9; insertion += STEP) {
+    if (reachFor(depthFor(insertion)) + 1e-9 >= insertion) maxInsertion = insertion;
+    else break;
   }
-  cutP = best;
 
-  const room = roomAt(cutP);
-  const depth = Math.min(room, plateHalf + fit / 2);
-  const insertion = Math.max(insertionAt(cutP), 0.2);
-
-  const { along, centreAt } = axisFor(cutP);
+  const requested = Math.max(params.billInsertion ?? BILL_AUTO, 0) * MM_TO_CM;
+  const insertion = requested > 0 ? requested : Math.min(maxInsertion, length * 0.6);
+  if (maxInsertion < 0.2) {
+    const first = samples.find((sample) => sample.inside && sample.fits);
+    const need = depthFor(0.2) + WALL;
+    const problem =
+      first && first.room < need
+        ? `A ${offsetMm.toFixed(1)} mm du nez, le talon de la bavette demande ` +
+          `${((need * 2) / MM_TO_CM).toFixed(1)} mm de large peau comprise et la tete n en offre que ` +
+          `${((first.room * 2) / MM_TO_CM).toFixed(1)} mm : reduisez la largeur de la bavette ou ` +
+          'reculez l ancrage vers une section plus large.'
+        : `A ${offsetMm.toFixed(1)} mm du nez, la plaque de ${size.thickness.toFixed(1)} mm (jeu compris ` +
+          `${((halfPlate * 2) / MM_TO_CM).toFixed(2)} mm) sortirait par le dessus de la tete avant de ` +
+          'se loger : reduisez l angle de la bavette ou reculez l ancrage.';
+    return { plan: null, problem };
+  }
+  if (insertion > maxInsertion + 1e-6) {
+    return {
+      plan: null,
+      problem:
+        `Enfoncement de ${(insertion / MM_TO_CM).toFixed(1)} mm refuse : au-dela de ` +
+        `${(maxInsertion / MM_TO_CM).toFixed(1)} mm, la fente percerait la peau de la tete ou en ` +
+        `sortirait. Profondeur maximale admissible a ${offsetMm.toFixed(1)} mm du nez : ` +
+        `${(maxInsertion / MM_TO_CM).toFixed(1)} mm.`,
+    };
+  }
 
   return {
-    cutP,
-    centreAt,
-    halfBand,
-    depth,
-    insertion,
-    along,
-    halfPlate: half,
-    // Seul le talon doit tenir : la palette, elle, reste dehors.
-    tooWide: tangHalf > room,
-    root: along(-insertion, 0),
+    plan: {
+      cutP: clamp((xA - nose) / Math.max(profile.lengthCm, 1e-6), 0, 1),
+      centreAt,
+      halfBand,
+      depth: depthFor(insertion),
+      insertion,
+      along,
+      halfPlate,
+      tooWide: false,
+      root: along(depthU(insertion), 0),
+      mouth,
+      maxInsertion,
+      depthU,
+    },
+    problem: null,
   };
 }
 

@@ -16,6 +16,7 @@ import { getClip, STEEL_DENSITY } from './materials';
 import { clamp, createProfile, MM_TO_CM, type ProfileSampler } from './profile';
 import { bibShape, clipHalfPlane } from './billTemplate';
 import { createSurfaceDetail } from './surfaceDetail';
+import { buildCaudalFin, sectionPoint } from './anatomy';
 import {
   articulationPlan,
   buildJointHardware,
@@ -156,9 +157,6 @@ export interface LureGeometry {
   dispose: () => void;
 }
 
-const sgnPow = (v: number, e: number): number =>
-  (v < 0 ? -1 : 1) * Math.pow(Math.abs(v), e);
-
 /** Angle de l'oeil depuis le dos, en radians : haut du flanc. */
 const EYE_ANGLE = 1.15;
 
@@ -175,8 +173,10 @@ export function createDetailField(
   params: LureParams,
   bakeScales = false,
 ): ((p: number, theta: number) => number) | null {
-  // La cuiller n'a pas de tete distincte : aucun detail ne s'y applique.
-  const allowed = params.shape !== 'spoon';
+  // La cuiller n'a pas de tete distincte : aucun detail ne s'y applique. Un
+  // corps anatomique porte ses ouies et ses orbites dans son propre champ,
+  // modelees avec l'opercule : les recalculer ici les doublerait.
+  const allowed = params.shape !== 'spoon' && !profile.anatomy;
   const gills = allowed && params.gills.enabled ? params.gills : null;
   const eyes = allowed && params.eyes.enabled ? params.eyes : null;
   // Decals et ecailles vivent dans le meme champ : ils deforment la peau au
@@ -238,6 +238,86 @@ export function createDetailField(
 }
 
 // ---------------------------------------------------------------------------
+// Peau
+// ---------------------------------------------------------------------------
+
+/**
+ * Point de peau, details compris : LA definition de la surface du leurre.
+ *
+ * Corps d'un seul tenant, segments articules et coques d'assemblage passent
+ * tous par cette fonction. C'est ce qui garantit qu'un plan de joint ou une
+ * face de coupe tombe exactement sur la surface, sans decrochement, et
+ * qu'un relief modele ici existe dans chaque piece exportee.
+ */
+export function createSkin(
+  profile: ProfileSampler,
+  params: LureParams,
+  bakeScales = false,
+): (p: number, theta: number) => THREE.Vector3 {
+  const fallbackN = clamp(params.crossSection, 1.2, 3.6);
+  const detail = createDetailField(profile, params, bakeScales);
+  const anatomy = profile.anatomy ?? null;
+  // Un vecteur neuf a chaque appel : un objet partage se ferait ecraser des
+  // que l'appelant compare deux points, ce qui donne des bugs silencieux.
+  return (p: number, theta: number): THREE.Vector3 => {
+    const section = profile.section(p);
+    const base = sectionPoint(section, theta, fallbackN);
+    let y = base.y;
+    let z = base.z;
+    const centerY = (section.top + section.bottom) / 2;
+
+    let displacement = detail ? detail(p, theta) : 0;
+    if (anatomy) displacement += anatomy.relief(p, theta, section);
+    if (displacement !== 0) {
+      // Deplacement le long de la normale approchee : la direction radiale
+      // issue du centre de la section.
+      const dy = y - centerY;
+      const radial = Math.hypot(dy, z);
+      if (radial > 1e-6) {
+        y += (dy / radial) * displacement;
+        z += (z / radial) * displacement;
+      }
+    }
+    // Les cretes de nageoire montent dans le plan de symetrie : un
+    // deplacement radial les ferait s'evaser vers le haut.
+    if (anatomy) y += anatomy.crest(p, theta, base.z);
+
+    // L'inclinaison de tete s'applique EN DERNIER : la forme et le relief
+    // sont calcules dans le repere droit, puis la section entiere est
+    // translatee. Un angle nul laisse donc le maillage au sommet pres.
+    const yFinal = y + section.offset;
+    // Face de popper : recul AXIAL, une fois le point de peau connu. Elle
+    // ne peut pas s'exprimer plus tot, puisqu'elle depend de la position du
+    // point dans la section et pas seulement de son abscisse.
+    return new THREE.Vector3(profile.xAt(p) + profile.popperCut(p, yFinal, z), yFinal, z);
+  };
+}
+
+/** Station du corps pour un parametre t dans [0, 1]. */
+export const stationAt = (profile: ProfileSampler, t: number): number =>
+  profile.anatomy ? profile.anatomy.stationAt(t) : t * profile.bodyEnd;
+
+/** Angle de la colonne s dans [0, 1] ; la derniere colonne retombe sur 2 PI. */
+export const thetaAt = (profile: ProfileSampler, s: number): number =>
+  s >= 1 ? Math.PI * 2 : profile.anatomy ? profile.anatomy.thetaAt(s) : s * Math.PI * 2;
+
+/**
+ * Resolution effective d'un corps anatomique.
+ *
+ * Un corps de 100 mm a 3 000 triangles montre ses facettes ; l'anatomie
+ * (sillon de machoire, bord d'opercule, rayons) demande un pas de quelques
+ * dixiemes de millimetre. Le maillage s'epaissit donc d'un facteur fixe,
+ * applique a toutes les qualites d'apercu comme a l'export.
+ */
+export function anatomicalResolution(profile: ProfileSampler, base: Resolution): Resolution {
+  if (!profile.anatomy) return base;
+  return {
+    lengthSegments: Math.round(base.lengthSegments * 2.5),
+    radialSegments: Math.round(base.radialSegments * 5),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Corps
 // ---------------------------------------------------------------------------
 
@@ -250,53 +330,33 @@ function buildBody(
   const nStations = resolution.lengthSegments;
   const nRadial = resolution.radialSegments;
   const cols = nRadial + 1; // colonne dupliquee pour la couture UV
-  const exponent = 2 / clamp(params.crossSection, 1.2, 3.6);
-  const detail = createDetailField(profile, params, bakeScales);
+  const skin = createSkin(profile, params, bakeScales);
 
   const positions: number[] = [];
   const uvs: number[] = [];
   const degenerate: boolean[] = [];
+  const stationP: number[] = [];
+
+  // Colonnes : l'angle de chacune est fixe une fois pour toutes, de sorte
+  // que la couture et la coordonnee de texture tombent au meme endroit a
+  // chaque station.
+  const thetas: number[] = [];
+  for (let j = 0; j <= nRadial; j++) thetas.push(thetaAt(profile, j / nRadial));
 
   for (let i = 0; i <= nStations; i++) {
-    const p = (i / nStations) * profile.bodyEnd;
+    const p = stationAt(profile, i / nStations);
+    stationP.push(p);
     const section = profile.section(p);
-    const x = profile.xAt(p);
-    const topAbs = section.top;
-    const bottomAbs = -section.bottom;
-    degenerate.push(section.halfWidth < 1e-6 && topAbs < 1e-6);
-
-    const centerY = (topAbs - bottomAbs) / 2;
+    degenerate.push(section.halfWidth < 1e-6 && section.top < 1e-6);
 
     for (let j = 0; j <= nRadial; j++) {
-      const theta = (j / nRadial) * Math.PI * 2; // 0 = dos, PI = ventre
-      const yUnit = sgnPow(Math.cos(theta), exponent);
-      const zUnit = sgnPow(Math.sin(theta), exponent);
-      let y = yUnit * (yUnit >= 0 ? topAbs : bottomAbs);
-      let z = zUnit * section.halfWidth;
-
-      if (detail) {
-        const displacement = detail(p, theta);
-        if (displacement !== 0) {
-          // Deplacement le long de la normale approchee : la direction
-          // radiale issue du centre de la section.
-          const dy = y - centerY;
-          const radial = Math.hypot(dy, z);
-          if (radial > 1e-6) {
-            y += (dy / radial) * displacement;
-            z += (z / radial) * displacement;
-          }
-        }
-      }
-
-      // L'inclinaison de tete s'applique EN DERNIER : la forme et le relief
-      // sont calcules dans le repere droit, puis la section entiere est
-      // translatee. Un angle nul laisse donc le maillage au sommet pres.
-      const yFinal = y + section.offset;
-      // Face de popper : recul AXIAL, une fois le point de peau connu. Elle
-      // ne peut pas s'exprimer plus tot, puisqu'elle depend de la position du
-      // point dans la section et pas seulement de son abscisse.
-      positions.push(x + profile.popperCut(p, yFinal, z), yFinal, z);
-      uvs.push(p, j / nRadial);
+      const theta = thetas[j]; // 0 = dos, PI = ventre
+      const point = skin(p, theta);
+      positions.push(point.x, point.y, point.z);
+      // La texture suit l'angle reel, pas le rang de colonne : une livree
+      // peinte au meme theta tombe au meme endroit quelle que soit la
+      // repartition des colonnes.
+      uvs.push(p, j === nRadial ? 1 : theta / (Math.PI * 2));
     }
   }
 
@@ -323,10 +383,10 @@ function buildBody(
   // solide resterait ouvert aux deux bouts.
   const cap = (index: number, front: boolean) => {
     if (degenerate[index]) return;
-    const p = (index / nStations) * profile.bodyEnd;
+    const p = stationP[index];
     const section = profile.section(p);
     const centre = positions.length / 3;
-    positions.push(profile.xAt(p), (section.top + section.bottom) / 2, 0);
+    positions.push(profile.xAt(p), (section.top + section.bottom) / 2 + section.offset, 0);
     uvs.push(p, 0.5);
     for (let j = 0; j < nRadial; j++) {
       const a = index * cols + j;
@@ -437,6 +497,9 @@ export function buildTailFin(
   params: LureParams,
   part: ShellPart = 'full',
 ): THREE.BufferGeometry {
+  // Corps anatomique : une vraie caudale, epaisse a la racine, fine au bord,
+  // rayonnee — et non une plaque extrudee d'epaisseur constante.
+  if (profile.anatomy) return buildCaudalFin(profile, params, part);
   const overlap = profile.lengthCm * 0.02;
   const len = (1 - profile.bodyEnd) * profile.lengthCm + overlap;
   const thicknessCm = params.thickness * MM_TO_CM;
@@ -616,38 +679,7 @@ export function createSurfaceSampler(
   params: LureParams,
   bakeScales = false,
 ): SurfaceSampler {
-  const exponent = 2 / clamp(params.crossSection, 1.2, 3.6);
-  const detail = createDetailField(profile, params, bakeScales);
-
-  // Un vecteur neuf a chaque appel : un objet partage se ferait ecraser des
-  // que l'appelant compare deux points, ce qui donne des bugs silencieux.
-  return (p: number, theta: number): THREE.Vector3 => {
-    const section = profile.section(p);
-    const topAbs = section.top;
-    const bottomAbs = -section.bottom;
-    const centerY = (topAbs - bottomAbs) / 2;
-    const yUnit = sgnPow(Math.cos(theta), exponent);
-    const zUnit = sgnPow(Math.sin(theta), exponent);
-    let y = yUnit * (yUnit >= 0 ? topAbs : bottomAbs);
-    let z = zUnit * section.halfWidth;
-
-    if (detail) {
-      const displacement = detail(p, theta);
-      if (displacement !== 0) {
-        const dy = y - centerY;
-        const radial = Math.hypot(dy, z);
-        if (radial > 1e-6) {
-          y += (dy / radial) * displacement;
-          z += (z / radial) * displacement;
-        }
-      }
-    }
-    // Meme regle que dans le maillage du corps : l'inclinaison de tete est
-    // une translation appliquee en dernier, et la face de popper un recul
-    // axial qui depend de la position du point dans la section.
-    const yFinal = y + section.offset;
-    return new THREE.Vector3(profile.xAt(p) + profile.popperCut(p, yFinal, z), yFinal, z);
-  };
+  return createSkin(profile, params, bakeScales);
 }
 
 export function buildLure(
@@ -657,7 +689,7 @@ export function buildLure(
   bakeScales = false,
 ): LureGeometry {
   const profile = createProfile(params);
-  const fine = detailResolution(params, resolution, bakeScales);
+  const fine = detailResolution(params, anatomicalResolution(profile, resolution), bakeScales);
   const body = buildBody(profile, params, fine, bakeScales);
   // L'articulation coupe le corps d'un seul tenant. Elle ne se cumule pas
   // avec l'impression en deux coques, qui coupe deja dans l'autre sens : la
@@ -743,36 +775,10 @@ export function buildSegments(
 ): { front: THREE.BufferGeometry; rear: THREE.BufferGeometry } {
   const nStations = resolution.lengthSegments;
   const nRadial = resolution.radialSegments;
-  const exponent = 2 / clamp(params.crossSection, 1.2, 3.6);
-  const detail = createDetailField(profile, params, bakeScales);
-
+  const fallbackN = clamp(params.crossSection, 1.2, 3.6);
   /** Point de peau, details compris : le meme calcul que le corps entier. */
-  const skin = (p: number, theta: number): THREE.Vector3 => {
-    const section = profile.section(p);
-    const topAbs = section.top;
-    const bottomAbs = -section.bottom;
-    const centerY = (topAbs - bottomAbs) / 2;
-    const yUnit = sgnPow(Math.cos(theta), exponent);
-    const zUnit = sgnPow(Math.sin(theta), exponent);
-    let y = yUnit * (yUnit >= 0 ? topAbs : bottomAbs);
-    let z = zUnit * section.halfWidth;
-    if (detail) {
-      const d = detail(p, theta);
-      if (d !== 0) {
-        const dy = y - centerY;
-        const radial = Math.hypot(dy, z);
-        if (radial > 1e-6) {
-          y += (dy / radial) * d;
-          z += (z / radial) * d;
-        }
-      }
-    }
-    // Meme peau que le corps entier, decalage de tete et face de popper
-    // compris : un segment qui ne les porterait pas ne serait plus le meme
-    // corps, et la face de coupe ne raccorderait plus.
-    const yFinal = y + section.offset;
-    return new THREE.Vector3(profile.xAt(p) + profile.popperCut(p, yFinal, z), yFinal, z);
-  };
+  const skin = createSkin(profile, params, bakeScales);
+  const hinge = profile.section(plan.pJoint);
 
   const pAtX = (x: number): number => {
     let lo = 0;
@@ -793,11 +799,18 @@ export function buildSegments(
     // Abscisse de coupe pour chaque colonne : c'est le plan du V, lu a la
     // largeur que la section presente a la charniere.
     const cutP: number[] = [];
+    const thetas: number[] = [];
     for (let j = 0; j <= nRadial; j++) {
-      const theta = (j / nRadial) * Math.PI * 2;
-      const z = sgnPow(Math.sin(theta), exponent) * plan.halfWidth;
+      const theta = thetaAt(profile, j / nRadial);
+      thetas.push(theta);
+      const unit = sectionPoint(hinge, theta, fallbackN).z / Math.max(hinge.halfWidth, 1e-9);
+      const z = unit * plan.halfWidth;
       cutP.push(clamp(pAtX(xApex - Math.abs(z) * tan), 0.0005, profile.bodyEnd - 0.0005));
     }
+    // Chaque colonne garde la repartition de stations du corps entier, sur
+    // sa propre longueur : la tete reste finement maillee.
+    const tOf = (p: number) =>
+      profile.anatomy ? profile.anatomy.stationOf(p) : p / profile.bodyEnd;
 
     const positions: number[] = [];
     const uvs: number[] = [];
@@ -821,9 +834,10 @@ export function buildSegments(
       const row: number[] = [];
       const t = i / nStations;
       for (let j = 0; j <= nRadial; j++) {
-        const theta = (j / nRadial) * Math.PI * 2;
-        const p = front ? t * cutP[j] : cutP[j] + (profile.bodyEnd - cutP[j]) * t;
-        row.push(push(skin(p, theta), p, j / nRadial));
+        const theta = thetas[j];
+        const tCut = tOf(cutP[j]);
+        const p = stationAt(profile, front ? t * tCut : tCut + (1 - tCut) * t);
+        row.push(push(skin(p, theta), p, j === nRadial ? 1 : theta / (Math.PI * 2)));
       }
       grid.push(row);
     }
@@ -845,7 +859,11 @@ export function buildSegments(
     const tipSection = profile.section(tipP);
     if (tipSection.halfWidth > 1e-4 || tipSection.top + tipSection.bottom > 1e-4) {
       const centre = push(
-        new THREE.Vector3(profile.xAt(tipP), (tipSection.top - tipSection.bottom) / 2, 0),
+        new THREE.Vector3(
+          profile.xAt(tipP),
+          (tipSection.top + tipSection.bottom) / 2 + tipSection.offset,
+          0,
+        ),
         tipP,
         0.5,
       );

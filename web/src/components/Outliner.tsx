@@ -65,7 +65,6 @@ interface Props {
 }
 
 export type AddKind =
-  | 'template'
   | 'inlay'
   | 'dowels'
   | 'decal'
@@ -82,7 +81,6 @@ export type AddKind =
 
 const ADD_MENU: { kind: AddKind; label: string; hint: string }[] = [
   { kind: 'articulation', label: 'Articulation', hint: 'Coupe le corps en deux segments articules' },
-  { kind: 'template', label: 'Modele guide 2 parties', hint: 'Un articule complet, deja regle et flottant' },
   { kind: 'decal', label: 'Decal', hint: 'Forme deposee sur le corps, en relief ou gravee' },
   { kind: 'scales', label: 'Ecailles', hint: 'Trame carrelee sur tout le corps' },
   { kind: 'ribs', label: 'Nervures', hint: 'Anneaux en relief perpendiculaires a l axe' },

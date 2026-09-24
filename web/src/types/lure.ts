@@ -9,27 +9,19 @@
  */
 
 export type ShapeId =
-  // Formes relevees sur des references reelles.
-  | 'stickbait165'
-  | 'ryoshi'
-  | 'model25'
-  // Formes generiques.
-  | 'popper'
+  // Les sept familles de la bibliotheque (module AB). Une variante — chugger,
+  // minnow nervure, vibe de traine — est un REGLAGE de sa famille, pas une
+  // entree de plus.
+  | 'minnow'
   | 'crankbait'
-  | 'jerkbait'
-  | 'spoon'
-  | 'swimbait'
-  | 'topwater'
-  // Archetypes de corps (module N) : des FAMILLES de forme, pas des copies.
-  // Chacune est definie par ses parametres geometriques — elancement,
-  // position de la section maitresse, angle de nez, forme de queue — de
-  // sorte qu'on atteigne n'importe quelle silhouette de la famille au
-  // curseur.
-  | 'vibetraine'
-  | 'minnowtraine'
-  | 'chugger'
+  | 'deepdiver'
+  | 'popper'
+  | 'stickbait'
   | 'lipless'
-  | 'minnownervure';
+  | 'swimbait'
+  // Cuiller : forme historique sans tete, conservee pour rouvrir les anciens
+  // projets a l'identique. Elle ne figure plus dans la bibliotheque.
+  | 'spoon';
 
 /** Tailles du catalogue de goupilles en 8. */
 export type PinId = 'xs06' | 'xs10' | 's' | 'm' | 'l';
@@ -205,6 +197,58 @@ export interface AssemblyConfig {
    * la coque male et son alesage en vis-a-vis sur la femelle.
    */
   anchors: PinAnchor[];
+  /** Gorge de colle creusee dans les deux faces de joint (module AB). */
+  glueGroove: GlueGrooveConfig;
+  /** Ergots d'alignement coniques venus de la coque male (module AB). */
+  pegs: PegConfig;
+  /** Creusage en coque a paroi parametrable, chambres internes (module AD). */
+  hollow: HollowConfig;
+}
+
+/**
+ * Gorge de colle : un sillon a fond plat qui court sur la face de joint, en
+ * retrait de la peau. Il recoit le surplus de colle au serrage au lieu de le
+ * laisser baver sur la livree, et il s'interrompt au droit de chaque
+ * logement plutot que de le traverser.
+ */
+export interface GlueGrooveConfig {
+  enabled: boolean;
+  /** Largeur du sillon, en mm. */
+  width: number;
+  /** Profondeur par coque, en mm. */
+  depth: number;
+  /** Retrait entre la peau et le bord du sillon, en mm. */
+  inset: number;
+}
+
+/**
+ * Ergots d'alignement : cones tronques venus de matiere sur la coque male,
+ * logements coniques en vis-a-vis sur la femelle. Le cone centre les deux
+ * coques pendant le serrage, sans piece rapportee.
+ */
+export interface PegConfig {
+  enabled: boolean;
+  /** Nombre d'ergots, places automatiquement le long du corps. */
+  count: number;
+  /** Diametre a la base, en mm. */
+  diameter: number;
+  /** Hauteur hors du plan de joint, en mm. */
+  height: number;
+  /** Demi-angle de depouille, en degres. */
+  taper: number;
+  /** Jeu radial du logement femelle, en mm. */
+  clearance: number;
+}
+
+/**
+ * Creusage : l'interieur du corps devient une ou plusieurs chambres dont la
+ * paroi suit la peau. Les chambres s'arretent a une cloison devant chaque
+ * logement de quincaillerie, qui reste noye dans la matiere pleine.
+ */
+export interface HollowConfig {
+  enabled: boolean;
+  /** Epaisseur de paroi, en mm. */
+  wall: number;
 }
 
 /**
@@ -495,6 +539,79 @@ export interface SavedPalette {
  * Detail de tete genere sur le corps lui-meme (branchies, yeux) : il n'y a
  * pas de piece rapportee, les sommets du maillage sont deplaces localement.
  */
+// ---------------------------------------------------------------------------
+// Corps anatomique (module AB)
+// ---------------------------------------------------------------------------
+
+/**
+ * Noeud d'un profil anatomique.
+ *
+ * `u` est la position le long du corps (0 = nez, 1 = base de la caudale) ;
+ * `v` une valeur RELATIVE : fraction de la hauteur ou de la demi-largeur
+ * maximales, ou exposant de section. Les longueurs reelles viennent des
+ * reglages de longueur, de hauteur et de largeur, qui restent donc actifs.
+ */
+export interface ProfileKnot {
+  u: number;
+  v: number;
+}
+
+/** Nageoire en relief (couchee sur le flanc) ou en crete (dans le plan de symetrie). */
+export interface FinConfig {
+  enabled: boolean;
+  /** Debut et fin de la base le long du corps, en fraction de longueur. */
+  from: number;
+  to: number;
+  /** Hauteur de la crete, ou longueur de la nageoire couchee, en fraction de la hauteur du corps. */
+  size: number;
+  /** Nombre de rayons. */
+  rays: number;
+}
+
+/**
+ * Armature et reliefs d'un corps anatomique.
+ *
+ * Le corps n'est plus une goutte interpolee entre deux extremites : il se
+ * construit sur des REPERES — commissure, oeil, bord d'opercule, section
+ * maitresse, pedoncule — et sur trois profils independants (dos, ventre,
+ * largeur), jamais derives l'un de l'autre. La forme de section varie elle
+ * aussi le long du corps : ronde a la tete, carenee au pedoncule.
+ */
+export interface Anatomy {
+  /** Commissure de la machoire, en fraction de longueur. */
+  jaw: number;
+  /** Pedoncule caudal (resserrement avant la caudale), en fraction de longueur. */
+  peduncle: number;
+  /** Profil du dos au-dessus de l'axe, en fraction de la hauteur totale. */
+  dorsal: ProfileKnot[];
+  /** Profil du ventre sous l'axe, en fraction de la hauteur totale. */
+  ventral: ProfileKnot[];
+  /** Demi-largeur, en fraction de la demi-largeur maximale. */
+  width: ProfileKnot[];
+  /** Exposant de section du dessus : 2 = ellipse, moins = carene, plus = epaule carree. */
+  upper: ProfileKnot[];
+  /** Exposant de section du dessous. */
+  lower: ProfileKnot[];
+  /** Longueur de la calotte de nez, en fraction de longueur. */
+  noseCap: number;
+  /** Rondeur de la calotte : 0,5 = spherique, plus = museau pointu. */
+  noseShape: number;
+  /** Profondeur du sillon de machoire, en fraction de la hauteur du corps. */
+  jawDepth: number;
+  /** Saillie du bord d'opercule, en fraction de la hauteur du corps. */
+  opercleRelief: number;
+  /** Profondeur de l'orbite (logement d'oeil), en mm. */
+  orbitDepth: number;
+  /** Profondeur de la ligne laterale, en mm ; zero pour l'omettre. */
+  lateralLine: number;
+  dorsalFin: FinConfig;
+  analFin: FinConfig;
+  pectoralFin: FinConfig;
+  pelvicFin: FinConfig;
+  /** Rayons de la caudale. */
+  caudalRays: number;
+}
+
 export interface DetailConfig {
   enabled: boolean;
   /** Position sur l'axe du corps : 0 = nez, 1 = queue. */
@@ -819,6 +936,11 @@ export interface LureParams {
   tailTaper: number;
   /** Profil de section : 2 = ellipse, > 2 = section carree, < 2 = losange. */
   crossSection: number;
+  /**
+   * Corps anatomique (module AB), ou `null` pour le profil parametrique
+   * historique. Un ancien projet n'en porte pas et s'ouvre donc a l'identique.
+   */
+  anatomy: Anatomy | null;
   /** Creux de bouche : 0 = nez plein, 1 = bouche fortement creusee (popper). */
   mouthCup: number;
 
@@ -835,6 +957,11 @@ export interface LureParams {
   billUniform: boolean;
   /** Recul du point d'ancrage depuis la pointe du nez, en mm. */
   billOffset: number;
+  /**
+   * Enfoncement demande de la plaque dans la tete, en mm. Zero : automatique,
+   * la plaque entre jusqu'a buter (comportement des projets anterieurs).
+   */
+  billInsertion: number;
   /** Rayon de conge sur les aretes de la bavette, en mm. */
   billFillet: number;
   /** Profil de coupe. */

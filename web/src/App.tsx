@@ -28,7 +28,6 @@ import { ReferencePanel } from './components/ReferencePanel';
 import { buildLure, PREVIEW_RESOLUTION } from './lib/geometry';
 import { useHistory } from './lib/history';
 import { articulationBlocker, fitToBody } from './lib/articulation';
-import { getTemplate } from './lib/templates';
 import { emptyReference } from './lib/presets';
 import { Outliner, type AddKind, type NodeKind, type SceneNode } from './components/Outliner';
 import { OutlineEditor } from './components/OutlineEditor';
@@ -116,7 +115,7 @@ export default function App() {
   const [route, setRoute] = useState<Route>('gallery');
   // Toute modification passe par la pile d'annulation : c'est elle qui porte
   // l'etat courant. Les chargements complets la reinitialisent.
-  const history = useHistory<LureParams>(() => clonePreset('ryoshi'));
+  const history = useHistory<LureParams>(() => clonePreset('minnow'));
   const params = history.state;
   const setParams = history.set;
   const [name, setName] = useState('Ryoshi 86');
@@ -150,9 +149,6 @@ export default function App() {
     id?: string;
   } | null>(null);
   const [dark, setDark] = useState(false);
-  // Modele guide charge : son panneau d'explication reste ouvert tant que
-  // l'utilisateur ne le referme pas.
-  const [guideId, setGuideId] = useState<string | null>(null);
   // Etat de sauvegarde, lu par la barre basse : « Enregistre » ne doit
   // s'afficher que si le projet en cours correspond a ce qui est en memoire.
   const [saveState, setSaveState] = useState<'saved' | 'dirty' | 'saving'>('saved');
@@ -412,24 +408,6 @@ export default function App() {
       },
     }));
   }, [setParams]);
-
-  const loadTemplate = useCallback(
-    (id: string) => {
-      const template = getTemplate(id);
-      if (!template) return;
-      history.reset(template.build());
-      setName(template.label);
-      setActiveId(null);
-      setFitKey((n) => n + 1);
-      setRoute('editor');
-      setPane('panel');
-      setPanelTab('scene');
-      setSelectedNode('articulation');
-      setSelectedKind('articulation');
-      setGuideId(id);
-    },
-    [history],
-  );
 
   const loadPreset = useCallback((shape: ShapeId) => {
     const preset = getPreset(shape);
@@ -946,15 +924,6 @@ export default function App() {
         addArticulation();
         return;
       }
-      if (what === 'template') {
-        setRoute('gallery');
-        // La bibliotheque de modeles vit sur l'ecran d'accueil : y renvoyer
-        // vaut mieux que de dupliquer la liste dans un menu etroit.
-        window.setTimeout(() => {
-          document.getElementById('modeles-guides')?.scrollIntoView({ behavior: 'smooth' });
-        }, 60);
-        return;
-      }
       if (what === 'eyes') {
         updateParams({ eyes: { ...params.eyes, enabled: true } });
         setSelectedNode('eyes');
@@ -984,7 +953,6 @@ export default function App() {
 
   const selectedDecal = params.decals.find((decal) => decal.id === selectedNode) ?? null;
   const selectedInlay = params.inlays.find((item) => item.id === selectedNode) ?? null;
-  const guide = guideId ? getTemplate(guideId) : undefined;
   const checks = useMemo(() => runPrintChecks(params, geo), [params, geo]);
 
   const panelMeta = PANEL_META[panelTab];
@@ -1097,7 +1065,6 @@ export default function App() {
         <>
           <ShapeGallery
             onSelect={openShape}
-            onTemplate={loadTemplate}
             projects={projects}
             activeId={activeId}
             onOpen={openProject}
@@ -1261,30 +1228,6 @@ export default function App() {
               <div role="tabpanel" aria-labelledby={`subtab-${panelTab}`}>
                 {panelTab === 'scene' ? (
                   <>
-                    {guide ? (
-                      <section className="guide">
-                        <div className="guide__head">
-                          <h3>{guide.label}</h3>
-                          <button
-                            type="button"
-                            className="contour__close"
-                            aria-label="Fermer le guide"
-                            onClick={() => setGuideId(null)}
-                          >
-                            ✕
-                          </button>
-                        </div>
-                        <p className="guide__lead">{guide.description}</p>
-                        <dl className="guide__list">
-                          {guide.guide.map((item) => (
-                            <div key={item.setting}>
-                              <dt>{item.setting}</dt>
-                              <dd>{item.why}</dd>
-                            </div>
-                          ))}
-                        </dl>
-                      </section>
-                    ) : null}
 
                     <Outliner
                       nodes={sceneNodes}
