@@ -10,7 +10,8 @@ import type {
   TailShape,
 } from '../types/lure';
 import { articulationBlocker } from '../lib/articulation';
-import { LIMITS, SHAPE_PRESETS } from '../lib/presets';
+import { LIMITS, SHAPE_PRESETS, cloneAnatomy, getPreset } from '../lib/presets';
+import { AnatomyEditor } from './AnatomyEditor';
 import { billSize } from '../lib/billTemplate';
 import { Fieldset, Segmented, Slider, Switch } from './ui';
 
@@ -59,8 +60,8 @@ export function ShapeEditor({
   return (
     <div className="panel__body">
       <Fieldset
-        legend="Gabarit de depart"
-        hint="Recharge une forme de base. Les reglages en cours sont remplaces."
+        legend="Famille"
+        hint="Recharge un leurre complet de la bibliotheque. Les reglages en cours sont remplaces."
       >
         <Segmented
           label="Forme"
@@ -99,6 +100,7 @@ export function ShapeEditor({
           hint="Vue de profil : hauteur dos-ventre du corps."
           onChange={(thickness) => onChange({ thickness })}
         />
+        {params.anatomy ? null : (
         <Slider
           label="Section maitresse"
           value={params.bellyPosition}
@@ -107,6 +109,7 @@ export function ShapeEditor({
           hint="Point le plus large, en % de la longueur depuis le nez. C est lui qui separe un corps a epaules avant d un corps a ventre arriere."
           onChange={(bellyPosition) => onChange({ bellyPosition })}
         />
+        )}
         <div className="control">
           <div className="control__row">
             <span className="control__label">Elancement</span>
@@ -119,6 +122,8 @@ export function ShapeEditor({
             minnow de traine entre 5 et 7, un pencil monte a 9.
           </p>
         </div>
+        {params.anatomy ? null : (
+          <>
         <Slider
           label="Courbure dorsale"
           value={params.dorsalCurve}
@@ -135,6 +140,27 @@ export function ShapeEditor({
           hint="Un ventre rebondi loge les lests bas et stabilise la nage."
           onChange={(ventralCurve) => onChange({ ventralCurve })}
         />
+          </>
+        )}
+        {params.anatomy ? null : (
+          <>
+            <button
+              type="button"
+              className="btn btn--block"
+              onClick={() => {
+                const family = getPreset(params.shape === 'spoon' ? 'minnow' : params.shape);
+                onChange({ anatomy: cloneAnatomy(family.params.anatomy) });
+              }}
+            >
+              Passer au corps anatomique
+            </button>
+            <p className="control__hint">
+              Profil historique : un volume lisse interpole entre le nez et la queue. Le corps
+              anatomique de la famille ajoute pedoncule, opercule, orbites et nageoires, en
+              gardant les cotes.
+            </p>
+          </>
+        )}
 
         {/*
           Raccourci vers l'articulation. Elle vit dans l'arbre de scene, mais
@@ -157,13 +183,15 @@ export function ShapeEditor({
             </button>
             <p className="control__hint" style={jointBlocker ? { color: 'var(--amber)' } : undefined}>
               {jointBlocker ??
-                'Deux segments relies par une goupille et des oeillets. Le corps passe en une piece : l articulation coupe en travers.'}
+                'Deux segments relies par un cylindre de retention et des oeillets ; chaque segment se coupe ensuite en deux demi-coques.'}
             </p>
           </>
         )}
       </Fieldset>
 
       <Fieldset legend="Modelage" hint="Reglages fins du nez, de la section et de l arriere.">
+        {params.anatomy ? null : (
+          <>
         <Slider
           label="Finesse du nez"
           value={params.noseSharpness}
@@ -172,6 +200,8 @@ export function ShapeEditor({
           hint="Bas : nez emousse. Haut : nez pointu."
           onChange={(noseSharpness) => onChange({ noseSharpness })}
         />
+          </>
+        )}
         <Slider
           label="Angle de nez"
           value={params.noseAngle}
@@ -180,6 +210,8 @@ export function ShapeEditor({
           hint="Inclinaison de la tete par rapport a l axe. Positif : nez releve, comme sur un popper. Le reste du corps ne bouge pas."
           onChange={(noseAngle) => onChange({ noseAngle })}
         />
+        {params.anatomy ? null : (
+          <>
         <Slider
           label="Creux de bouche"
           value={params.mouthCup}
@@ -196,6 +228,8 @@ export function ShapeEditor({
           hint="Bas : arriere plein. Haut : pedoncule tres fin."
           onChange={(tailTaper) => onChange({ tailTaper })}
         />
+          </>
+        )}
         <Slider
           label="Profil de section"
           value={params.crossSection}
@@ -205,6 +239,10 @@ export function ShapeEditor({
           onChange={(crossSection) => onChange({ crossSection })}
         />
       </Fieldset>
+
+      {params.anatomy ? (
+        <AnatomyEditor anatomy={params.anatomy} onChange={(anatomy) => onChange({ anatomy })} />
+      ) : null}
 
       {params.shape === 'spoon' ? null : (
         <Fieldset
@@ -308,7 +346,7 @@ export function ShapeEditor({
           label="Fabrication"
           value={params.billMode}
           options={[
-            { value: 'printed' as BillMode, label: 'Imprimee', title: 'Integree au corps' },
+            { value: 'printed' as BillMode, label: 'Imprimee', title: 'Piece imprimee, prise en sandwich dans la fente' },
             {
               value: 'polycarbonate' as BillMode,
               label: 'Polycarbonate',
@@ -317,14 +355,14 @@ export function ShapeEditor({
           ]}
           onChange={(billMode) => onChange({ billMode })}
         />
-        {params.billMode === 'polycarbonate' ? (
-          <p className="control__hint">
-            Les deux coques recoivent la meme fente, taillee comme l empreinte exacte de la
-            plaque majoree du seul jeu d insertion, et debouchante par l avant de la tete.
-            Le gabarit plat s exporte en DXF ou SVG. La bavette affichee ici n est qu un
-            fantome d aide au placement — jamais incluse dans les STL ni les STEP.
-          </p>
-        ) : null}
+        <p className="control__hint">
+          Les deux modes recoivent la meme fente, fendue dans le plan de joint : chaque coque en
+          porte la moitie et la plaque se prend en sandwich. Elle est l empreinte exacte de la
+          plaque, majoree du seul jeu d insertion, bornee a sa largeur et a son enfoncement.{' '}
+          {params.billMode === 'polycarbonate'
+            ? 'La plaque se decoupe dans du polycarbonate : gabarit plat en DXF ou SVG. La bavette affichee n est qu un fantome d aide au placement, jamais incluse dans les STL.'
+            : 'La plaque imprimee sort en piece STL a part (« Bavette » dans l export).'}
+        </p>
         <Switch
           label="Echelle liee"
           checked={params.billUniform}
@@ -346,8 +384,17 @@ export function ShapeEditor({
           {...LIMITS.billOffset}
           display={mm(params.billOffset)}
           disabled={!params.hasBib}
-          hint="Recul du point d ancrage. La fente d insertion suit."
+          hint="Recul du point d ancrage, mesure depuis la pointe du nez. La fente s ouvre exactement la, sans se deplacer d elle-meme : si la plaque n y tient pas, c est dit."
           onChange={(billOffset) => onChange({ billOffset })}
+        />
+        <Slider
+          label="Enfoncement"
+          value={params.billInsertion}
+          {...LIMITS.billInsertion}
+          display={params.billInsertion > 0 ? mm(params.billInsertion) : 'jusqu a buter'}
+          disabled={!params.hasBib}
+          hint="Longueur de plaque logee dans la tete, depuis la peau du menton. Au-dela de ce que la tete admet, la fente est refusee et la profondeur maximale est annoncee."
+          onChange={(billInsertion) => onChange({ billInsertion })}
         />
         <Segmented
           label="Profil de coupe"

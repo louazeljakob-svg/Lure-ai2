@@ -73,15 +73,24 @@ import { ShapeGallery } from './components/ShapeGallery';
 import { Viewport3D } from './components/Viewport3D';
 
 type Route = 'gallery' | 'editor';
-type PanelTab =
-  | 'scene'
+/**
+ * Quatre onglets, regroupes par tache (module AC) :
+ *   Scene       — arbre des pieces, inspecteur, images de reference ;
+ *   Fabrication — matiere et finition, assemblage, quincaillerie ;
+ *   Physique    — flottaison, nage, tenue mecanique, etalonnage ;
+ *   Projets     — bibliotheque personnelle, sauvegarde, export, import STL.
+ * Chaque onglet se divise en sections : toute fonction reste a trois clics.
+ */
+type PanelTab = 'scene' | 'fabrication' | 'physics' | 'projects';
+type PanelSection =
+  | 'parts'
+  | 'reference'
   | 'material'
   | 'assembly'
   | 'tackle'
-  | 'reference'
-  | 'physics'
-  | 'import'
-  | 'projects';
+  | 'simulation'
+  | 'library'
+  | 'import';
 type Pane = 'shape' | 'panel';
 
 interface Toast {
@@ -90,23 +99,56 @@ interface Toast {
   message: string;
 }
 
-const PANEL_META: Record<PanelTab, { title: string; subtitle: string; tab: string }> = {
-  scene: { title: 'Scene', subtitle: 'Arbre des pieces et inspecteur', tab: 'Scene' },
-  material: { title: 'Matiere & finition', subtitle: 'Impression, lestage, livree', tab: 'Matiere' },
-  assembly: { title: 'Assemblage', subtitle: 'Ancrages, goujons, goupilles', tab: 'Assemblage' },
-  tackle: {
-    title: 'Quincaillerie',
-    subtitle: 'Catalogue pese, montages et bilan de masse',
-    tab: 'Quincaillerie',
+const PANEL_META: Record<
+  PanelTab,
+  { title: string; subtitle: string; tab: string; sections: { id: PanelSection; label: string }[] }
+> = {
+  scene: {
+    title: 'Scene',
+    subtitle: 'Arbre des pieces, inspecteur, reference',
+    tab: 'Scene',
+    sections: [
+      { id: 'parts', label: 'Pieces & inspecteur' },
+      { id: 'reference', label: 'Reference' },
+    ],
   },
-  reference: { title: 'Reference', subtitle: 'Images calees a l echelle', tab: 'Reference' },
-  physics: { title: 'Simulation', subtitle: 'Flottabilite, nage, tenue mecanique', tab: 'Physique' },
-  import: {
-    title: 'Import',
-    subtitle: 'Partir d un maillage existant',
-    tab: 'Import',
+  fabrication: {
+    title: 'Fabrication',
+    subtitle: 'Matiere, assemblage, quincaillerie',
+    tab: 'Fabrication',
+    sections: [
+      { id: 'material', label: 'Matiere' },
+      { id: 'assembly', label: 'Assemblage' },
+      { id: 'tackle', label: 'Quincaillerie' },
+    ],
   },
-  projects: { title: 'Projets', subtitle: 'Creations de la session', tab: 'Projets' },
+  physics: {
+    title: 'Physique',
+    subtitle: 'Flottaison, nage, tenue mecanique, etalonnage',
+    tab: 'Physique',
+    sections: [{ id: 'simulation', label: 'Simulation' }],
+  },
+  projects: {
+    title: 'Projets',
+    subtitle: 'Bibliotheque personnelle, sauvegarde, export, import STL',
+    tab: 'Projets',
+    sections: [
+      { id: 'library', label: 'Mes projets' },
+      { id: 'import', label: 'Import STL' },
+    ],
+  },
+};
+
+/** Onglet qui porte chaque section. */
+const TAB_OF: Record<PanelSection, PanelTab> = {
+  parts: 'scene',
+  reference: 'scene',
+  material: 'fabrication',
+  assembly: 'fabrication',
+  tackle: 'fabrication',
+  simulation: 'physics',
+  library: 'projects',
+  import: 'projects',
 };
 
 const newId = () => `p-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -118,11 +160,29 @@ export default function App() {
   const history = useHistory<LureParams>(() => clonePreset('minnow'));
   const params = history.state;
   const setParams = history.set;
-  const [name, setName] = useState('Ryoshi 86');
+  const [name, setName] = useState('Minnow / jerkbait 110');
   const [water, setWater] = useState<WaterId>('fresh');
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [panelTab, setPanelTab] = useState<PanelTab>('scene');
+  const [panelTab, setPanelTabState] = useState<PanelTab>('scene');
+  const [sections, setSections] = useState<Record<PanelTab, PanelSection>>({
+    scene: 'parts',
+    fabrication: 'material',
+    physics: 'simulation',
+    projects: 'library',
+  });
+  /** Ouvre un onglet, ou directement une section d'onglet. */
+  const setPanelTab = useCallback((target: PanelTab | PanelSection) => {
+    if (target in PANEL_META) {
+      setPanelTabState(target as PanelTab);
+      return;
+    }
+    const section = target as PanelSection;
+    const tab = TAB_OF[section];
+    setPanelTabState(tab);
+    setSections((current) => ({ ...current, [tab]: section }));
+  }, []);
+  const section = sections[panelTab];
   const [pane, setPane] = useState<Pane>('shape');
   const [toasts, setToasts] = useState<Toast[]>([]);
   // Incremente a chaque remplacement complet des parametres : le viewport recadre.
@@ -372,10 +432,9 @@ export default function App() {
   /**
    * Ajout d'une articulation, en un geste.
    *
-   * L'articulation coupe le corps EN TRAVERS ; l'impression en deux coques le
-   * coupe dans la longueur. Les deux a la fois donneraient quatre pieces dont
-   * l'assemblage n'est pas genere. Plutot que de laisser l'ajout sans effet
-   * visible — c'etait le cas —, on bascule le corps en une piece et on le dit.
+   * Le leurre articule se coupe desormais en demi-coques segment par segment
+   * (module AB) : l'assemblage est conserve, le plan de joint ramene a la
+   * verticale — la seule orientation compatible avec les faces en V.
    */
   const addArticulation = useCallback(() => {
     const blocked = articulationBlocker(params);
@@ -385,19 +444,19 @@ export default function App() {
     }
     setParams((current) => ({
       ...current,
-      assembly: { ...current.assembly, enabled: false },
+      assembly: { ...current.assembly, planeAngle: 0 },
       articulation: { ...current.articulation, enabled: true },
     }));
     setPanelTab('scene');
     setSelectedNode('articulation');
     setSelectedKind('articulation');
-    if (params.assembly.enabled) {
+    if (params.assembly.enabled && params.assembly.planeAngle >= 5) {
       pushToast(
         'ok',
-        'Corps passe en une piece : l articulation le coupe en travers, l impression en deux coques le coupait dans la longueur.',
+        'Plan de joint ramene a la verticale : chaque segment se coupe en deux demi-coques dans le plan de symetrie.',
       );
     }
-  }, [params, setParams, pushToast]);
+  }, [params, setParams, pushToast, setPanelTab]);
 
   const fitJoint = useCallback(() => {
     setParams((current) => ({
@@ -1225,8 +1284,24 @@ export default function App() {
                 ))}
               </div>
 
+              {panelMeta.sections.length > 1 ? (
+                <div className="panel-sections" role="tablist" aria-label={`Sections : ${panelMeta.title}`}>
+                  {panelMeta.sections.map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      role="tab"
+                      aria-selected={section === item.id}
+                      onClick={() => setPanelTab(item.id)}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+
               <div role="tabpanel" aria-labelledby={`subtab-${panelTab}`}>
-                {panelTab === 'scene' ? (
+                {section === 'parts' ? (
                   <>
 
                     <Outliner
@@ -1404,7 +1479,7 @@ export default function App() {
                     </details>
                   </>
                 ) : null}
-                {panelTab === 'material' ? (
+                {section === 'material' ? (
                   <MaterialPanel
                     params={params}
                     onChange={updateParams}
@@ -1414,7 +1489,7 @@ export default function App() {
                     onDeletePalette={deletePalette}
                   />
                 ) : null}
-                {panelTab === 'assembly' ? (
+                {section === 'assembly' ? (
                   <AssemblyPanel
                     params={params}
                     onChange={updateParams}
@@ -1430,10 +1505,10 @@ export default function App() {
                     onRemoveAnchor={removeAnchor}
                   />
                 ) : null}
-                {panelTab === 'tackle' ? (
+                {section === 'tackle' ? (
                   <TacklePanel params={params} physics={physics} onChange={updateParams} />
                 ) : null}
-                {panelTab === 'reference' ? (
+                {section === 'reference' ? (
                   <ReferencePanel
                     references={references}
                     onImport={(file) => void importReference(file)}
@@ -1448,7 +1523,7 @@ export default function App() {
                     onApplyCalibration={applyCalibrationDistance}
                   />
                 ) : null}
-                {panelTab === 'physics' ? (
+                {section === 'simulation' ? (
                   <PhysicsSimulator
                     params={params}
                     physics={physics}
@@ -1457,7 +1532,7 @@ export default function App() {
                     sockets={plans.sockets}
                   />
                 ) : null}
-                {panelTab === 'import' ? (
+                {section === 'import' ? (
                   <ImportPanel
                     params={params}
                     water={water}
@@ -1466,7 +1541,7 @@ export default function App() {
                     onToast={(message, kind) => pushToast(kind ?? 'ok', message)}
                   />
                 ) : null}
-                {panelTab === 'projects' ? (
+                {section === 'library' ? (
                   <ProjectsPanel
                     projects={projects}
                     activeId={activeId}

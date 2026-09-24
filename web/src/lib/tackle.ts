@@ -139,7 +139,7 @@ const SEEDS: Seed[] = [
   },
 ];
 
-const seedId = (family: TackleFamily, series: string, size: string): string =>
+export const seedId = (family: TackleFamily, series: string, size: string): string =>
   `${family}-${series.replace(/[^a-z0-9]+/gi, '').slice(0, 10).toLowerCase()}-${size.replace(/[^a-z0-9]+/gi, '')}`;
 
 /** Table de depart, entierement indicative et entierement modifiable. */

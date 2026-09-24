@@ -112,15 +112,17 @@ interface SwitchProps {
   checked: boolean;
   onChange: (checked: boolean) => void;
   hint?: string;
+  disabled?: boolean;
 }
 
-export function Switch({ label, checked, onChange, hint }: SwitchProps) {
+export function Switch({ label, checked, onChange, hint, disabled }: SwitchProps) {
   return (
     <div className="control">
       <button
         type="button"
         className="switch"
         aria-pressed={checked}
+        disabled={disabled}
         onClick={() => onChange(!checked)}
       >
         <span className="switch__label">{label}</span>

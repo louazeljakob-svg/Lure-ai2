@@ -18,7 +18,7 @@ import type {
   TackleMount,
 } from '../types/lure';
 import { cloneLivery } from './liveries';
-import { seedCatalogue } from './tackle';
+import { seedCatalogue, seedId } from './tackle';
 import { defaultThroughWire } from './throughWire';
 
 export interface Range {
@@ -470,14 +470,27 @@ const anchor = (
   method: 'bore',
 });
 
-const mount = (id: string, label: string, anchorId: string, position: number, height: number): TackleMount => ({
+/** Triple force standard de la table de depart, par taille. */
+const treble = (size: string) => seedId('treble', 'Triple force standard', size);
+/** Anneau brise inox de la table de depart, par taille. */
+const ring = (size: string) => seedId('split', 'Anneau brise inox', size);
+
+const mount = (
+  id: string,
+  label: string,
+  anchorId: string,
+  position: number,
+  height: number,
+  hookId: string | null = null,
+  ringId: string | null = null,
+): TackleMount => ({
   id,
   label,
   anchorId,
   position,
   height,
-  ringId: null,
-  hookId: null,
+  ringId,
+  hookId,
   visible: true,
 });
 
@@ -511,7 +524,7 @@ const minnowParams = (): LureParams => ({
     ]),
     width: knots([
       [0, 0.42], [0.04, 0.68], [0.1, 0.89], [0.2, 0.97], [0.34, 1], [0.55, 0.88],
-      [0.7, 0.62], [0.82, 0.36], [0.9, 0.2], [0.95, 0.14], [1, 0.1],
+      [0.7, 0.62], [0.82, 0.38], [0.9, 0.24], [0.95, 0.19], [1, 0.12],
     ]),
     upper: knots([[0, 2.2], [0.2, 2.1], [0.4, 1.9], [0.6, 1.7], [0.8, 1.5], [1, 1.45]]),
     lower: knots([[0, 2.8], [0.2, 2.6], [0.4, 2.3], [0.6, 2.05], [0.85, 1.65], [1, 1.6]]),
@@ -584,8 +597,8 @@ const minnowParams = (): LureParams => ({
   throughWire: defaultThroughWire(),
   catalogue: seedCatalogue(),
   mounts: [
-    mount('mount-ventre', 'Support ventral', 'ventre', 0.36, -1),
-    mount('mount-arriere', 'Support arriere', 'arriere', 0.64, -1),
+    mount('mount-ventre', 'Support ventral', 'ventre', 0.36, -1, treble('#6'), ring('#3')),
+    mount('mount-arriere', 'Support arriere', 'arriere', 0.64, -1, treble('#6'), ring('#3')),
   ],
   paint: paint('#2b4a5e', '#d7dee3', { tail: '#d7dee3' }),
 });
@@ -643,7 +656,7 @@ const FAMILY_PRESETS: ShapePreset[] = [
         ]),
         width: knots([
           [0, 0.5], [0.05, 0.76], [0.12, 0.93], [0.26, 1], [0.42, 0.98], [0.58, 0.82],
-          [0.72, 0.56], [0.84, 0.32], [0.92, 0.18], [0.96, 0.13], [1, 0.1],
+          [0.72, 0.56], [0.84, 0.34], [0.92, 0.2], [0.96, 0.16], [1, 0.12],
         ]),
         upper: knots([[0, 2.4], [0.25, 2.5], [0.5, 2.2], [0.75, 1.85], [1, 1.6]]),
         lower: knots([[0, 2.3], [0.4, 2.3], [0.8, 1.9], [1, 1.7]]),
@@ -684,8 +697,8 @@ const FAMILY_PRESETS: ShapePreset[] = [
       infill: 12,
       ballasts: [ballast(0.44, -0.72, 2.5, 'crk', 'sphere')],
       mounts: [
-        mount('mount-ventre', 'Support ventral', 'ventre', 0.33, -1),
-        mount('mount-arriere', 'Support arriere', 'arriere', 0.67, -1),
+        mount('mount-ventre', 'Support ventral', 'ventre', 0.33, -1, treble('#8'), ring('#2')),
+        mount('mount-arriere', 'Support arriere', 'arriere', 0.67, -1, treble('#8'), ring('#2')),
       ],
       paint: paint('#3d5a2a', '#e7c64a', { belly: '#f3e9c9', pattern: 'none' }),
     }),
@@ -753,8 +766,8 @@ const FAMILY_PRESETS: ShapePreset[] = [
       infill: 15,
       ballasts: [ballast(0.48, -0.7, 6, 'ddv', 'cylinder'), ballast(0.6, -0.62, 5, 'ddv', 'cylinder')],
       mounts: [
-        mount('mount-ventre', 'Support ventral', 'ventre', 0.36, -1),
-        mount('mount-arriere', 'Support arriere', 'arriere', 0.62, -1),
+        mount('mount-ventre', 'Support ventral', 'ventre', 0.36, -1, treble('#2'), ring('#5')),
+        mount('mount-arriere', 'Support arriere', 'arriere', 0.62, -1, treble('#2'), ring('#5')),
       ],
       paint: paint('#1f3b5c', '#cfd9e2', { tail: '#e30613', tailLength: 0.08 }),
     }),
@@ -818,8 +831,8 @@ const FAMILY_PRESETS: ShapePreset[] = [
       infill: 10,
       ballasts: [ballast(0.56, -0.7, 3, 'pop', 'cylinder')],
       mounts: [
-        mount('mount-ventre', 'Support ventral', 'ventre', 0.36, -1),
-        mount('mount-arriere', 'Support arriere', 'arriere', 0.68, -1),
+        mount('mount-ventre', 'Support ventral', 'ventre', 0.36, -1, treble('#6'), ring('#3')),
+        mount('mount-arriere', 'Support arriere', 'arriere', 0.68, -1, treble('#6'), ring('#3')),
       ],
       paint: paint('#20242b', '#e8e4d8', { head: '#c1272d', headLength: 0.12, pattern: 'none' }),
     }),
@@ -847,7 +860,7 @@ const FAMILY_PRESETS: ShapePreset[] = [
         ]),
         width: knots([
           [0, 0.34], [0.06, 0.6], [0.16, 0.84], [0.32, 0.98], [0.46, 1], [0.62, 0.9],
-          [0.76, 0.64], [0.88, 0.32], [0.94, 0.17], [0.97, 0.12], [1, 0.1],
+          [0.76, 0.64], [0.88, 0.32], [0.94, 0.18], [0.97, 0.14], [1, 0.1],
         ]),
         upper: knots([[0, 2.1], [0.4, 2.15], [0.7, 1.95], [0.9, 1.7], [1, 1.6]]),
         lower: knots([[0, 2.1], [0.4, 2.2], [0.75, 2.0], [1, 1.7]]),
@@ -882,8 +895,8 @@ const FAMILY_PRESETS: ShapePreset[] = [
       infill: 12,
       ballasts: [ballast(0.62, -0.68, 6, 'stk', 'cylinder'), ballast(0.46, -0.7, 4, 'stk', 'cylinder')],
       mounts: [
-        mount('mount-ventre', 'Support ventral', 'ventre', 0.34, -1),
-        mount('mount-arriere', 'Support arriere', 'arriere', 0.64, -1),
+        mount('mount-ventre', 'Support ventral', 'ventre', 0.34, -1, treble('#4'), ring('#4')),
+        mount('mount-arriere', 'Support arriere', 'arriere', 0.64, -1, treble('#4'), ring('#4')),
       ],
       paint: paint('#16324a', '#e6ebee', { pattern: 'scales', patternScale: 18 }),
     }),
@@ -911,7 +924,7 @@ const FAMILY_PRESETS: ShapePreset[] = [
         ]),
         width: knots([
           [0, 0.4], [0.05, 0.64], [0.15, 0.88], [0.3, 1], [0.46, 0.98], [0.62, 0.84],
-          [0.76, 0.58], [0.87, 0.32], [0.94, 0.18], [0.97, 0.13], [1, 0.11],
+          [0.76, 0.58], [0.87, 0.36], [0.94, 0.24], [0.97, 0.2], [1, 0.14],
         ]),
         upper: knots([[0, 2.0], [0.15, 1.7], [0.35, 1.45], [0.6, 1.4], [0.85, 1.4], [1, 1.45]]),
         lower: knots([[0, 2.3], [0.35, 2.5], [0.7, 2.2], [1, 1.7]]),
@@ -944,8 +957,8 @@ const FAMILY_PRESETS: ShapePreset[] = [
       infill: 40,
       ballasts: [ballast(0.3, -0.72, 3.5, 'vib', 'cylinder'), ballast(0.42, -0.7, 3, 'vib', 'cylinder')],
       mounts: [
-        mount('mount-ventre', 'Support ventral', 'ventre', 0.31, -1),
-        mount('mount-arriere', 'Support arriere', 'arriere', 0.62, -1),
+        mount('mount-ventre', 'Support ventral', 'ventre', 0.31, -1, treble('#8'), ring('#3')),
+        mount('mount-arriere', 'Support arriere', 'arriere', 0.62, -1, treble('#8'), ring('#3')),
       ],
       paint: paint('#4a3b1f', '#d9c27a', { belly: '#f4ecd2', pattern: 'none' }),
     }),
@@ -1020,13 +1033,13 @@ const FAMILY_PRESETS: ShapePreset[] = [
       },
       infill: 40,
       ballasts: [
-        ballast(0.3, -0.7, 9, 'swb', 'cylinder'),
-        ballast(0.42, -0.68, 7, 'swb', 'cylinder'),
-        ballast(0.6, -0.64, 6, 'swb', 'cylinder'),
+        ballast(0.3, -0.7, 7.5, 'swb', 'cylinder'),
+        ballast(0.42, -0.68, 5.5, 'swb', 'cylinder'),
+        ballast(0.6, -0.64, 5.2, 'swb', 'cylinder'),
       ],
       mounts: [
-        mount('mount-ventre', 'Support ventral', 'ventre', 0.3, -1),
-        mount('mount-arriere', 'Support arriere', 'arriere', 0.72, -1),
+        mount('mount-ventre', 'Support ventral', 'ventre', 0.3, -1, treble('#2'), ring('#5')),
+        mount('mount-arriere', 'Support arriere', 'arriere', 0.72, -1, treble('#2'), ring('#5')),
       ],
       paint: paint('#2e3d2a', '#cfd5c4', { pattern: 'scales', patternScale: 20 }),
     }),

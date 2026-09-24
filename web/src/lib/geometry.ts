@@ -800,7 +800,10 @@ export function buildSegments(
     const cutP: number[] = [];
     const thetas: number[] = [];
     for (let j = 0; j <= nRadial; j++) {
-      const theta = thetaAt(profile, j / nRadial);
+      // Colonnes regulieres : la face de coupe apparie les colonnes deux a
+      // deux par symetrie, et des colonnes resserrees au ventre y
+      // produiraient des bandes sans epaisseur.
+      const theta = j === nRadial ? Math.PI * 2 : (j / nRadial) * Math.PI * 2;
       thetas.push(theta);
       const unit = sectionPoint(hinge, theta, fallbackN).z / Math.max(hinge.halfWidth, 1e-9);
       const z = unit * plan.halfWidth;

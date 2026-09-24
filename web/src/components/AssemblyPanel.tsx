@@ -142,6 +142,91 @@ export function AssemblyPanel({
       </Fieldset>
 
       <Fieldset
+        legend="Ergots et gorge de colle"
+        hint="Les ergots coniques centrent les deux coques au serrage ; la gorge recoit le surplus de colle. Ils se placent seuls, a l ecart de tout logement, et chaque refus est signale avec sa position."
+      >
+        <Switch
+          label="Ergots d alignement coniques"
+          checked={assembly.pegs.enabled}
+          disabled={!assembly.enabled}
+          onChange={(enabled) => setAssembly({ pegs: { ...assembly.pegs, enabled } })}
+        />
+        <Slider
+          label="Nombre"
+          value={assembly.pegs.count}
+          {...LIMITS.pegCount}
+          display={`${assembly.pegs.count}`}
+          disabled={!assembly.enabled || !assembly.pegs.enabled}
+          onChange={(count) => setAssembly({ pegs: { ...assembly.pegs, count: Math.round(count) } })}
+        />
+        <Slider
+          label="Diametre a la base"
+          value={assembly.pegs.diameter}
+          {...LIMITS.pegDiameter}
+          display={mm(assembly.pegs.diameter)}
+          disabled={!assembly.enabled || !assembly.pegs.enabled}
+          onChange={(diameter) => setAssembly({ pegs: { ...assembly.pegs, diameter } })}
+        />
+        <Slider
+          label="Hauteur"
+          value={assembly.pegs.height}
+          {...LIMITS.pegHeight}
+          display={mm(assembly.pegs.height)}
+          disabled={!assembly.enabled || !assembly.pegs.enabled}
+          onChange={(height) => setAssembly({ pegs: { ...assembly.pegs, height } })}
+        />
+        <Slider
+          label="Depouille"
+          value={assembly.pegs.taper}
+          {...LIMITS.pegTaper}
+          display={`${assembly.pegs.taper.toFixed(1)} deg`}
+          disabled={!assembly.enabled || !assembly.pegs.enabled}
+          hint="Demi-angle du cone : c est lui qui centre les coques sans forcer."
+          onChange={(taper) => setAssembly({ pegs: { ...assembly.pegs, taper } })}
+        />
+        <Slider
+          label="Jeu du logement"
+          value={assembly.pegs.clearance}
+          {...LIMITS.pegClearance}
+          display={mm(assembly.pegs.clearance)}
+          disabled={!assembly.enabled || !assembly.pegs.enabled}
+          hint="Jeu absolu, radial et en fond : il ne change pas avec la taille du leurre."
+          onChange={(clearance) => setAssembly({ pegs: { ...assembly.pegs, clearance } })}
+        />
+        <Switch
+          label="Gorge de colle"
+          checked={assembly.glueGroove.enabled}
+          disabled={!assembly.enabled}
+          onChange={(enabled) => setAssembly({ glueGroove: { ...assembly.glueGroove, enabled } })}
+        />
+        <Slider
+          label="Largeur de gorge"
+          value={assembly.glueGroove.width}
+          {...LIMITS.grooveWidth}
+          display={mm(assembly.glueGroove.width)}
+          disabled={!assembly.enabled || !assembly.glueGroove.enabled}
+          onChange={(width) => setAssembly({ glueGroove: { ...assembly.glueGroove, width } })}
+        />
+        <Slider
+          label="Profondeur par coque"
+          value={assembly.glueGroove.depth}
+          {...LIMITS.grooveDepth}
+          display={mm(assembly.glueGroove.depth)}
+          disabled={!assembly.enabled || !assembly.glueGroove.enabled}
+          onChange={(depth) => setAssembly({ glueGroove: { ...assembly.glueGroove, depth } })}
+        />
+        <Slider
+          label="Retrait depuis la peau"
+          value={assembly.glueGroove.inset}
+          {...LIMITS.grooveInset}
+          display={mm(assembly.glueGroove.inset)}
+          disabled={!assembly.enabled || !assembly.glueGroove.enabled}
+          hint="Minimum : sous une nageoire dorsale, la gorge s eloigne d elle-meme de la peau pour garder sa paroi."
+          onChange={(inset) => setAssembly({ glueGroove: { ...assembly.glueGroove, inset } })}
+        />
+      </Fieldset>
+
+      <Fieldset
         legend="Montage traversant"
         hint="Un fil unique traverse le corps de bout en bout et forme lui-meme ses boucles de nez et de queue. C est ce qui change le mode de rupture."
       >
@@ -552,7 +637,7 @@ export function AssemblyPanel({
           value={fabrication.tenonFit}
           {...LIMITS.tenonFit}
           display={mm(fabrication.tenonFit)}
-          hint="Emboitement des deux coques. Valeur de depart provisoire, a mesurer."
+          hint="Emboitement des deux coques. Valeur de depart, a ajuster sur votre imprimante."
           onChange={(tenonFit) => setFabrication({ tenonFit })}
         />
         <Slider
@@ -560,7 +645,7 @@ export function AssemblyPanel({
           value={fabrication.billFit}
           {...LIMITS.billFit}
           display={mm(fabrication.billFit)}
-          hint="S ajoute a l epaisseur du polycarbonate pour dimensionner la fente."
+          hint="S ajoute a l epaisseur de la plaque pour dimensionner la fente. Un seul jeu pour les deux modes : imprimee ou polycarbonate, la bavette entre de la meme facon."
           onChange={(billFit) => setFabrication({ billFit })}
         />
       </Fieldset>

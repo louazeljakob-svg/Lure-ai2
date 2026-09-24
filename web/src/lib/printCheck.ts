@@ -95,8 +95,12 @@ export function runPrintChecks(params: LureParams, geo: LureGeometry): PrintChec
   // les logements internes viennent y prendre.
   const profile = createProfile(params);
   let thinnest = Infinity;
+  // Sur un corps anatomique, le bout du pedoncule est la racine de la
+  // caudale : une lame voulue fine, enveloppee par la nageoire. La paroi se
+  // mesure donc sur le corps, avant cette racine.
+  const end = profile.anatomy && profile.hasFin ? profile.bodyEnd * 0.95 : profile.bodyEnd;
   for (let i = 1; i < 60; i++) {
-    const p = (i / 60) * profile.bodyEnd;
+    const p = (i / 60) * end;
     const section = profile.section(p);
     const girth = Math.min(section.halfWidth * 2, section.top - section.bottom);
     if (girth > 0.02) thinnest = Math.min(thinnest, girth);
