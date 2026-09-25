@@ -18,6 +18,8 @@ import { bibShape, clipHalfPlane } from './billTemplate';
 import { createSurfaceDetail } from './surfaceDetail';
 import { buildCaudalFin, sectionPoint } from './anatomy';
 import { meshGeometry, releaseGeometry } from './meshBody';
+import { propellerParts, type PropellerParts } from './propeller';
+import { propellerActive } from './throughWire';
 import {
   articulationPlan,
   buildJointHardware,
@@ -158,6 +160,11 @@ export interface LureGeometry {
   /** Quincaillerie : affichee et pesee, mais jamais exportee a l'impression. */
   clip: ClipPart | null;
   ballasts: BallastMarker[];
+  /**
+   * Helice de queue et perle d'espacement (module AP.1), ou null : pieces
+   * imprimees a part, affichees en place sur leur axe.
+   */
+  propeller: PropellerParts | null;
   /** Encombrement reel en mm (bavette comprise). */
   bounds: { length: number; width: number; height: number };
   dispose: () => void;
@@ -657,9 +664,11 @@ export function ballastMarkers(
     const section = profile.section(p);
     const volume = Math.max(ballast.mass, 0.01) / Math.max(density, 0.5);
     // A masse egale, le cylindre loge dans une section plus fine que la bille.
+    // Cylindre de longueur 2 x ratio x rayon : V = pi r2 L = 2 ratio pi r3. Le
+    // facteur 2 manquait — la piece dessinee pesait le double de sa masse.
     const radius =
       ballast.shape === 'cylinder'
-        ? Math.cbrt(volume / (CYLINDER_RATIO * Math.PI)) 
+        ? Math.cbrt(volume / (2 * CYLINDER_RATIO * Math.PI))
         : Math.cbrt((3 * volume) / (4 * Math.PI));
     const length = ballast.shape === 'cylinder' ? radius * 2 * CYLINDER_RATIO : 0;
     const h = clamp(ballast.height, -1, 1);
@@ -747,11 +756,12 @@ export function buildLure(
   const bibIsGhost = params.hasBib && params.billMode === 'polycarbonate';
   const tail = profile.hasFin ? buildTailFin(profile, params) : null;
   const clip = buildClip(profile, params.clip);
+  const propeller = propellerActive(params) ? propellerParts(params, profile) : null;
 
   const box = new THREE.Box3();
   body.computeBoundingBox();
   if (body.boundingBox) box.union(body.boundingBox);
-  for (const part of [bibIsGhost ? null : bib, tail]) {
+  for (const part of [bibIsGhost ? null : bib, tail, propeller?.propeller ?? null, propeller?.bead ?? null]) {
     if (!part) continue;
     part.computeBoundingBox();
     if (part.boundingBox) box.union(part.boundingBox);
@@ -770,6 +780,7 @@ export function buildLure(
     tail,
     clip,
     ballasts: ballastMarkers(profile, params.ballasts, params.ballastDensity),
+    propeller,
     bounds: {
       length: size.x * 10,
       width: size.z * 10,
@@ -785,6 +796,8 @@ export function buildLure(
       bib?.dispose();
       tail?.dispose();
       clip?.geometry.dispose();
+      propeller?.propeller.dispose();
+      propeller?.bead.dispose();
     },
   };
 }

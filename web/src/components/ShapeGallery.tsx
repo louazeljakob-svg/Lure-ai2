@@ -90,8 +90,9 @@ export function ShapeGallery({
       </div>
 
       <p className="gallery__lead">
-        Deux familles, une entree chacune — les variantes sont des reglages, et les corps trapus,
-        fuseles ou a face creusee s obtiennent aux curseurs de forme. Chaque modele
+        Six familles, une entree chacune, chacune pour une geometrie qui lui est propre — helice
+        rotative, section circulaire, chambre de billes, lest ventral integre. Les variantes sont
+        des reglages. Chaque modele
         arrive fonctionnel : armature anatomique (pedoncule, opercule en relief, orbites
         creusees, nageoires), deux demi-coques vissees avec ergots et gorge de colle,
         goupilles aux attaches, lest place, verdict de flottabilite valide.

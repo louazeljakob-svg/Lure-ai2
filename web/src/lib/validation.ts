@@ -46,6 +46,7 @@ import type {
   TackleMount,
   TackleSource,
   ThroughWireConfig,
+  PropellerConfig,
   WireMaterialId,
   InlayShape,
   JointHardware,
@@ -85,7 +86,7 @@ const INLAY_SHAPES: InlayShape[] = ['custom', 'oval', 'teardrop', 'band', 'flank
 const FINISH_STYLES: FinishStyle[] = ['smooth', 'faceted'];
 const PREVIEWS: PreviewQuality[] = ['low', 'medium', 'high'];
 
-const SHAPES: ShapeId[] = ['minnow', 'lipless', 'spoon'];
+const SHAPES: ShapeId[] = ['minnow', 'lipless', 'plopper', 'pencil', 'nageur', 'souple', 'spoon'];
 
 /**
  * Identifiants des bibliotheques precedentes.
@@ -695,6 +696,21 @@ function sanitizeThroughWire(value: unknown, fallback: ThroughWireConfig): Throu
 }
 
 
+/** Helice de queue : absente d'un projet anterieur au module AP. */
+function sanitizePropeller(value: unknown, fallback: PropellerConfig): PropellerConfig {
+  const raw = (value ?? {}) as Partial<PropellerConfig>;
+  return {
+    enabled: bool(raw.enabled, fallback.enabled),
+    blades: raw.blades === 1 || raw.blades === 2 ? raw.blades : fallback.blades,
+    diameter: num(raw.diameter, LIMITS.propDiameter, fallback.diameter),
+    bladeAngle: num(raw.bladeAngle, LIMITS.propAngle, fallback.bladeAngle),
+    bladeThickness: num(raw.bladeThickness, LIMITS.propBlade, fallback.bladeThickness),
+    hubLength: num(raw.hubLength, LIMITS.propHub, fallback.hubLength),
+    beadDiameter: num(raw.beadDiameter, LIMITS.beadDiameter, fallback.beadDiameter),
+    beadPrinted: bool(raw.beadPrinted, fallback.beadPrinted),
+  };
+}
+
 /** Nervures transversales : absentes d'un projet anterieur au module O. */
 function sanitizeRibs(value: unknown, fallback: RibConfig): RibConfig {
   const raw = (value ?? {}) as Partial<RibConfig>;
@@ -852,6 +868,9 @@ export function sanitizeParams(input: unknown): LureParams {
     shell: sanitizeShell(raw.shell, base.shell),
     insert: sanitizeInsert(raw.insert, base.insert),
     throughWire: sanitizeThroughWire(raw.throughWire, base.throughWire),
+    // Un projet anterieur n'a pas d'helice : celle de sa famille, desactivee
+    // hors Whopper_Plopper, s'applique.
+    propeller: sanitizePropeller(raw.propeller, base.propeller),
     catalogue: sanitizeCatalogue(raw.catalogue, base.catalogue),
     mounts: sanitizeMounts(raw.mounts, base.mounts),
     paint: {

@@ -9,12 +9,17 @@
  */
 
 export type ShapeId =
-  // Les deux familles de la bibliotheque (module AH). Une variante — minnow
-  // nervure, suspendu, vibe de traine — est un REGLAGE de sa famille, pas une
-  // entree de plus. Les autres corps (trapu, fusele, face creusee) restent
-  // atteignables par les curseurs de forme.
+  // Les six familles de la bibliotheque (modules AH et AO). Une variante —
+  // minnow nervure, suspendu, vibe de traine — est un REGLAGE de sa famille,
+  // pas une entree de plus. Chaque famille ajoutee porte une geometrie
+  // reellement distincte : helice rotative, section circulaire, chambre de
+  // billes, lest ventral integre.
   | 'minnow'
   | 'lipless'
+  | 'plopper'
+  | 'pencil'
+  | 'nageur'
+  | 'souple'
   // Cuiller : forme historique sans tete, conservee pour rouvrir les anciens
   // projets a l'identique. Elle ne figure plus dans la bibliotheque.
   | 'spoon';
@@ -371,6 +376,32 @@ export interface ThroughWireConfig {
   bellyExits: number;
   /** Position de chaque sortie ventrale, en fraction de la longueur. */
   bellyPositions: number[];
+}
+
+/**
+ * Helice rotative de queue — module AP.1.
+ *
+ * Piece imprimee a part, enfilee sur le fil traversant qui lui sert d'axe,
+ * separee du corps par une perle d'espacement. Les jeux ne sont PAS saisis
+ * ici : ce sont ceux des cylindres de retention (jeu de boucle), une seule
+ * table de tolerances pour tout le logiciel.
+ */
+export interface PropellerConfig {
+  enabled: boolean;
+  /** Nombre de pales. */
+  blades: 1 | 2;
+  /** Diametre hors-tout de l'helice, en mm. */
+  diameter: number;
+  /** Angle de pale a 70 % du rayon, mesure depuis le plan de rotation, en degres. */
+  bladeAngle: number;
+  /** Epaisseur de pale, en mm. */
+  bladeThickness: number;
+  /** Longueur du moyeu, en mm. */
+  hubLength: number;
+  /** Diametre de la perle d'espacement, en mm. */
+  beadDiameter: number;
+  /** Perle imprimee (exportee) ou achetee (pesee, listee dans la fiche de montage). */
+  beadPrinted: boolean;
 }
 
 /** Materiaux de fil, partages entre le montage traversant et le simulateur. */
@@ -1060,6 +1091,8 @@ export interface LureParams {
   // --- Montage traversant (module P) --------------------------------------
   /** Fil unique de bout en bout, en plus des modes d'ancrage existants. */
   throughWire: ThroughWireConfig;
+  /** Helice rotative de queue, montee sur le fil traversant (module AP.1). */
+  propeller: PropellerConfig;
 
   // --- Quincaillerie pesee (module Q) -------------------------------------
   /**

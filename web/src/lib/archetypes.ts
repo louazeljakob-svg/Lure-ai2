@@ -53,12 +53,12 @@ export interface Archetype {
 }
 
 /**
- * Les deux familles de la bibliotheque — modules AB et AH.
+ * Les six familles de la bibliotheque — modules AB, AH et AO.
  *
  * Une entree par famille : ce qui n'est qu'une variante (minnow nervure,
- * suspendu, vibe de traine) est un reglage de sa famille. Crankbait, deep
- * diver, popper, stickbait et swimbait ont quitte la bibliotheque (module
- * AH) ; leurs corps restent atteignables par les curseurs de forme.
+ * suspendu, vibe de traine) est un reglage de sa famille. Chaque famille
+ * ajoutee au module AO porte une geometrie reellement distincte : helice
+ * rotative, section circulaire, chambre de billes, lest ventral integre.
  */
 export const ARCHETYPES: Archetype[] = [
   {
@@ -76,7 +76,7 @@ export const ARCHETYPES: Archetype[] = [
   },
   {
     shape: 'lipless',
-    rank: 6,
+    rank: 2,
     family: 'Lipless / vibe',
     action: 'Vibration serree a la descente comme a la recuperation.',
     actionTag: 'vibration',
@@ -86,6 +86,62 @@ export const ARCHETYPES: Archetype[] = [
     lengths: [50, 110],
     slenderness: [2.5, 3.5],
     tie: 'Attache dorsale',
+  },
+  {
+    shape: 'plopper',
+    rank: 3,
+    family: 'Whopper_Plopper',
+    action: 'Nage de surface en ligne droite, l helice de queue brasse et projette l eau.',
+    actionTag: 'surface',
+    hasBib: false,
+    articulated: false,
+    buoyancy: 'float',
+    lengths: [90, 180],
+    slenderness: [4.5, 5.5],
+    tie: 'Attache de nez, fil traversant jusqu a l helice',
+    caveat:
+      'Les vis montent du ventre mais s arretent sous l axe : l ecrou se loge sous le canal du fil traversant, d ou des vis courtes.',
+  },
+  {
+    shape: 'pencil',
+    rank: 4,
+    family: 'Pencil',
+    action: 'Walking the dog en surface, lance tres loin grace au lest arriere.',
+    actionTag: 'lacet',
+    hasBib: false,
+    articulated: false,
+    buoyancy: 'float',
+    lengths: [50, 120],
+    slenderness: [3, 4.5],
+    tie: 'Attache de nez, oeillet de queue',
+  },
+  {
+    shape: 'nageur',
+    rank: 5,
+    family: 'Poisson nageur',
+    action: 'Plonge sous la grande bavette et tient sa profondeur, arrets suspendus.',
+    actionTag: 'roulis',
+    hasBib: true,
+    articulated: false,
+    buoyancy: 'suspend',
+    lengths: [80, 140],
+    slenderness: [4, 5],
+    tie: 'Attache de nez, grande bavette polycarbonate en sandwich',
+  },
+  {
+    shape: 'souple',
+    rank: 6,
+    family: 'Souple',
+    action: 'Descend droit, s anime a la canne par tirees et relachers.',
+    actionTag: 'glide',
+    hasBib: false,
+    articulated: false,
+    buoyancy: 'sink',
+    lengths: [70, 150],
+    slenderness: [3.8, 4.8],
+    tie: 'Attache dorsale ou de nez',
+    caveat:
+      'Coques en TPU : serrez la visserie sans forcer — une tete fraisee s enfonce dans la matiere souple — et collez a la cyanoacrylate avec primaire.',
   },
 ];
 

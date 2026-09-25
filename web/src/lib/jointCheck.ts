@@ -324,3 +324,64 @@ export function jointTravel(
       : null;
   return { wanted, free: Math.min(free, wanted), first, hits };
 }
+
+// ---------------------------------------------------------------------------
+// Balayage de rotation autour d'un axe (helice, module AP.1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Obstacle fixe d'un balayage de rotation : il rend la distance SIGNEE d'un
+ * point a sa surface, en cm — negative quand le point est dans la matiere.
+ */
+export interface SweepObstacle {
+  label: string;
+  remedy: string;
+  distance: (x: number, y: number, z: number) => number;
+}
+
+/**
+ * La machinerie du joint, appliquee a une piece qui tourne sur un axe : les
+ * sommets de la piece mobile tournent autour de l'axe x par pas constant,
+ * chaque obstacle fixe mesure sa penetration, et la premiere interference de
+ * chaque couple piece / obstacle est retenue avec son angle, sa profondeur
+ * et sa correction — exactement comme `jointTravel`.
+ */
+export function sweepRotation(options: {
+  part: string;
+  points: [number, number, number][];
+  obstacles: SweepObstacle[];
+  stepDeg: number;
+  turnDeg: number;
+}): { steps: number; hits: JointHit[]; minGap: Record<string, number> } {
+  const { part, points, obstacles, stepDeg, turnDeg } = options;
+  const hits: JointHit[] = [];
+  const seen = new Set<string>();
+  const minGap: Record<string, number> = {};
+  for (const obstacle of obstacles) minGap[obstacle.label] = Infinity;
+  const steps = Math.max(Math.round(turnDeg / stepDeg), 1);
+  for (let k = 0; k < steps; k++) {
+    const angle = THREE.MathUtils.degToRad(k * stepDeg);
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    for (const [px, py, pz] of points) {
+      const y = py * cos - pz * sin;
+      const z = py * sin + pz * cos;
+      for (const obstacle of obstacles) {
+        const gap = obstacle.distance(px, y, z);
+        if (gap < minGap[obstacle.label]) minGap[obstacle.label] = gap;
+        if (gap < -1e-6 && !seen.has(obstacle.label)) {
+          seen.add(obstacle.label);
+          hits.push({
+            angleDeg: k * stepDeg,
+            part,
+            against: obstacle.label,
+            depthMm: -gap / MM_TO_CM,
+            remedy: obstacle.remedy,
+            limiting: true,
+          });
+        }
+      }
+    }
+  }
+  return { steps, hits, minGap };
+}

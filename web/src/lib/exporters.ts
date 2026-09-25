@@ -34,11 +34,21 @@ import { buildStepFile } from './step';
 import { encodeMeshBody, meshBodyOf, restoreMeshBody } from './meshBody';
 
 /** Piece a exporter : ensemble assemble, ou l'une des deux coques. */
-export type ExportKind = 'assembly' | 'male' | 'female' | 'insert' | 'softTail' | 'bib';
+export type ExportKind =
+  | 'assembly'
+  | 'male'
+  | 'female'
+  | 'insert'
+  | 'softTail'
+  | 'bib'
+  | 'propeller'
+  | 'bead';
 
 export const EXPORT_LABEL: Record<ExportKind, string> = {
   assembly: 'assemble-visualisation',
   bib: 'bavette',
+  propeller: 'helice',
+  bead: 'perle',
   insert: 'insert',
   softTail: 'queue-souple',
   male: 'male',
@@ -86,6 +96,16 @@ export function collectParts(
     return { parts, owned };
   }
 
+  // Helice et perle (module AP.1) : pieces imprimees a part, chacune sous son
+  // nom. Une perle achetee ne sort pas : c'est de la quincaillerie.
+  if (kind === 'propeller' || kind === 'bead') {
+    const parts3 = geo.propeller;
+    if (!parts3) return { parts, owned };
+    if (kind === 'propeller') parts.push(parts3.propeller);
+    else if (params.propeller.beadPrinted) parts.push(parts3.bead);
+    return { parts, owned };
+  }
+
   // La bavette polycarbonate ne s'imprime pas : elle ne rejoint jamais les
   // coques. Elle sort pourtant en piece distincte (module AM) — la meme
   // plaque, pour controle et visualisation, son gabarit de decoupe restant le
@@ -118,6 +138,9 @@ export function collectParts(
     const bib = assemblyActive(params) ? geo.bib : printedBib;
     if (bib) parts.push(bib);
     if (geo.tail) parts.push(geo.tail);
+    // Helice et perle en place sur leur axe : la vue assemblee montre le
+    // leurre complet.
+    if (geo.propeller) parts.push(geo.propeller.propeller, geo.propeller.bead);
     return { parts, owned };
   }
 
@@ -288,10 +311,14 @@ export function printableParts(
    * relief (ergots, goujons) vers le haut. L'ecart d'epaisseur entre les deux
    * se lit alors directement sur la cote Z des deux STL.
    */
-  shellPlaneAngle: number | null = null,
+  shellPlaneAngle: number | 'axial' | null = null,
 ): THREE.BufferGeometry[] {
   const place =
-    shellPlaneAngle === null
+    shellPlaneAngle === 'axial'
+      ? // Piece de revolution (helice, perle) : debout sur la face de moyeu,
+        // l'axe sur Z.
+        new THREE.Matrix4().makeRotationY(-Math.PI / 2).premultiply(new THREE.Matrix4().makeScale(10, 10, 10))
+      : shellPlaneAngle === null
       ? new THREE.Matrix4().makeRotationX(Math.PI / 2).premultiply(new THREE.Matrix4().makeScale(10, 10, 10))
       : new THREE.Matrix4()
           .makeRotationX(-THREE.MathUtils.degToRad(shellPlaneAngle))
@@ -317,8 +344,12 @@ const fileSuffix = (params: LureParams, kind: ExportKind): string =>
   kind === 'assembly' ? (assemblyActive(params) ? `-${EXPORT_LABEL.assembly}` : '') : `-${EXPORT_LABEL[kind]}`;
 
 /** Angle du plan de joint si la piece est une demi-coque, sinon null. */
-const shellAngle = (params: LureParams, kind: ExportKind): number | null =>
-  (kind === 'male' || kind === 'female') && assemblyActive(params) ? params.assembly.planeAngle : null;
+const shellAngle = (params: LureParams, kind: ExportKind): number | 'axial' | null =>
+  kind === 'propeller' || kind === 'bead'
+    ? 'axial'
+    : (kind === 'male' || kind === 'female') && assemblyActive(params)
+      ? params.assembly.planeAngle
+      : null;
 
 /**
  * Geometrie d'export : toujours a la resolution pleine, ecailles cuites,

@@ -437,6 +437,8 @@ interface Pocket {
    * `depth` d'axe [a, b]. C'est la forme de la chambre de bruit.
    */
   dome?: { a: THREE.Vector2; b: THREE.Vector2 };
+  /** Nom du logement dans les messages de refus (canal du fil, chambre de billes). */
+  label?: string;
   /** Matiere laissee au niveau du joint : embase du goujon, ou collerette. */
   island?: THREE.Vector2[];
   /** Percage plus profond dans le fond : logement du goujon male. */
@@ -588,6 +590,29 @@ export interface HollowReport {
   notes: string[];
 }
 
+/** Chambre de billes validee ou refusee, avec les positions extremes du train de billes. */
+export interface ChamberReport {
+  valid: boolean;
+  problem: string | null;
+  /** Axe du tube dans le plan de joint (x, hauteur), en cm. */
+  a: THREE.Vector2;
+  b: THREE.Vector2;
+  radius: number;
+  ballRadius: number;
+  count: number;
+  /** Course libre du train de billes, en mm. */
+  travelMm: number;
+  /** Jeu diametral bille / chambre, en mm. */
+  fitMm: number;
+  /** Masse d'une bille inox, en g. */
+  massEach: number;
+  /** Centres des billes (monde, cm) : tassees a l'avant, a l'arriere, au repos. */
+  front: [number, number, number][];
+  rear: [number, number, number][];
+  rest: [number, number, number][];
+  restAt: 'front' | 'rear' | 'middle';
+}
+
 export interface AssemblyResult {
   /** Chambres de lest, une par lest. */
   ballastSeats: BallastSeatReport[];
@@ -604,8 +629,12 @@ export interface AssemblyResult {
   tenons: THREE.BufferGeometry | null;
   /** Volume des portees, rendu en surbrillance pour verification visuelle. */
   socketPreview: THREE.BufferGeometry | null;
-  /** Billes libres de la chambre de bruit, pour la masse et l'affichage. */
+  /** Billes libres de la chambre de bruit, au repos, pour la masse et l'affichage. */
   rattles: { position: [number, number, number]; radius: number; mass: number }[];
+  /** Chambre de billes : controle, course, billes tassees avant / arriere (module AP.2). */
+  chamber: ChamberReport | null;
+  /** Pourquoi la chambre de billes est refusee, le cas echeant. */
+  chamberProblem: string | null;
   /** Plan du fil traversant, ou null si le montage n'est pas retenu. */
   throughWire: ThroughWirePlan | null;
   /** Goupilles modelisees, une par ancrage. */
@@ -2655,6 +2684,24 @@ export function buildAssembly(
       cutRear = true;
     }
   }
+  // Montage traversant : le fil sort par les deux pointes, exactement comme
+  // une goupille de nez ou de queue. La pointe est donc coupee la ou la
+  // section loge le canal avec sa peau — sinon la gorge ne deboucherait
+  // nulle part et l'axe d'helice resterait prisonnier du corps.
+  if (wireTakesEnds) {
+    const w = ((params.throughWire.wireMm + params.throughWire.clearanceMm) * MM_TO_CM) / 2;
+    for (const front of [true, false]) {
+      const cut = pointCut(0, w, front);
+      if (cut === null) continue;
+      if (front) {
+        pStart = Math.max(pStart, cut);
+        cutFront = true;
+      } else {
+        pEnd = Math.min(pEnd, cut);
+        cutRear = true;
+      }
+    }
+  }
   // --- Fente de bavette : empreinte de la plaque ---------------------------
   // Le trace suit l'inclinaison de la bavette dans le plan vertical : il n'a
   // de sens que si le plan de joint est lui aussi vertical. La coupe imposee
@@ -3172,7 +3219,12 @@ export function buildAssembly(
     return new THREE.Vector2(station.x, t);
   };
 
+  // Le tube n'est que PROPOSE ici : il se valide plus bas, une fois poses
+  // les passages de vis, les portees de goupille et le canal traversant
+  // qu'il ne doit ni couper ni traverser (module AP.2).
   const chamber = params.chamber;
+  let chamberAxis: { a: THREE.Vector2; b: THREE.Vector2; radius: number } | null = null;
+  let chamberProblem: string | null = null;
   if (chamber.enabled) {
     const radius = (chamber.diameter * MM_TO_CM) / 2;
     const pA = Math.min(Math.max(chamber.fromPosition, 0.03), profile.bodyEnd - 0.03);
@@ -3182,19 +3234,12 @@ export function buildAssembly(
     const a = stationA ? fitCavity(stationA, chamber.fromHeight, radius) : null;
     const b = stationB ? fitCavity(stationB, chamber.toHeight, radius) : null;
     if (a && b && a.distanceTo(b) > radius * 0.3) {
-      pockets.push({ outline: capsuleOutline(a, b, radius), depth: radius, dome: { a, b } });
-      const ballRadius = (chamber.ball * MM_TO_CM) / 2;
-      const count = Math.max(1, Math.min(Math.round(chamber.balls), 6));
-      for (let i = 0; i < count; i++) {
-        const u = count === 1 ? 0.5 : 0.2 + (0.6 * i) / (count - 1);
-        const point = a.clone().lerp(b, u);
-        const world = frame.toWorld(point.y, 0);
-        rattles.push({
-          position: [point.x, world.y, world.z],
-          radius: ballRadius,
-          mass: (4 / 3) * Math.PI * ballRadius ** 3 * STAINLESS,
-        });
-      }
+      chamberAxis = { a, b, radius };
+    } else {
+      const where = !a ? pA : pB;
+      chamberProblem =
+        `La chambre de ${chamber.diameter.toFixed(1)} mm ne tient pas a ${(where * params.length).toFixed(0)} mm du nez ` +
+        `avec ${(WALL / MM_TO_CM).toFixed(1)} mm de paroi : le corps y est trop mince. Reduisez son diametre ou deplacez-la vers la section maitresse.`;
     }
   }
 
@@ -3221,12 +3266,11 @@ export function buildAssembly(
         radius: pocketReach(plan),
         label: `la portee de ${EXIT_LABEL[plan.exit].toLowerCase()}`,
       })),
-    ...rattles.map((ball) => ({
-      center: new THREE.Vector2(ball.position[0], ball.position[1]),
-      radius: ball.radius + WALL,
-      label: 'un logement de bille',
-    })),
   ];
+  // Les vis ne contournent pas la chambre : c'est la chambre qui s'efface
+  // devant une vis (plus bas). Une vis porte l'assemblage, une chambre de
+  // bruit est un accessoire.
+  const screwObstacles = [...dowelObstacles];
   if (params.chamber.enabled) {
     const from = fitCavity(
       stationAt(stations, profile.xAt(params.chamber.fromPosition)) ?? stations[0],
@@ -3262,7 +3306,7 @@ export function buildAssembly(
   const screwPlans = planScrews(
     profile,
     params,
-    dowelObstacles.map((item) => ({ center: item.center, radius: item.radius, label: item.label })),
+    screwObstacles.map((item) => ({ center: item.center, radius: item.radius, label: item.label })),
   );
   const LEDGE_X = 0.02;
   for (const screw of screwPlans) {
@@ -3291,6 +3335,20 @@ export function buildAssembly(
       const middle = Math.round((iStart + iEnd) / 2);
       iStart = middle - 1;
       iEnd = middle + 1;
+    }
+    // Montage traversant : le canal du fil court sur l'axe, dans le plan de
+    // joint. La vis monte du ventre ; son ecrou doit s'arreter SOUS le canal,
+    // avec sa paroi — sinon la fente de vis couperait le passage du fil.
+    if (wireTakesEnds) {
+      const channel = ((params.throughWire.wireMm + params.throughWire.clearanceMm) * MM_TO_CM) / 2;
+      if (screw.nut.toY > -(channel + WALL)) {
+        screw.valid = false;
+        screw.problem =
+          `Vis a ${((screw.x - profile.xAt(0)) / MM_TO_CM).toFixed(0)} mm : son ecrou monte jusqu au canal du fil ` +
+          `traversant (${((screw.nut.toY + channel + WALL) / MM_TO_CM).toFixed(1)} mm de trop). Prenez une vis plus courte : ` +
+          'l ecrou doit rester sous l axe.';
+        continue;
+      }
     }
     const clash = finOnRail(screw.x - halfX, screw.x + halfX, 'lo');
     if (clash) {
@@ -3475,7 +3533,7 @@ export function buildAssembly(
     if (last > first && x1 - x0 > r) {
       const a = new THREE.Vector2(x0, 0);
       const b = new THREE.Vector2(x1, 0);
-      pockets.push({ outline: capsuleOutline(a, b, r), depth: r, dome: { a, b } });
+      pockets.push({ outline: capsuleOutline(a, b, r), depth: r, dome: { a, b }, label: 'le canal du fil traversant' });
 
       // Sorties de nez et de queue : une encoche rectangulaire dans la face
       // de coupe, exactement a la cote du canal, qui vient s'y raccorder.
@@ -3560,6 +3618,164 @@ export function buildAssembly(
   // plan de joint, une demi-bille ou une demi-capsule dans chaque coque. Sa
   // chambre suit le lest la ou l'utilisateur le place ; si elle perce la
   // paroi ou croise un autre logement, elle est refusee et le refus dit ou.
+  // --- Chambre de billes : validation et billes au repos (module AP.2) ------
+  //
+  // Un tube creuse a cheval sur le plan de joint, moitie dans chaque coque.
+  // Il ne doit ni percer la paroi, ni couper un passage de vis, ni traverser
+  // une portee de goupille ou le canal du fil : sinon il est refuse, et le
+  // refus dit pourquoi. Les billes s'achetent — elles pesent et elles
+  // figurent dans la fiche de montage, jamais dans un STL.
+  let chamberReport: ChamberReport | null = null;
+  if (chamberAxis) {
+    const { a, b, radius } = chamberAxis;
+    const ballRadius = Math.min((chamber.ball * MM_TO_CM) / 2, radius);
+    const count = Math.max(1, Math.min(Math.round(chamber.balls), 20));
+    const length = a.distanceTo(b);
+    const dir = b.clone().sub(a).normalize();
+    const reachEnd = radius - ballRadius;
+    const travel = length + 2 * reachEnd - 2 * ballRadius * count;
+    const fromNose = (x: number) => ((x - profile.xAt(0)) / MM_TO_CM).toFixed(0);
+    const refuseChamber = (problem: string) => {
+      chamberProblem = problem;
+    };
+    if (travel < -1e-6) {
+      refuseChamber(
+        `Les ${count} billes de ${chamber.ball.toFixed(1)} mm ne tiennent pas dans la chambre : il manque ` +
+          `${(-travel / MM_TO_CM).toFixed(1)} mm de longueur. Allongez la chambre ou retirez une bille.`,
+      );
+    }
+    // Paroi : le tube reste entoure de matiere sur toute sa longueur, pas
+    // seulement a ses deux bouts.
+    if (!chamberProblem) {
+      const samples = Math.max(8, Math.ceil((length + 2 * radius) / (radius * 0.5)));
+      for (let k = 0; k <= samples && !chamberProblem; k++) {
+        const xs = Math.min(a.x, b.x) - radius + ((Math.abs(b.x - a.x) + 2 * radius) * k) / samples;
+        const station = stationAt(stations, xs);
+        const u = Math.abs(b.x - a.x) > 1e-9 ? Math.min(Math.max((xs - a.x) / (b.x - a.x), 0), 1) : 0.5;
+        const axis = a.clone().lerp(b, u);
+        const beyond = Math.max(Math.min(a.x, b.x) - xs, xs - Math.max(a.x, b.x), 0);
+        const reach = Math.sqrt(Math.max(radius * radius - beyond * beyond, 0));
+        if (reach <= 1e-4) continue;
+        if (!station || station.degenerate) {
+          refuseChamber(`La chambre deborde du corps a ${fromNose(xs)} mm du nez. Raccourcissez-la.`);
+          break;
+        }
+        const [lo, hi] = stationRange(surface, frame, station);
+        if (axis.y - reach < lo + WALL || axis.y + reach > hi - WALL) {
+          refuseChamber(
+            `La chambre percerait la paroi ${axis.y - reach < lo + WALL ? 'du ventre' : 'du dos'} a ${fromNose(xs)} mm du nez. ` +
+              'Recentrez-la sur l axe ou reduisez son diametre.',
+          );
+        } else if (shellThickness(surface, frame, station, axis.y) < reach + WALL) {
+          refuseChamber(
+            `La chambre percerait le flanc a ${fromNose(xs)} mm du nez : le corps n y a pas ` +
+              `${((reach + WALL) * 2 / MM_TO_CM).toFixed(1)} mm d epaisseur. Reduisez son diametre ou deplacez-la.`,
+          );
+        }
+      }
+    }
+    // Portees de goupille : distance du puits a l'axe du tube.
+    const segmentDistance = (point: THREE.Vector2) => {
+      const t = Math.min(Math.max(point.clone().sub(a).dot(dir), 0), length);
+      return point.distanceTo(a.clone().addScaledVector(dir, t));
+    };
+    if (!chamberProblem) {
+      for (const plan of plans) {
+        if (!plan.valid) continue;
+        if (segmentDistance(plan.center) < radius + pocketReach(plan) + WALL) {
+          refuseChamber(
+            `La chambre traverserait la portee de goupille ${EXIT_LABEL[plan.exit].toLowerCase()} a ` +
+              `${fromNose(plan.center.x)} mm du nez. Deplacez la chambre ou l ancrage.`,
+          );
+          break;
+        }
+      }
+    }
+    // Passages de vis : la fente monte du ventre jusqu'a l'ecrou, sur toute la
+    // hauteur utile — tout tube qui la croise en x la coupe.
+    if (!chamberProblem) {
+      for (const screw of screwPlans) {
+        if (!screw.valid) continue;
+        const halfX = Math.max(screw.headSeat.radius, screw.nut.across / 2, screw.boreRadius) + WALL;
+        const lo = Math.min(a.x, b.x) - radius;
+        const hi = Math.max(a.x, b.x) + radius;
+        const tLo = Math.min(a.y, b.y) - radius;
+        const tHi = Math.max(a.y, b.y) + radius;
+        if (screw.x + halfX > lo && screw.x - halfX < hi && tHi > screw.bellyY && tLo < screw.nut.toY) {
+          refuseChamber(
+            `La chambre couperait le passage de la vis ${screw.spec.size} a ${fromNose(screw.x)} mm du nez. ` +
+              'Raccourcissez la chambre ou deplacez la vis hors de sa longueur.',
+          );
+          break;
+        }
+      }
+    }
+    // Tout autre logement deja creuse : canal traversant, sorties, fente.
+    if (!chamberProblem) {
+      const outline = capsuleOutline(a, b, radius);
+      const others: { polygon: THREE.Vector2[]; label: string }[] = [
+        ...pockets.map((pocket) => ({
+          polygon: pocket.outline,
+          label: pocket.label ?? 'un logement de quincaillerie',
+        })),
+        ...maleSides.map((exit) => ({ polygon: exit.path, label: exit.rail === 'lo' ? 'un passage ventral' : 'un passage dorsal' })),
+        ...maleEnds.map((exit) => ({ polygon: exit.path, label: exit.end === 'front' ? 'la sortie de nez' : 'la sortie de queue' })),
+        ...chinSlots.map((slot) => ({ polygon: [slot.back[0], slot.back[1]], label: 'la fente de bavette' })),
+      ];
+      for (const other of others) {
+        const gap = Math.min(
+          ...outline.map((point) => polygonDistance(other.polygon, point)),
+          ...other.polygon.map((point) => polygonDistance(outline, point)),
+        );
+        if (gap < WALL) {
+          refuseChamber(`La chambre croise ${other.label}. Deplacez-la le long du corps ou en hauteur.`);
+          break;
+        }
+      }
+    }
+
+    // Billes tassees a l'avant, a l'arriere, et au repos.
+    const train = (start: number, step: number): [number, number, number][] => {
+      const out: [number, number, number][] = [];
+      for (let i = 0; i < count; i++) {
+        const point = a.clone().addScaledVector(dir, start + step * i);
+        const world = frame.toWorld(point.y, 0);
+        out.push([point.x, world.y, world.z]);
+      }
+      return out;
+    };
+    const front = train(-reachEnd, 2 * ballRadius);
+    const rear = train(length + reachEnd, -2 * ballRadius);
+    const yA = frame.toWorld(a.y, 0).y;
+    const yB = frame.toWorld(b.y, 0).y;
+    // Au repos, le train de billes roule vers le bout le plus bas du tube ;
+    // un tube horizontal les laisse au milieu de leur course.
+    const restAt: ChamberReport['restAt'] = yB < yA - 0.02 ? 'rear' : yA < yB - 0.02 ? 'front' : 'middle';
+    const middle = train(-reachEnd + Math.max(travel, 0) / 2, 2 * ballRadius);
+    const rest = restAt === 'rear' ? rear : restAt === 'front' ? front : middle;
+    const massEach = (4 / 3) * Math.PI * ballRadius ** 3 * STAINLESS;
+    chamberReport = {
+      valid: !chamberProblem,
+      problem: chamberProblem,
+      a,
+      b,
+      radius,
+      ballRadius,
+      count,
+      travelMm: Math.max(travel, 0) / MM_TO_CM,
+      fitMm: ((radius - ballRadius) * 2) / MM_TO_CM,
+      massEach,
+      front,
+      rear,
+      rest,
+      restAt,
+    };
+    if (!chamberProblem) {
+      pockets.push({ outline: capsuleOutline(a, b, radius), depth: radius, dome: { a, b }, label: 'la chambre de billes' });
+      for (const position of rest) rattles.push({ position, radius: ballRadius, mass: massEach });
+    }
+  }
+
   const ballastSeats: BallastSeatReport[] = [];
   const seatPockets = new Map<string, Pocket>();
   /**
@@ -3616,7 +3832,9 @@ export function buildAssembly(
         .filter((pocket) => pocket !== seatPockets.get(marker.id))
         .map((pocket) => ({
           polygon: pocket.outline,
-          label: [...seatPockets.values()].includes(pocket) ? 'la chambre d un autre lest' : pocket.dome ? 'la chambre de bruit' : 'un logement de quincaillerie',
+          label: [...seatPockets.values()].includes(pocket)
+            ? 'la chambre d un autre lest'
+            : pocket.label ?? (pocket.dome ? 'la chambre de bruit' : 'un logement de quincaillerie'),
         })),
       ...maleSides.map((exit) => ({ polygon: exit.path, label: exit.rail === 'lo' ? 'un passage ventral (vis ou goupille)' : 'un passage dorsal' })),
       ...maleEnds.map((exit) => ({ polygon: exit.path, label: exit.end === 'front' ? 'la sortie de nez' : 'la sortie de queue' })),
@@ -3771,27 +3989,33 @@ export function buildAssembly(
       }
       // Le logement femelle doit garder sa peau : on cherche la hauteur ou
       // la coque est la plus epaisse, entre les deux rails.
-      let bestT = (lo + hi) / 2;
-      let bestRoom = -1;
+      const heights: { t: number; room: number }[] = [];
       for (let j = 0; j <= 8; j++) {
         const t = lo + rimKeep + ((hi - lo - 2 * rimKeep) * j) / 8;
-        const room = thicknessAt(station, t);
-        if (room > bestRoom) {
-          bestRoom = room;
-          bestT = t;
+        heights.push({ t, room: thicknessAt(station, t) });
+      }
+      // La plus epaisse d'abord. Un fil traversant occupe l'axe sur toute la
+      // longueur : l'ergot se decale alors vers la hauteur libre suivante
+      // plutot que de renoncer a la station.
+      heights.sort((a, b) => b.room - a.room);
+      const tries = wireTakesEnds ? heights : heights.slice(0, 1);
+      let placed = false;
+      for (const { t, room } of tries) {
+        if (room < height + clearance + SKIN) {
+          note('coque trop mince pour le logement');
+          break;
         }
+        const center = new THREE.Vector2(station.x, t);
+        const near = clearanceTo(center);
+        if (near.distance < keepOut) {
+          note(near.label);
+          continue;
+        }
+        candidates.push({ center, score: near.distance });
+        placed = true;
+        break;
       }
-      if (bestRoom < height + clearance + SKIN) {
-        note('coque trop mince pour le logement');
-        continue;
-      }
-      const center = new THREE.Vector2(station.x, bestT);
-      const near = clearanceTo(center);
-      if (near.distance < keepOut) {
-        note(near.label);
-        continue;
-      }
-      candidates.push({ center, score: near.distance });
+      if (!placed) continue;
     }
     const chosen: THREE.Vector2[] = [];
     if (candidates.length > 0) {
@@ -4227,6 +4451,8 @@ export function buildAssembly(
     jointPlan: jointResult,
     jointProblem,
     tailSlotProblem,
+    chamber: chamberReport,
+    chamberProblem,
     dowelPins: buildDowelPins(dowels),
     pinSpec: plans[0]?.spec ?? fallback,
     pinMass: pins.reduce((sum, pin) => sum + pin.mass, 0),

@@ -35,6 +35,7 @@ import { headOf, type ScrewPlan } from './screws';
 import type { ArticulationPlan } from './articulation';
 import { dowelVolumes, type DowelPlacement } from './dowels';
 import { planThroughWire, throughWireBlocker } from './throughWire';
+import { PROPELLER_ANCHOR, propellerSweep, type PropellerSweep } from './propeller';
 import {
   buildInsert,
   buildSoftTail,
@@ -122,6 +123,20 @@ export interface PhysicsResult {
   softTailVolumeCm3: number;
   /** Profondeur d'insertion reellement obtenue, en mm. */
   softTailInsertionMm: number;
+  /**
+   * Helice de queue et perle (module AP.1) : masses, inertie axiale et
+   * balayage de rotation au pas de 5 degres. Null sans helice.
+   */
+  propeller: {
+    massG: number;
+    beadMassG: number;
+    volumeCm3: number;
+    /** Moment d'inertie de l'helice autour de son axe, en g.mm2. */
+    axialInertia: number;
+    /** Contribution de l'helice, de la perle et de l'axe au moment de tangage autour du CG, en g.mm2. */
+    pitchInertia: number;
+    sweep: PropellerSweep;
+  } | null;
   /** Masse des hamecons et anneaux affectes depuis le catalogue. */
   tackleMass: number;
   hookMass: number;
@@ -229,21 +244,30 @@ function hardwarePoints(params: LureParams, total: number): PointMass[] {
  * AU point d'accrochage et l'hamecon a mi-longueur SOUS lui, ce qui est la
  * position moyenne d'un hamecon qui pend.
  */
-function tacklePoints(params: LureParams, profile: ProfileSampler): PointMass[] {
+function tacklePoints(
+  params: LureParams,
+  profile: ProfileSampler,
+  /** Boucle de queue derriere l'helice, abscisse en cm, s'il y a une helice. */
+  axleLoopX: number | null = null,
+): PointMass[] {
   const out: PointMass[] = [];
   for (const mount of params.mounts) {
     const resolved = resolveMount(params.catalogue, mount);
     if (resolved.massG <= 0) continue;
     const p = clamp(mount.position, 0.02, profile.bodyEnd - 0.01);
-    const x = profile.xAt(p);
+    // Support monte sur la boucle de queue, derriere l'helice : il pend au
+    // bout de l'axe, pas sur le corps.
+    const onAxle = mount.anchorId === PROPELLER_ANCHOR && axleLoopX !== null;
+    const x = onAxle ? axleLoopX : profile.xAt(p);
     const section = profile.section(p);
     // height : -1 au ventre, 0 sur l'axe, +1 au dos.
-    const surfaceY =
-      mount.height < 0 ? section.bottom * -mount.height : section.top * mount.height;
+    const surfaceY = onAxle
+      ? 0
+      : mount.height < 0 ? section.bottom * -mount.height : section.top * mount.height;
 
     // Un support de queue traine derriere, un support ventral pend dessous :
     // les deux ne deplacent pas le centre de masse dans la meme direction.
-    const trails = mountTrails(mount.position);
+    const trails = onAxle || mountTrails(mount.position);
     if (resolved.ring) {
       out.push({ x, y: surfaceY, mass: resolved.ring.massG });
     }
@@ -396,10 +420,18 @@ export function computePhysics(
       ? planThroughWire(params, profile.lengthCm)
       : null;
   const wireMass = wirePlan ? wirePlan.massG : 0;
+  // Le troncon d'axe d'helice pese derriere la pointe de queue, pas au milieu.
+  const axleMass = wirePlan && wirePlan.wireLengthCm > 0 ? (wireMass * wirePlan.extensionCm) / wirePlan.wireLengthCm : 0;
   const rattleMass = cavities.mass;
+  // Helice et perle (module AP.1) : pesees a LEUR place, sur l'axe derriere
+  // la queue. Leur volume deplace de l'eau comme toute piece immergee.
+  const spin = geo.propeller;
+  const propMass = spin ? spin.propellerMass.massG : 0;
+  const beadMass = spin ? spin.beadMass.massG : 0;
+  const spinVolume = spin ? spin.propellerMass.volumeCm3 + spin.beadMass.volumeCm3 : 0;
   // Quincaillerie affectee depuis le catalogue : hamecons et anneaux, a leur
   // masse reelle et a leur place reelle.
-  const tackle = tacklePoints(params, profile);
+  const tackle = tacklePoints(params, profile, spin ? spin.plan.loop.x + spin.plan.loop.outer : null);
   const tackleMass = tackle.reduce((sum, p) => sum + p.mass, 0);
   const hookMass = params.mounts.reduce(
     (sum, m) => sum + (findTackle(params.catalogue, m.hookId)?.massG ?? 0),
@@ -417,7 +449,9 @@ export function computePhysics(
     pinMass +
     wireMass +
     rattleMass +
-    tackleMass;
+    tackleMass +
+    propMass +
+    beadMass;
 
   // Centre de gravite : corps homogene + billes de lest + quincaillerie.
   const points: PointMass[] = [
@@ -427,8 +461,18 @@ export function computePhysics(
     ...(clipMass > 0 ? [{ x: profile.xAt(0), y: 0, mass: clipMass }] : []),
     // La goupille est logee dans la tete, sur l'axe.
     ...(pinMass > 0 ? [{ x: profile.xAt(0.07), y: 0, mass: pinMass }] : []),
-    // Le fil traversant est reparti sur toute la longueur, donc centre.
-    ...(wireMass > 0 ? [{ x: profile.xAt(0.5), y: 0, mass: wireMass }] : []),
+    // Le fil traversant est reparti sur toute la longueur, donc centre ;
+    // son troncon d'axe d'helice pese derriere la queue.
+    ...(wireMass - axleMass > 0 ? [{ x: profile.xAt(0.5), y: 0, mass: wireMass - axleMass }] : []),
+    ...(axleMass > 0 && spin
+      ? [{ x: (spin.plan.xTail + spin.plan.hub.x1) / 2, y: 0, mass: axleMass }]
+      : []),
+    ...(spin
+      ? [
+          { x: spin.propellerMass.x, y: 0, mass: propMass },
+          { x: spin.beadMass.x, y: 0, mass: beadMass },
+        ]
+      : []),
     // L'insert pese a SA place : c'est ce qui en fait une piece et non un decor.
     ...(insertMass > 0 && insertCentre
       ? [{ x: insertCentre.x, y: insertCentre.y, mass: insertMass }]
@@ -451,7 +495,7 @@ export function computePhysics(
 
   // La queue souple deplace son propre volume : l'oublier ferait couler le
   // leurre sur le papier alors qu'il flotte dans le seau.
-  volume += softTailVolume + bibDisplaced;
+  volume += softTailVolume + bibDisplaced + spinVolume;
   const displacedMass = volume * WATER_DENSITY[water];
   const ratio = displacedMass > 1e-9 ? totalMass / displacedMass : 0;
   const density = volume > 1e-9 ? totalMass / volume : 0;
@@ -581,6 +625,22 @@ export function computePhysics(
         .filter(Boolean)
         .join(', ') || 'Aucune piece rapportee',
     },
+    ...(spin
+      ? [
+          {
+            key: 'propeller',
+            label: 'Helice et perle',
+            massG: propMass + beadMass,
+            provenance: 'geometrie' as const,
+            detail:
+              `helice ${getMaterial(params.material).label} pleine ${spin.propellerMass.volumeCm3.toFixed(2)} cm3, ` +
+              (params.propeller.beadPrinted
+                ? `perle imprimee ${spin.beadMass.volumeCm3.toFixed(2)} cm3`
+                : `perle achetee (verre, estimation) ${beadMass.toFixed(2)} g`) +
+              `, inertie axiale ${spin.propellerMass.axialInertia.toFixed(0)} g.mm2`,
+          },
+        ]
+      : []),
     {
       key: 'manual',
       label: 'Quincaillerie non detaillee',
@@ -594,9 +654,32 @@ export function computePhysics(
     share: totalMass > 1e-9 ? (line.massG / totalMass) * 100 : 0,
   }));
 
+  // Balayage de rotation de l'helice : un tour complet par pas de 5 degres.
+  const sweep = spin ? propellerSweep(params, profile, spin) : null;
+  // Inertie de tangage apportee par l'arriere tournant : masse fois bras de
+  // levier au carre, autour du centre de gravite.
+  const pitchInertia = spin
+    ? [
+        { x: spin.propellerMass.x, m: propMass },
+        { x: spin.beadMass.x, m: beadMass },
+        { x: (spin.plan.xTail + spin.plan.hub.x1) / 2, m: axleMass },
+      ].reduce((sum, item) => sum + item.m * ((item.x - cg.x) * 10) ** 2, 0)
+    : 0;
+
   return {
     volumeCm3: volume,
     solidFraction: fill,
+    propeller:
+      spin && sweep
+        ? {
+            massG: propMass,
+            beadMassG: beadMass,
+            volumeCm3: spinVolume,
+            axialInertia: spin.propellerMass.axialInertia,
+            pitchInertia,
+            sweep,
+          }
+        : null,
     bodyMass,
     ballastMass,
     hardwareMass,
@@ -641,6 +724,16 @@ export function computePhysics(
       billProblem: cavities.billProblem,
       problems: [
         ...cavities.problems,
+        // Helice qui touche : la premiere interference de chaque couple, avec
+        // l'angle et la piece rencontree — comme au joint articule.
+        ...(sweep
+          ? sweep.hits.map((hit) => ({
+              id: `propeller-${hit.against}`,
+              title: 'Helice : interference en rotation',
+              detail:
+                `A ${hit.angleDeg} deg, l helice penetre de ${hit.depthMm.toFixed(2)} mm dans ${hit.against}. ${hit.remedy}`,
+            }))
+          : []),
         // Un projet a corps maille dont le maillage n'est plus en memoire
         // retombe sur le corps de sa famille : tout ce qui suit est calcule
         // sur une autre forme, et il faut le dire.
@@ -756,6 +849,9 @@ function shellContent(
       ...(assembly.jointProblem ? [{ id: 'joint-hinge', title: 'Logement de charniere refuse', detail: assembly.jointProblem }] : []),
       ...(assembly.tailSlotProblem
         ? [{ id: 'tail-slot', title: 'Fente de queue rapportee refusee', detail: assembly.tailSlotProblem }]
+        : []),
+      ...(assembly.chamberProblem
+        ? [{ id: 'chamber', title: 'Chambre de billes refusee', detail: assembly.chamberProblem }]
         : []),
       ...assembly.pegs
         .filter((peg) => !peg.valid && peg.problem)

@@ -17,6 +17,7 @@
 import * as THREE from 'three';
 import type { LureParams, ThroughWireConfig, WireMaterialId } from '../types/lure';
 import { MM_TO_CM } from './profile';
+import { propellerBlocker, propellerExtensionMm } from './propeller';
 
 export const defaultThroughWire = (): ThroughWireConfig => ({
   enabled: false,
@@ -57,6 +58,16 @@ export function throughWireBlocker(params: LureParams): string | null {
   return null;
 }
 
+/**
+ * Vrai quand l'helice de queue est reellement montee : demandee, et portee
+ * par un fil traversant qui peut lui-meme etre produit.
+ */
+export const propellerActive = (params: LureParams): boolean =>
+  params.propeller.enabled &&
+  params.throughWire.enabled &&
+  !propellerBlocker(params) &&
+  !throughWireBlocker(params);
+
 export interface ThroughWirePlan {
   /** Rayon du canal, en cm : demi-fil plus jeu. */
   channelRadius: number;
@@ -69,6 +80,8 @@ export interface ThroughWirePlan {
   wireLengthCm: number;
   /** Masse du fil, en g. */
   massG: number;
+  /** Troncon de fil derriere la pointe de queue, axe d'helice, en cm (0 sans helice). */
+  extensionCm: number;
   /** Vrai si l'encoche de sortie a reellement pu etre ouverte. */
   noseExit: boolean;
   tailExit: boolean;
@@ -102,7 +115,10 @@ export function planThroughWire(params: LureParams, lengthCm: number): ThroughWi
   // additionner ici les compterait deux fois.
   const loopCm = Math.PI * wire.loopMm * MM_TO_CM;
   const axialCm = to.x - from.x;
-  const wireLengthCm = axialCm + 2 * loopCm;
+  // Helice de queue (module AP.1) : le fil sort de la pointe, traverse la
+  // perle et le moyeu avant de former sa boucle. Ce troncon s'ajoute.
+  const extensionCm = propellerExtensionMm(params) * MM_TO_CM;
+  const wireLengthCm = axialCm + 2 * loopCm + extensionCm;
 
   const sectionCm2 = Math.PI * Math.pow((wire.wireMm * MM_TO_CM) / 2, 2);
   return {
@@ -112,6 +128,7 @@ export function planThroughWire(params: LureParams, lengthCm: number): ThroughWi
     belly,
     wireLengthCm,
     massG: wireLengthCm * sectionCm2 * STEEL_DENSITY,
+    extensionCm,
     // Renseignes par le constructeur de coques : lui seul sait si la pointe
     // laissait la place d'ouvrir l'encoche.
     noseExit: false,

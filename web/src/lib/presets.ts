@@ -20,6 +20,7 @@ import type {
 import { cloneLivery } from './liveries';
 import { seedCatalogue, seedId } from './tackle';
 import { defaultThroughWire } from './throughWire';
+import { defaultPropeller, PROPELLER_ANCHOR } from './propeller';
 
 export interface Range {
   /** Plage du curseur : un confort d'usage, pas une limite physique (AJ.3). */
@@ -113,6 +114,14 @@ export const LIMITS = {
   rattleBall: { min: 2, max: 12, step: 0.5, hardMin: 0.5, hardMax: 30 },
   chamberDiameter: { min: 3, max: 20, step: 0.5, hardMin: 0.5, hardMax: 60 },
   chamberBalls: { min: 1, max: 6, step: 1, hardMin: 1, hardMax: 20 },
+  chamberFit: { min: 0.1, max: 3, step: 0.05, hardMin: 0.02, hardMax: 10, limitReason: 'Le jeu est l ecart entre le diametre de chambre et celui de la bille.' },
+  chamberTravel: { min: 0, max: 80, step: 0.5, hardMin: 0, hardMax: 300 },
+  // --- Helice rotative (module AP.1) ---------------------------------------
+  propDiameter: { min: 20, max: 50, step: 0.5, hardMin: 8, hardMax: 120, limitReason: 'En dessous de 8 mm, il ne reste plus de pale autour du moyeu.' },
+  propAngle: { min: 15, max: 60, step: 1, hardMin: 5, hardMax: 80, limitReason: 'Au-dela de 80 deg, la pale se confond avec l axe et ne pousse plus.' },
+  propBlade: { min: 0.8, max: 2.5, step: 0.1, hardMin: 0.4, hardMax: 5 },
+  propHub: { min: 6, max: 24, step: 0.5, hardMin: 3, hardMax: 60 },
+  beadDiameter: { min: 6, max: 14, step: 0.5, hardMin: 2, hardMax: 30 },
   // --- Decals ------------------------------------------------------------
   decalDepth: { min: 0.1, max: 3, step: 0.05, hardMin: 0.02, hardMax: 5 },
   decalSoftness: { min: 0, max: 100, step: 1 },
@@ -611,6 +620,7 @@ const minnowParams = (): LureParams => ({
   shell: defaultShell(),
   insert: defaultInsert(),
   throughWire: defaultThroughWire(),
+  propeller: defaultPropeller(),
   catalogue: seedCatalogue(),
   mounts: [
     mount('mount-ventre', 'Support ventral', 'ventre', 0.36, -1, treble('#6'), ring('#3')),
@@ -631,7 +641,70 @@ const family = (
 };
 
 /**
- * Les deux familles de la bibliotheque (modules AB et AH).
+ * Corps de revolution : rayon relatif r(u), egal a 1 a `maxAt`, pedoncule
+ * marque puis leger renflement de la calotte de queue.
+ *
+ * - avant : r = 1 - (1 - nez) (1 - s)^k, tangente nulle au maximum ;
+ * - arriere : descente en cosinus carre jusqu'au pedoncule (tangente nulle
+ *   aux deux bouts), puis remontee en sinus carre vers la queue.
+ *
+ * La fonction est C1 partout. Elle est echantillonnee SERRE (un noeud tous
+ * les 2,5 % de longueur, davantage au nez) : l'interpolation monotone ne
+ * peut alors pas onduler entre deux noeuds — une section circulaire ne
+ * pardonne aucun defaut de ce genre.
+ */
+export interface RoundBody {
+  maxAt: number;
+  nose: number;
+  power: number;
+  waist: number;
+  waistAt: number;
+  flare: number;
+}
+
+export const roundRadius = (body: RoundBody) => (u: number): number => {
+  const m = Math.min(Math.max(body.maxAt, 0.2), 0.85);
+  if (u <= m) {
+    const s = u / m;
+    return 1 - (1 - body.nose) * Math.pow(1 - s, body.power);
+  }
+  const t = (u - m) / (1 - m);
+  if (t <= body.waistAt) {
+    const c = Math.cos((Math.PI / 2) * (t / body.waistAt));
+    return body.waist + (1 - body.waist) * c * c;
+  }
+  const q = Math.sin((Math.PI / 2) * ((t - body.waistAt) / (1 - body.waistAt)));
+  return body.waist + (body.flare - body.waist) * q * q;
+};
+
+/** Noeuds d'un corps de revolution : dos = ventre = r / 2, largeur = r. */
+export const roundKnots = (body: RoundBody): Pick<Anatomy, 'dorsal' | 'ventral' | 'width' | 'upper' | 'lower'> => {
+  const r = roundRadius(body);
+  const us = new Set<number>([0, 0.005, 0.01, 0.015, 0.02, 0.03, 0.04, 0.05, 0.065, 0.08]);
+  for (let u = 0.1; u < 1 - 1e-9; u += 0.025) us.add(Math.round(u * 1000) / 1000);
+  // Noeud exactement au maximum et au pedoncule : les extremums tombent sur
+  // un noeud, ou l'interpolation monotone pose une tangente nulle.
+  const m = Math.min(Math.max(body.maxAt, 0.2), 0.85);
+  us.add(Math.round(m * 1000) / 1000);
+  us.add(Math.round((m + body.waistAt * (1 - m)) * 1000) / 1000);
+  us.add(1);
+  const sorted = [...us].sort((a, b) => a - b);
+  return {
+    dorsal: sorted.map((u) => ({ u, v: r(u) / 2 })),
+    ventral: sorted.map((u) => ({ u, v: r(u) / 2 })),
+    width: sorted.map((u) => ({ u, v: r(u) })),
+    upper: knots([[0, 2], [1, 2]]),
+    lower: knots([[0, 2], [1, 2]]),
+  };
+};
+
+/** Pencil : nez effile, lest arriere, pedoncule avant la calotte de l'oeillet de queue. */
+export const PENCIL_BODY: Omit<RoundBody, 'maxAt'> = { nose: 0.3, power: 2.4, waist: 0.5, waistAt: 0.72, flare: 0.6 };
+/** Whopper_Plopper : corps fusele plein, pedoncule avant la perle d'helice. */
+export const PLOPPER_BODY: Omit<RoundBody, 'maxAt'> = { nose: 0.42, power: 2.1, waist: 0.42, waistAt: 0.8, flare: 0.5 };
+
+/**
+ * Les six familles de la bibliotheque (modules AB, AH et AO).
  *
  * Chacune est un leurre COMPLET et fonctionnel des le chargement : cotes de
  * la famille, anatomie (pedoncule, opercule en relief, orbites creusees,
@@ -711,6 +784,252 @@ const FAMILY_PRESETS: ShapePreset[] = [
       paint: paint('#4a3b1f', '#d9c27a', { belly: '#f4ecd2', pattern: 'none' }),
     }),
   ),
+  family(
+    'plopper',
+    'Whopper_Plopper',
+    'Corps fusele rond, helice de queue sur perle',
+    'Corps de surface a section ronde, fil traversant qui sert d axe a une helice imprimee en queue, ecartee du corps par une perle d espacement. Une ou deux pales, angle et diametre reglables ; rotation verifiee sur un tour complet au pas de 5 deg. Plage 90 a 180 mm.',
+    (base) => {
+      const body = roundKnots({ maxAt: 0.42, ...PLOPPER_BODY });
+      return {
+        length: 130,
+        maxWidth: 26,
+        thickness: 26,
+        bellyPosition: 0.42,
+        anatomy: {
+          ...base.anatomy!,
+          ...body,
+          jaw: 0.07,
+          peduncle: 0.42 + 0.8 * 0.58,
+          noseCap: 0.045,
+          noseShape: 0.6,
+          jawDepth: 0.016,
+          opercleRelief: 0.02,
+          orbitDepth: 0.5,
+          lateralLine: 0.08,
+          dorsalFin: fin(0.4, 0.58, 0.08, 11),
+          analFin: fin(0.7, 0.78, 0.06, 8),
+          pectoralFin: fin(0.2, 0.27, 0.2, 9),
+          pelvicFin: fin(0.5, 0.55, 0.14, 6),
+          caudalRays: 12,
+        },
+        hasBib: false,
+        tailShape: 'round',
+        tailSize: 0.6,
+        gills: { enabled: true, position: 0.18, size: 5, relief: -0.5 },
+        eyes: { enabled: true, position: 0.08, size: 6, relief: 0.3 },
+        assembly: assembly({ anchors: [] }),
+        // Fil traversant = axe d'helice ; une sortie ventrale pour le triple.
+        throughWire: { ...defaultThroughWire(), enabled: true, wireMm: 1.2, loopMm: 6, bellyExits: 1, bellyPositions: [0.45] },
+        propeller: { ...defaultPropeller(), enabled: true },
+        screws: {
+          enabled: true,
+          nutFit: 0.1,
+          screws: [
+            { id: 'vis-avant', position: 0.26, size: 'auto', head: 'countersunk', length: 8 },
+            { id: 'vis-arriere', position: 0.62, size: 'auto', head: 'countersunk', length: 6 },
+          ],
+        },
+        infill: 15,
+        ballasts: [ballast(0.36, -0.8, 4, 'plop', 'sphere')],
+        mounts: [
+          mount('mount-ventre', 'Support ventral', 'wire-belly-0', 0.45, -1, treble('#4'), ring('#3')),
+          mount('mount-queue', 'Support de queue (axe)', PROPELLER_ANCHOR, 1, 0, treble('#4'), ring('#3')),
+        ],
+        paint: paint('#1f2b24', '#cfd8c4', { belly: '#f3efe0', pattern: 'none' }),
+      };
+    },
+  ),
+  family(
+    'pencil',
+    'Pencil',
+    'Section circulaire pleine, lest arriere concentre',
+    'Corps de revolution a section strictement circulaire, profil tendu pour porter loin, lest concentre a l arriere. Sans bavette ni appendice. Diametre max et sa position, position du lest : reglages de famille. Plage 50 a 120 mm.',
+    (base) => {
+      const body = roundKnots({ maxAt: 0.6, ...PENCIL_BODY });
+      return {
+        length: 75,
+        maxWidth: 21,
+        thickness: 21,
+        bellyPosition: 0.6,
+        anatomy: {
+          ...base.anatomy!,
+          ...body,
+          jaw: 0.08,
+          peduncle: 0.6 + 0.72 * 0.4,
+          noseCap: 0.05,
+          noseShape: 0.62,
+          jawDepth: 0.014,
+          opercleRelief: 0.016,
+          orbitDepth: 0.4,
+          // Pas de ligne laterale : un sillon longitudinal casserait la
+          // section circulaire sur toute sa longueur.
+          lateralLine: 0,
+          dorsalFin: fin(0.5, 0.64, 0.05, 9),
+          analFin: fin(0.7, 0.76, 0.04, 7),
+          pectoralFin: fin(0.21, 0.27, 0.15, 8),
+          pelvicFin: fin(0.48, 0.52, 0.1, 6),
+          caudalRays: 12,
+        },
+        hasBib: false,
+        tailShape: 'round',
+        tailSize: 0.6,
+        gills: { enabled: true, position: 0.21, size: 3.5, relief: -0.45 },
+        eyes: { enabled: true, position: 0.11, size: 5, relief: 0.3 },
+        assembly: assembly({
+          anchors: [
+            anchor('nez', 0.06, 0, 'nose'),
+            anchor('ventre', 0.4, -0.5, 'belly'),
+            anchor('queue', 0.95, 0, 'tail'),
+          ],
+        }),
+        screws: {
+          enabled: true,
+          nutFit: 0.1,
+          screws: [
+            { id: 'vis-avant', position: 0.26, size: 'auto', head: 'countersunk', length: 12 },
+            { id: 'vis-arriere', position: 0.58, size: 'auto', head: 'countersunk', length: 12 },
+          ],
+        },
+        infill: 15,
+        ballasts: [ballast(0.85, 0, 3, 'pen', 'sphere')],
+        mounts: [
+          mount('mount-ventre', 'Support ventral', 'ventre', 0.4, -1, treble('#6'), ring('#3')),
+          mount('mount-queue', 'Support de queue', 'queue', 0.95, 0, treble('#6'), ring('#3')),
+        ],
+        paint: paint('#26323d', '#e3e6ea', { pattern: 'none' }),
+      };
+    },
+  ),
+  family(
+    'nageur',
+    'Poisson nageur',
+    'Grande bavette, chambre de billes, suspension neutre',
+    'Poisson nageur classique : bavette nettement plus grande que celle du minnow, chambre de billes longitudinale creusee dans le plan de joint, lestage cale pour la suspension neutre. Billes achetees : pesees, listees dans la fiche de montage, jamais imprimees. Plage 80 a 140 mm.',
+    (base) => ({
+      length: 100,
+      maxWidth: 13.5,
+      thickness: 22,
+      anatomy: {
+        ...base.anatomy!,
+        jaw: 0.08,
+        peduncle: 0.73,
+        dorsal: knots([
+          [0, 0.13], [0.06, 0.28], [0.14, 0.42], [0.26, 0.51], [0.4, 0.53], [0.52, 0.5],
+          [0.66, 0.39], [0.8, 0.25], [0.88, 0.2], [0.95, 0.21], [1, 0.24],
+        ]),
+        ventral: knots([
+          [0, 0.11], [0.06, 0.23], [0.15, 0.37], [0.3, 0.46], [0.42, 0.47], [0.56, 0.43],
+          [0.7, 0.3], [0.82, 0.2], [0.9, 0.16], [0.96, 0.17], [1, 0.2],
+        ]),
+        dorsalFin: fin(0.42, 0.6, 0.13, 12),
+        analFin: fin(0.71, 0.78, 0.08, 9),
+        pectoralFin: fin(0.22, 0.3, 0.26, 10),
+        pelvicFin: fin(0.52, 0.575, 0.18, 7),
+      },
+      billThickness: 1.5,
+      billOffset: 6,
+      billInsertion: 7,
+      bibAngle: 35,
+      bibLength: 30,
+      bibWidth: 17,
+      tailShape: 'forked',
+      tailSize: 0.85,
+      gills: { enabled: true, position: 0.21, size: 4, relief: -0.5 },
+      eyes: { enabled: true, position: 0.09, size: 5.5, relief: 0.3 },
+      assembly: assembly({
+        anchors: [
+          anchor('nez', 0.08, 0, 'nose'),
+          anchor('ventre', 0.33, -0.5, 'belly'),
+          anchor('arriere', 0.67, -0.5, 'belly'),
+        ],
+      }),
+      screws: {
+        enabled: true,
+        nutFit: 0.1,
+        screws: [
+          { id: 'vis-avant', position: 0.2, size: 'auto', head: 'countersunk', length: 15 },
+          { id: 'vis-arriere', position: 0.74, size: 'auto', head: 'countersunk', length: 12 },
+        ],
+      },
+      infill: 15,
+      ballasts: [ballast(0.27, -0.55, 2, 'nag', 'cylinder'), ballast(0.62, -0.55, 1.5, 'nag', 'sphere')],
+      // Trois billes inox de 6 mm, tube de 6,6 mm : 0,6 mm de jeu, de quoi
+      // rouler et claquer. Le tube court dans le plan de joint, au-dessus de
+      // l'axe pour laisser passer les portees ventrales.
+      chamber: {
+        enabled: true,
+        diameter: 6.6,
+        fromPosition: 0.37,
+        fromHeight: 0.18,
+        toPosition: 0.64,
+        toHeight: 0.1,
+        ball: 6,
+        balls: 3,
+      },
+      mounts: [
+        mount('mount-ventre', 'Support ventral', 'ventre', 0.33, -1, treble('#6'), ring('#3')),
+        mount('mount-arriere', 'Support arriere', 'arriere', 0.67, -1, treble('#6'), ring('#3')),
+      ],
+      paint: paint('#3a4a2c', '#dfe3cf', { pattern: 'scales' }),
+    }),
+  ),
+  family(
+    'souple',
+    'Souple',
+    'Corps elance en TPU, lest ventral integre a l avant',
+    'Corps elance imprime en TPU, lest ventral integre vers l avant, attache dorsale ou de nez, sans bavette, caudale en palette. Descend droit et s anime a la canne. Masse et position du lest, position d attache : reglages de famille. Plage 70 a 150 mm.',
+    (base) => ({
+      length: 100,
+      maxWidth: 12.8,
+      thickness: 23.5,
+      anatomy: {
+        ...base.anatomy!,
+        jaw: 0.08,
+        peduncle: 0.74,
+        dorsal: knots([
+          [0, 0.12], [0.06, 0.25], [0.15, 0.39], [0.28, 0.47], [0.42, 0.49], [0.56, 0.45],
+          [0.68, 0.36], [0.8, 0.24], [0.88, 0.19], [0.95, 0.2], [1, 0.23],
+        ]),
+        ventral: knots([
+          [0, 0.1], [0.06, 0.22], [0.15, 0.36], [0.28, 0.47], [0.38, 0.51], [0.5, 0.46],
+          [0.64, 0.33], [0.78, 0.21], [0.88, 0.16], [0.95, 0.17], [1, 0.2],
+        ]),
+        width: knots([
+          [0, 0.4], [0.05, 0.64], [0.12, 0.84], [0.25, 0.95], [0.4, 1], [0.6, 0.97],
+          [0.72, 0.72], [0.82, 0.44], [0.9, 0.28], [0.95, 0.22], [1, 0.15],
+        ]),
+        dorsalFin: fin(0.46, 0.62, 0.11, 11),
+        analFin: fin(0.7, 0.78, 0.08, 8),
+        pectoralFin: fin(0.21, 0.29, 0.22, 9),
+        pelvicFin: fin(0.5, 0.55, 0.15, 6),
+      },
+      hasBib: false,
+      tailShape: 'paddle',
+      tailSize: 0.8,
+      gills: { enabled: true, position: 0.2, size: 4.5, relief: -0.5 },
+      eyes: { enabled: true, position: 0.09, size: 5.5, relief: 0.3 },
+      assembly: assembly({
+        anchors: [
+          anchor('dos', 0.16, 0.5, 'back'),
+          anchor('ventre', 0.56, -0.5, 'belly'),
+        ],
+      }),
+      screws: {
+        enabled: true,
+        nutFit: 0.1,
+        screws: [
+          { id: 'vis-avant', position: 0.24, size: 'auto', head: 'countersunk', length: 15 },
+          { id: 'vis-arriere', position: 0.68, size: 'auto', head: 'countersunk', length: 12 },
+        ],
+      },
+      material: 'tpu',
+      infill: 25,
+      ballasts: [ballast(0.35, -0.35, 18, 'sou', 'cylinder')],
+      mounts: [mount('mount-ventre', 'Support ventral', 'ventre', 0.56, -1, treble('#4'), ring('#3'))],
+      paint: paint('#5a6b74', '#e6e9eb', { pattern: 'none' }),
+    }),
+  ),
 ];
 
 export const SHAPE_PRESETS: ShapePreset[] = FAMILY_PRESETS;
@@ -746,6 +1065,7 @@ export const clonePreset = (id: ShapeId): LureParams => {
     shell: { ...params.shell },
     insert: { ...params.insert },
     throughWire: { ...params.throughWire, bellyPositions: [...params.throughWire.bellyPositions] },
+    propeller: { ...params.propeller },
     catalogue: params.catalogue.map((item) => ({ ...item })),
     mounts: params.mounts.map((item, i) => ({ ...item, id: `${item.id}-${i}-${Date.now()}` })),
     paint: { ...params.paint, livery: cloneLivery(params.paint.livery) },
