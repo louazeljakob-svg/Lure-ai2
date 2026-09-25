@@ -15,6 +15,7 @@ import { paintPreviewCss } from '../lib/paint';
 import { LIVERY_LIBRARY, cloneLivery } from '../lib/liveries';
 import { LIMITS } from '../lib/presets';
 import { ColorField, Fieldset, Segmented, Slider, Switch } from './ui';
+import type { BallastSeatReport } from '../lib/assembly';
 
 interface Props {
   params: LureParams;
@@ -24,6 +25,8 @@ interface Props {
   onSavePalette: (name: string) => void;
   onApplyPalette: (id: string) => void;
   onDeletePalette: (id: string) => void;
+  /** Chambres de lest calculees par l'assemblage, une par lest. */
+  ballastSeats?: BallastSeatReport[];
 }
 
 const MAX_BALLASTS = 8;
@@ -102,6 +105,7 @@ export function MaterialPanel({
   onSavePalette,
   onApplyPalette,
   onDeletePalette,
+  ballastSeats,
 }: Props) {
   const material = getMaterial(params.material);
   const [paletteName, setPaletteName] = useState('');
@@ -198,7 +202,7 @@ export function MaterialPanel({
 
       <Fieldset
         legend="Lests internes"
-        hint="Billes de plomb logees dans le corps. Leur taille affichee est le diametre reel a prevoir."
+        hint="Plomb ou tungstene, chacun loge dans sa chambre fendue au plan de joint. Leur taille affichee est le diametre reel a prevoir ; la chambre prend 0,10 mm de jeu au diametre."
       >
         {params.ballasts.length === 0 ? (
           <p className="empty">Aucun lest : le leurre ne tient que par son propre volume.</p>
@@ -270,6 +274,17 @@ export function MaterialPanel({
               display={`${ballast.mass.toFixed(1)} g`}
               onChange={(mass) => setBallast(ballast.id, { mass })}
             />
+            {(() => {
+              const seat = ballastSeats?.find((item) => item.id === ballast.id);
+              if (!seat) return null;
+              return (
+                <p className="control__hint" style={seat.valid ? undefined : { color: 'var(--amber)' }}>
+                  {seat.valid
+                    ? `Chambre de ${seat.diameterMm.toFixed(2)} mm a ${seat.fromNoseMm.toFixed(0)} mm du nez, creusee dans les deux coques.`
+                    : seat.problem}
+                </p>
+              );
+            })()}
           </div>
         ))}
 

@@ -21,6 +21,7 @@ import {
   anchorPin,
   assemblyBlocker,
   resolvePin,
+  type HollowReport,
   type SocketPlan,
 } from '../lib/assembly';
 import { LIMITS } from '../lib/presets';
@@ -47,6 +48,8 @@ interface Props {
   onAddAnchor: () => void;
   onUpdateAnchor: (id: string, patch: Partial<PinAnchor>) => void;
   onRemoveAnchor: (id: string) => void;
+  /** Compte rendu du creusage, s'il est calcule. */
+  hollow?: HollowReport | null;
 }
 
 const mm = (value: number) => `${value.toFixed(value < 10 ? 2 : 1)} mm`;
@@ -70,6 +73,7 @@ export function AssemblyPanel({
   onAddAnchor,
   onUpdateAnchor,
   onRemoveAnchor,
+  hollow = null,
 }: Props) {
   const { assembly, fabrication } = params;
   const anchors = assembly.anchors;
@@ -139,6 +143,34 @@ export function AssemblyPanel({
           hint="0 deg : joint gauche / droite, le plus courant. 90 deg : joint dos / ventre."
           onChange={(planeAngle) => setAssembly({ planeAngle })}
         />
+      </Fieldset>
+
+      <Fieldset
+        legend="Creusage en coque"
+        hint="Chaque demi-coque est videe a paroi constante ; les deux chambres se referment l une sur l autre au collage. Des cloisons pleines entourent vis, portees, ergots et lests."
+      >
+        <Switch
+          label="Creuser les coques"
+          checked={assembly.hollow.enabled}
+          disabled={!assembly.enabled}
+          onChange={(enabled) => setAssembly({ hollow: { ...assembly.hollow, enabled } })}
+        />
+        <Slider
+          label="Paroi"
+          value={assembly.hollow.wall}
+          {...LIMITS.hollowWall}
+          display={mm(assembly.hollow.wall)}
+          disabled={!assembly.enabled || !assembly.hollow.enabled}
+          hint="Epaisseur conservee entre chaque chambre et la peau, mesuree dans toutes les directions."
+          onChange={(wall) => setAssembly({ hollow: { ...assembly.hollow, wall } })}
+        />
+        {assembly.hollow.enabled && hollow ? (
+          <p className="control__hint">
+            {hollow.chambers} chambre(s) par coque, {hollow.volumeCm3.toFixed(2)} cm3 retires par coque.{' '}
+            {hollow.notes.join(' ')} Le bilan de masse (onglet Physique) compte les perimetres qui tapissent les
+            chambres : en FDM peu rempli, creuser peut alourdir.
+          </p>
+        ) : null}
       </Fieldset>
 
       <Fieldset

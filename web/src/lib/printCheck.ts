@@ -26,7 +26,23 @@ export interface PrintCheck {
  * orientee doit apparaitre exactement une fois, ce qui attrape aussi les
  * faces retournees, invisibles a l'oeil et fatales a la trancheuse.
  */
+const OPEN_EDGES = new WeakMap<THREE.BufferGeometry, number>();
+
 function openEdges(geometry: THREE.BufferGeometry): number {
+  // Le corps d'un maillage importe est partage et ne change jamais : son
+  // controle (des centaines de milliers d'aretes) ne se refait pas a chaque
+  // reglage.
+  if (geometry.userData.shared) {
+    const cached = OPEN_EDGES.get(geometry);
+    if (cached !== undefined) return cached;
+    const count = countOpenEdges(geometry);
+    OPEN_EDGES.set(geometry, count);
+    return count;
+  }
+  return countOpenEdges(geometry);
+}
+
+function countOpenEdges(geometry: THREE.BufferGeometry): number {
   const position = geometry.getAttribute('position');
   const index = geometry.getIndex();
   const count = index ? index.count : position.count;

@@ -13,6 +13,7 @@ import { articulationBlocker } from '../lib/articulation';
 import { LIMITS, SHAPE_PRESETS, cloneAnatomy, getPreset } from '../lib/presets';
 import { AnatomyEditor } from './AnatomyEditor';
 import { billSize } from '../lib/billTemplate';
+import { meshBodyOf } from '../lib/meshBody';
 import { Fieldset, Segmented, Slider, Switch } from './ui';
 
 interface Props {
@@ -76,7 +77,35 @@ export function ShapeEditor({
         />
       </Fieldset>
 
-      <Fieldset legend="Corps" hint="Encombrement general et volume du leurre.">
+      <Fieldset
+        legend="Corps"
+        hint={
+          params.meshBody
+            ? 'Corps tire d un maillage importe : les trois cotes reglent son echelle, axe par axe.'
+            : 'Encombrement general et volume du leurre.'
+        }
+      >
+        {params.meshBody ? (
+          <div className="control">
+            <p className="control__hint">
+              {meshBodyOf(params)
+                ? `Maillage « ${params.meshBody.name} », ${params.meshBody.lengthMm.toFixed(1)} x ${params.meshBody.heightMm.toFixed(1)} x ${params.meshBody.widthMm.toFixed(1)} mm a l origine. La forme est celle du fichier ; bavette, quincaillerie et coques se reglent comme sur une famille.`
+                : `Le maillage « ${params.meshBody.name} » n est plus en memoire : le corps affiche est celui de la famille. Reimportez le STL (Projets > Import) ou rouvrez le projet JSON qui l embarque.`}
+            </p>
+            <button
+              type="button"
+              className="btn btn--block"
+              onClick={() =>
+                onChange({
+                  meshBody: null,
+                  anatomy: cloneAnatomy(getPreset(params.shape === 'spoon' ? 'minnow' : params.shape).params.anatomy),
+                })
+              }
+            >
+              Revenir au corps parametrique de la famille
+            </button>
+          </div>
+        ) : null}
         <Slider
           label="Longueur totale"
           value={params.length}
@@ -100,7 +129,7 @@ export function ShapeEditor({
           hint="Vue de profil : hauteur dos-ventre du corps."
           onChange={(thickness) => onChange({ thickness })}
         />
-        {params.anatomy ? null : (
+        {params.anatomy || params.meshBody ? null : (
         <Slider
           label="Section maitresse"
           value={params.bellyPosition}
@@ -122,7 +151,7 @@ export function ShapeEditor({
             minnow de traine entre 5 et 7, un pencil monte a 9.
           </p>
         </div>
-        {params.anatomy ? null : (
+        {params.anatomy || params.meshBody ? null : (
           <>
         <Slider
           label="Courbure dorsale"
@@ -142,7 +171,7 @@ export function ShapeEditor({
         />
           </>
         )}
-        {params.anatomy ? null : (
+        {params.anatomy || params.meshBody ? null : (
           <>
             <button
               type="button"
@@ -167,7 +196,7 @@ export function ShapeEditor({
           on decide de couper un corps en deux en le regardant, pas en
           fouillant un menu : l'entree doit donc etre la aussi.
         */}
-        {params.articulation.enabled ? (
+        {params.meshBody ? null : params.articulation.enabled ? (
           <p className="control__hint">
             Corps articule en deux segments — le joint se regle dans l onglet Scene.
           </p>
@@ -189,8 +218,9 @@ export function ShapeEditor({
         )}
       </Fieldset>
 
+      {params.meshBody ? null : (
       <Fieldset legend="Modelage" hint="Reglages fins du nez, de la section et de l arriere.">
-        {params.anatomy ? null : (
+        {params.anatomy || params.meshBody ? null : (
           <>
         <Slider
           label="Finesse du nez"
@@ -210,7 +240,7 @@ export function ShapeEditor({
           hint="Inclinaison de la tete par rapport a l axe. Positif : nez releve, comme sur un popper. Le reste du corps ne bouge pas."
           onChange={(noseAngle) => onChange({ noseAngle })}
         />
-        {params.anatomy ? null : (
+        {params.anatomy || params.meshBody ? null : (
           <>
         <Slider
           label="Creux de bouche"
@@ -239,12 +269,13 @@ export function ShapeEditor({
           onChange={(crossSection) => onChange({ crossSection })}
         />
       </Fieldset>
+      )}
 
       {params.anatomy ? (
         <AnatomyEditor anatomy={params.anatomy} onChange={(anatomy) => onChange({ anatomy })} />
       ) : null}
 
-      {params.shape === 'spoon' ? null : (
+      {params.shape === 'spoon' || params.meshBody ? null : (
         <Fieldset
           legend="Details de tete"
           hint="Branchies et yeux sont graves dans le corps lui-meme : le maillage reste ferme et imprimable, sans piece rapportee."
@@ -458,6 +489,7 @@ export function ShapeEditor({
         />
       </Fieldset>
 
+      {params.meshBody ? null : (
       <Fieldset legend="Queue">
         <Segmented
           label="Forme de la queue"
@@ -480,6 +512,7 @@ export function ShapeEditor({
           onChange={(tailSize) => onChange({ tailSize })}
         />
       </Fieldset>
+      )}
     </div>
   );
 }

@@ -701,13 +701,18 @@ export function buildLure(
   resolution: Resolution = DISPLAY_RESOLUTION,
   billRoot: THREE.Vector2 | null = null,
   bakeScales = false,
+  /**
+   * Corps maille : le maillage d'origine (vrai), ou sa peau retraduite a la
+   * resolution demandee (faux) — pour le STEP, ou chaque facette coute.
+   */
+  meshExact = true,
 ): LureGeometry {
   const profile = createProfile(params);
   const fine = detailResolution(params, anatomicalResolution(profile, resolution), bakeScales);
   // Corps maille (module AD.3) : le maillage d'origine lui-meme, jamais sa
   // retraduction — c'est lui que l'on mesure, que l'on affiche et que l'on
   // exporte d'un seul tenant. Seules les coques passent par la peau (p, theta).
-  const meshBody = profile.mesh ? meshGeometry(profile.mesh, 'body') : null;
+  const meshBody = profile.mesh && meshExact ? meshGeometry(profile.mesh, 'body') : null;
   const body = meshBody ?? buildBody(profile, params, fine, bakeScales);
   const displayBody = profile.mesh ? meshGeometry(profile.mesh, 'display') : null;
   // L'articulation coupe le corps d'un seul tenant. Elle ne se cumule pas

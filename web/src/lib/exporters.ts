@@ -31,6 +31,7 @@ import { bibOutline, bibShape, billHalfWidthAt, billSize } from './billTemplate'
 import { createProfile } from './profile';
 import { buildRetentionPins } from './articulation';
 import { buildStepFile } from './step';
+import { encodeMeshBody, meshBodyOf, restoreMeshBody } from './meshBody';
 
 /** Piece a exporter : ensemble assemble, ou l'une des deux coques. */
 export type ExportKind = 'assembly' | 'male' | 'female' | 'insert' | 'softTail' | 'bib';
@@ -331,7 +332,7 @@ export async function exportSTEP(
   name: string,
   kind: ExportKind = 'assembly',
 ): Promise<SaveOutcome & { faces: number; solid: boolean }> {
-  const coarse = buildLure(params, STEP_RESOLUTION);
+  const coarse = buildLure(params, STEP_RESOLUTION, null, false, false);
   const { parts, owned } = collectParts(params, coarse, kind, true);
   const placed = printableParts(parts);
   try {
@@ -429,6 +430,7 @@ export function buildProjectFile(
   params: LureParams,
   palettes: SavedPalette[] = [],
 ): ProjectFile {
+  const mesh = meshBodyOf(params);
   return {
     format: 'sakuma-project',
     version: 1,
@@ -436,6 +438,7 @@ export function buildProjectFile(
     savedAt: new Date().toISOString(),
     params,
     palettes,
+    ...(mesh ? { meshes: [encodeMeshBody(mesh)] } : {}),
   };
 }
 
@@ -457,7 +460,8 @@ export interface ImportedProject {
 
 /** Relit un .json precedemment telecharge et restaure l'etat de l'editeur. */
 export async function readProjectFile(file: File): Promise<ImportedProject> {
-  if (file.size > 2_000_000) {
+  // Un projet qui embarque un maillage importe peut peser quelques Mo.
+  if (file.size > 60_000_000) {
     throw new Error('Fichier trop volumineux pour etre un projet SAKUMA.');
   }
   let parsed: unknown;
@@ -476,9 +480,18 @@ export async function readProjectFile(file: File): Promise<ImportedProject> {
     throw new Error('Ce fichier n a pas ete produit par SAKUMA.');
   }
 
+  // Les maillages embarques s'enregistrent AVANT la relecture des
+  // parametres : le corps du projet les retrouve par leur identifiant.
+  const meshes = Array.isArray(data.meshes) ? data.meshes.map(restoreMeshBody) : [];
+  const params = sanitizeParams(data.params);
+  if (params.meshBody && !meshes.some((mesh) => mesh?.id === params.meshBody?.id)) {
+    throw new Error(
+      'Ce projet s appuie sur un maillage importe qui n est pas dans le fichier : reimportez le STL, puis industrialisez-le.',
+    );
+  }
   return {
     name: sanitizeName(data.name, file.name.replace(/\.json$/i, '')),
-    params: sanitizeParams(data.params),
+    params,
     palettes: sanitizePalettes(data.palettes),
   };
 }

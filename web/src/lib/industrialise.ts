@@ -28,6 +28,20 @@ import { buildLure, DISPLAY_RESOLUTION } from './geometry';
 import { computePhysics, type PhysicsResult } from './physics';
 import { seedId } from './tackle';
 import { getMaterial, WATER_DENSITY } from './materials';
+import { runPrintChecks, type PrintCheck } from './printCheck';
+import {
+  anchorStrength,
+  applyCurrent,
+  criticalSpeed,
+  CURRENT_PRESETS,
+  DEFAULT_ASSUMPTIONS,
+  diveDepth,
+  NEUTRAL_CALIBRATION,
+  wobbleProfile,
+  type AnchorStrength,
+  type Estimate,
+  type SwimInput,
+} from './swim';
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi);
 const within = (value: number, range: { min: number; max: number }) => clamp(value, range.min, range.max);
@@ -372,30 +386,17 @@ function proposeBallast(
 }
 
 /**
- * Applique le principe de fabrication du logiciel au maillage importe.
- *
- * Renvoie un projet complet — le corps maille, sa quincaillerie, ses coques —
- * et le compte rendu de ce qui a ete place, deplace ou refuse.
+ * Implantation proposee et verifiee : famille, visserie a la bonne longueur,
+ * portees et vis deplacees hors des collisions. Commun au banc d'essai (qui
+ * en tire les ancrages a eprouver) et a l'industrialisation.
  */
-export function industrialise(
-  imported: ImportedMesh,
+function fitProject(
+  project: { params: LureParams; family: ShapeId; why: string },
   body: MeshBody,
   current: Pick<LureParams, 'material' | 'infill' | 'print'>,
-  options: IndustrialOptions,
-): { params: LureParams | null; report: IndustrialReport } {
-  const project = meshProject(imported, body);
-  const report: IndustrialReport = {
-    family: project.family,
-    familyWhy: project.why,
-    placements: [],
-    problems: [],
-    blocked: topologyBlocks(imported, body, options.acceptEnvelope === true),
-    physics: null,
-  };
-  if (report.blocked.some((line) => /operation bloquee/i.test(line))) {
-    return { params: null, report };
-  }
-
+  options: Pick<IndustrialOptions, 'hollow' | 'wall'>,
+  report: IndustrialReport,
+) {
   const params: LureParams = {
     ...project.params,
     material: current.material,
@@ -580,6 +581,36 @@ export function industrialise(
     }
   }
 
+  return { params, profile, build, marks };
+}
+
+/**
+ * Applique le principe de fabrication du logiciel au maillage importe.
+ *
+ * Renvoie un projet complet — le corps maille, sa quincaillerie, ses coques —
+ * et le compte rendu de ce qui a ete place, deplace ou refuse.
+ */
+export function industrialise(
+  imported: ImportedMesh,
+  body: MeshBody,
+  current: Pick<LureParams, 'material' | 'infill' | 'print'>,
+  options: IndustrialOptions,
+): { params: LureParams | null; report: IndustrialReport } {
+  const project = meshProject(imported, body);
+  const report: IndustrialReport = {
+    family: project.family,
+    familyWhy: project.why,
+    placements: [],
+    problems: [],
+    blocked: topologyBlocks(imported, body, options.acceptEnvelope === true),
+    physics: null,
+  };
+  if (report.blocked.some((line) => /operation bloquee/i.test(line))) {
+    return { params: null, report };
+  }
+
+  const { params, profile, build, marks } = fitProject(project, body, current, options, report);
+
   // --- Creusage : il doit alleger, sinon on le dit ----------------------------
   // En FDM peu rempli, les parois des chambres recoivent des perimetres
   // pleins : creuser peut ALOURDIR. On compare au corps plein.
@@ -711,4 +742,155 @@ export function industrialise(
     }
   }
   return { params, report };
+}
+
+// ---------------------------------------------------------------------------
+// Banc d'essai (AD.2)
+// ---------------------------------------------------------------------------
+
+export interface OrientationShare {
+  label: string;
+  /** Part de surface a plus de 45 deg de surplomb, 0 a 1. */
+  share: number;
+}
+
+export interface BenchResult {
+  params: LureParams;
+  physics: PhysicsResult;
+  /** Poussee moins masse, en g : positif = flotte. */
+  marginG: number;
+  /** Centres en mm : X depuis le nez, Y depuis l'axe, Z depuis le plan de symetrie. */
+  cgMm: { x: number; y: number; z: number };
+  cbMm: { x: number; y: number; z: number };
+  swim: {
+    critical: Estimate;
+    sweet: number;
+    /** Profondeur a 3 km/h et 20 m de ligne, fourchette en m. */
+    depth: [number, number] | null;
+    frequencyHz: number;
+    yawDeg: number;
+    rollDeg: number;
+    action: string;
+    currents: { label: string; relative: number; depth: number; overSpeed: boolean }[];
+  };
+  anchors: AnchorStrength[];
+  checks: PrintCheck[];
+  orientations: OrientationShare[];
+  recommended: string;
+}
+
+/** Surplombs du maillage d'origine selon la face posee sur le plateau. */
+export function orientationShares(positions: Float32Array): OrientationShare[] {
+  const options: { label: string; down: [number, number, number] }[] = [
+    { label: 'Couche sur le flanc', down: [0, 0, -1] },
+    { label: 'Pose sur le ventre', down: [0, -1, 0] },
+    { label: 'Pose sur le dos', down: [0, 1, 0] },
+  ];
+  const totals = options.map(() => 0);
+  let area = 0;
+  for (let k = 0; k < positions.length; k += 9) {
+    const ux = positions[k + 3] - positions[k], uy = positions[k + 4] - positions[k + 1], uz = positions[k + 5] - positions[k + 2];
+    const vx = positions[k + 6] - positions[k], vy = positions[k + 7] - positions[k + 1], vz = positions[k + 8] - positions[k + 2];
+    const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    const len = Math.hypot(nx, ny, nz);
+    if (len < 1e-14) continue;
+    area += len / 2;
+    options.forEach((option, i) => {
+      const facing = (nx * option.down[0] + ny * option.down[1] + nz * option.down[2]) / len;
+      if (facing > Math.SQRT1_2) totals[i] += len / 2;
+    });
+  }
+  return options.map((option, i) => ({ label: option.label, share: area > 0 ? totals[i] / area : 0 }));
+}
+
+/**
+ * Banc d'essai d'un maillage importe, sans rien modifier de sa geometrie.
+ *
+ * Masse et verdict : le modele imprime d'un seul tenant, au materiau, aux
+ * parois et au remplissage du projet, avec des hamecons a sa taille.
+ * Rupture : chaque attache et support d'hamecon PROPOSES, en goupille en 8
+ * dans sa portee fendue. Tout est estimation d'ingenierie : fourchettes.
+ */
+export function runBench(
+  imported: ImportedMesh,
+  body: MeshBody,
+  current: Pick<LureParams, 'material' | 'infill' | 'print'>,
+  water: 'fresh' | 'salt' = 'fresh',
+): BenchResult {
+  const params = benchParams(imported, body, current);
+  const geo = buildLure(params, DISPLAY_RESOLUTION);
+  const physics = computePhysics(params, geo, water);
+  const profile = createProfile(params);
+  const nose = profile.xAt(0);
+  const input: SwimInput = {
+    params,
+    massG: physics.totalMass,
+    volumeCm3: physics.volumeCm3,
+    cg: physics.cg,
+    cb: physics.cb,
+    bounds: { length: params.length, width: params.maxWidth, height: params.thickness },
+    assumptions: DEFAULT_ASSUMPTIONS,
+    calibration: NEUTRAL_CALIBRATION,
+  };
+  const critical = criticalSpeed(input);
+  const wobble = wobbleProfile(input, critical);
+  const peak = wobble.points.reduce((best, point) => (point.yaw + point.roll > best.yaw + best.roll ? point : best), wobble.points[0]);
+  const depth = params.hasBib
+    ? ([diveDepth(input, 2.5, 20), diveDepth(input, 3.5, 20)] as [number, number])
+    : null;
+  const currents = CURRENT_PRESETS.filter((preset) => preset.current.speed > 0).map((preset) => {
+    const result = applyCurrent(input, critical, 3, preset.current, 20);
+    return { label: preset.label, relative: result.relative, depth: result.depth, overSpeed: result.overSpeed };
+  });
+
+  // Rupture : les portees proposees ET verifiees — deplacees hors des
+  // nageoires et des passages comme a l'industrialisation —, dans
+  // l'assemblage qui les porterait.
+  const scratch: IndustrialReport = { family: 'minnow', familyWhy: '', placements: [], problems: [], blocked: [], physics: null };
+  const fitted = fitProject(meshProject(imported, body), body, current, { hollow: false, wall: 1.6 }, scratch).params;
+  const assembly = buildAssembly(createProfile(fitted), fitted, ASSEMBLY_PREVIEW);
+  const anchors = assembly.sockets
+    .filter((socket) => socket.valid)
+    .map((socket) =>
+      anchorStrength(
+        `${socket.spec.label} — ${socket.exit === 'nose' ? 'attache de nez' : socket.exit === 'back' ? 'attache dorsale' : 'support ventral'} a ${((socket.center.x - nose) * 10).toFixed(0)} mm`,
+        socket.spec.wire,
+        socket.spec.loopWidth,
+        socket.seatDepth * 10,
+        'inox304',
+        params,
+        DEFAULT_ASSUMPTIONS,
+        NEUTRAL_CALIBRATION,
+      ),
+    );
+  disposeAssembly(assembly);
+
+  const checks = runPrintChecks(params, geo);
+  geo.dispose();
+  const orientations = orientationShares(body.source);
+  const best = orientations.reduce((a, b) => (b.share < a.share ? b : a));
+  const toMm = (v: { x: number; y: number; z: number }) => ({ x: (v.x - nose) * 10, y: v.y * 10, z: v.z * 10 });
+  return {
+    params,
+    physics,
+    marginG: physics.displacedMass - physics.totalMass,
+    cgMm: toMm(physics.cg),
+    cbMm: toMm(physics.cb),
+    swim: {
+      critical: critical.speed,
+      sweet: critical.sweet,
+      depth,
+      frequencyHz: peak.frequency,
+      yawDeg: peak.yaw,
+      rollDeg: peak.roll,
+      action: wobble.label,
+      currents,
+    },
+    anchors,
+    checks,
+    orientations,
+    recommended:
+      `${best.label} (${Math.round(best.share * 100)} % de surface en surplomb) pour une piece d un seul tenant ; ` +
+      'en deux demi-coques posees sur leur plan de joint, il n y a plus de surplomb du tout.',
+  };
 }

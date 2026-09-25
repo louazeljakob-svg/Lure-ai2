@@ -899,3 +899,82 @@ function meshUvs(skin: MeshSkin, source: Float32Array): Float32Array {
 export const releaseGeometry = (geometry: THREE.BufferGeometry | null | undefined): void => {
   if (geometry && !geometry.userData.shared) geometry.dispose();
 };
+
+// ---------------------------------------------------------------------------
+// Enregistrement dans le projet
+// ---------------------------------------------------------------------------
+
+/** Maillage embarque dans un fichier projet. */
+export interface MeshBodyFile {
+  id: string;
+  name: string;
+  /** Encombrement du maillage d'origine, en cm : borne de la quantification. */
+  min: [number, number, number];
+  max: [number, number, number];
+  /**
+   * Positions en entiers 16 bits, base64. Sur 160 mm, un pas de 0,003 mm :
+   * bien en dessous de toute tolerance d'impression.
+   */
+  data: string;
+}
+
+function toBase64(bytes: Uint8Array): string {
+  let text = '';
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    text += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(text);
+}
+
+function fromBase64(text: string): Uint8Array {
+  const raw = atob(text);
+  const bytes = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+  return bytes;
+}
+
+export function encodeMeshBody(body: MeshBody): MeshBodyFile {
+  const min: [number, number, number] = [Infinity, Infinity, Infinity];
+  const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+  const { source } = body;
+  for (let k = 0; k < source.length; k += 3) {
+    for (let a = 0; a < 3; a++) {
+      min[a] = Math.min(min[a], source[k + a]);
+      max[a] = Math.max(max[a], source[k + a]);
+    }
+  }
+  const q = new Int16Array(source.length);
+  for (let k = 0; k < source.length; k++) {
+    const a = k % 3;
+    const span = Math.max(max[a] - min[a], 1e-9);
+    q[k] = Math.round(((source[k] - min[a]) / span) * 65534 - 32767);
+  }
+  return { id: body.id, name: body.name, min, max, data: toBase64(new Uint8Array(q.buffer)) };
+}
+
+/** Relit un maillage embarque et l'enregistre ; renvoie null s'il est illisible. */
+export function restoreMeshBody(file: unknown): MeshBody | null {
+  if (!file || typeof file !== 'object') return null;
+  const raw = file as Partial<MeshBodyFile>;
+  if (typeof raw.id !== 'string' || typeof raw.data !== 'string' || !Array.isArray(raw.min) || !Array.isArray(raw.max)) {
+    return null;
+  }
+  try {
+    const bytes = fromBase64(raw.data);
+    const q = new Int16Array(bytes.buffer, bytes.byteOffset, Math.floor(bytes.length / 2));
+    if (q.length < 9 || q.length % 9 !== 0) return null;
+    const positions = new Float32Array(q.length);
+    for (let k = 0; k < q.length; k++) {
+      const a = k % 3;
+      const lo = Number(raw.min[a]);
+      const hi = Number(raw.max[a]);
+      positions[k] = lo + ((q[k] + 32767) / 65534) * (hi - lo);
+    }
+    const body = createMeshBody(raw.id, typeof raw.name === 'string' ? raw.name : 'maillage importe', positions);
+    registerMeshBody(body);
+    return body;
+  } catch {
+    return null;
+  }
+}

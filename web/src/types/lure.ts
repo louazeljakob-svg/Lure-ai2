@@ -1098,4 +1098,9 @@ export interface ProjectFile {
   params: LureParams;
   /** Bibliotheque de livrees enregistree avec le projet. */
   palettes?: SavedPalette[];
+  /**
+   * Corps importes, embarques pour que le projet se rouvre sans le fichier
+   * d'origine (format de `MeshBodyFile`).
+   */
+  meshes?: unknown[];
 }

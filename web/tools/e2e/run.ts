@@ -37,6 +37,10 @@ import {
 } from '../../src/lib/swim';
 import type { LureParams } from '../../src/types/lure';
 import { THUMBNAILS } from '../../src/lib/thumbnails';
+import { importMesh } from '../../src/lib/importMesh';
+import { createMeshBody, registerMeshBody, restoreMeshBody } from '../../src/lib/meshBody';
+import { industrialise, runBench } from '../../src/lib/industrialise';
+import { buildProjectFile } from '../../src/lib/exporters';
 
 export interface Report {
   failures: string[];
@@ -222,6 +226,98 @@ function checkFamily(id: string, variant: string, params: LureParams, report: Re
   geo.dispose();
 }
 
+/** STL binaire d'un leurre complet, tel qu'un utilisateur l'exporterait de son logiciel. */
+function familyStl(params: LureParams, rotate: (p: THREE.Vector3) => THREE.Vector3 = (p) => p): ArrayBuffer {
+  const geo = buildLure(params, DISPLAY_RESOLUTION);
+  const parts = [geo.body, geo.tail, params.hasBib && params.billMode === 'printed' ? geo.bib : null].filter(
+    (part): part is THREE.BufferGeometry => part !== null,
+  );
+  const soup: number[] = [];
+  const v = new THREE.Vector3();
+  for (const part of parts) {
+    const position = part.getAttribute('position');
+    const index = part.getIndex();
+    const count = index ? index.count : position.count;
+    for (let k = 0; k < count; k++) {
+      v.fromBufferAttribute(position, index ? index.getX(k) : k);
+      const r = rotate(v.clone());
+      soup.push(r.x * 10, r.y * 10, r.z * 10);
+    }
+  }
+  geo.dispose();
+  const triangles = soup.length / 9;
+  const buffer = new ArrayBuffer(84 + triangles * 50);
+  const view = new DataView(buffer);
+  view.setUint32(80, triangles, true);
+  let offset = 84;
+  for (let t = 0; t < triangles; t++) {
+    offset += 12;
+    for (let k = 0; k < 9; k++) {
+      view.setFloat32(offset, soup[t * 9 + k], true);
+      offset += 4;
+    }
+    offset += 2;
+  }
+  return buffer;
+}
+
+/**
+ * Import STL et industrialisation (module AD) : le modele est lu, repare,
+ * oriente, passe au banc d'essai, industrialise, enregistre en projet JSON
+ * avec son maillage, rouvert, puis controle comme une famille.
+ */
+function checkImport(id: string, report: Report, turned = false): void {
+  const tag = `import ${id}${turned ? ' (fichier tourne)' : ''}`;
+  const fail = (what: string) => report.failures.push(`${tag} : ${what}`);
+  const source = { ...clonePreset(id as LureParams['shape']), billMode: 'printed' as const };
+  // Fichier tourne : axe long sur Z, dos vers -X — l'orientation doit etre retrouvee.
+  const buffer = familyStl(source, turned ? (p) => new THREE.Vector3(-p.y, p.z, p.x) : undefined);
+  const started = Date.now();
+  const mesh = importMesh(`${id}.stl`, buffer);
+  const readMs = Date.now() - started;
+  if (!mesh.diagnosis.watertight) fail(`maillage non etanche apres reparation (${mesh.diagnosis.openEdges} aretes)`);
+  if (Math.abs(mesh.bounds.length - (source.length + (mesh.bib && mesh.bib.fromNoseMm < 0 ? -mesh.bib.fromNoseMm : 0))) > 0.5) {
+    fail(`longueur relue ${mesh.bounds.length.toFixed(1)} mm`);
+  }
+  if (source.hasBib !== (mesh.bib !== null)) fail(`bavette ${mesh.bib ? 'inventee' : 'non reconnue'}`);
+  const body = createMeshBody(`e2e-${id}-${turned ? 't' : 'd'}`, `${id}.stl`, mesh.body);
+  registerMeshBody(body);
+  // Orientation : le nez doit etre en -X et le dos en +Y — la caudale est a
+  // l'arriere et la bavette sous le menton.
+  if (body.skin.bodyEnd >= 1 && source.tailShape !== 'round') fail('caudale non retrouvee : nez et queue inverses ?');
+
+  // --- Banc d'essai, geometrie intacte ---------------------------------------
+  const bench = runBench(mesh, body, source, 'fresh');
+  if (!(bench.physics.totalMass > 0) || !Number.isFinite(bench.physics.ratio)) fail('banc : masse non calculee');
+  if (Math.abs(bench.physics.volumeCm3 - mesh.volume) > mesh.volume * 0.03) {
+    fail(`banc : volume ${bench.physics.volumeCm3.toFixed(2)} cm3 pour ${mesh.volume.toFixed(2)} cm3 mesures`);
+  }
+  if (bench.anchors.length < 2) fail(`banc : ${bench.anchors.length} ancrage(s) evalue(s)`);
+  if (bench.anchors.some((anchor) => !anchor.modeLabel)) fail('banc : mode de rupture non nomme');
+  if (!Number.isFinite(bench.swim.critical.value)) fail('banc : vitesse critique non calculee');
+
+  // --- Industrialisation -------------------------------------------------------
+  const { params, report: made } = industrialise(mesh, body, source, { hollow: true, wall: 1.6 });
+  if (!params) {
+    fail(`industrialisation refusee : ${made.blocked.join(' / ')}`);
+    return;
+  }
+  for (const problem of made.problems) fail(`industrialisation : ${problem}`);
+
+  // --- Projet JSON avec son maillage, rouvert ----------------------------------
+  const file = JSON.parse(JSON.stringify(buildProjectFile(`${id} industrialise`, params)));
+  if (!Array.isArray(file.meshes) || file.meshes.length !== 1) fail('maillage non embarque dans le projet');
+  const restored = file.meshes.map(restoreMeshBody);
+  if (!restored[0]) fail('maillage embarque illisible');
+  const reopened = sanitizeParams(file.params);
+  if (!reopened.meshBody) fail('reference au maillage perdue');
+  checkFamily(made.family, `${tag}, industrialise`, reopened, report);
+  report.lines.push(
+    `${tag.padEnd(28)} ${mesh.diagnosis.triangles} tri lus en ${readMs} ms · banc ${bench.physics.buoyancy} ` +
+      `${bench.physics.totalMass.toFixed(1)} g · industrialise ${made.physics?.buoyancy} ${made.physics?.totalMass.toFixed(1)} g`,
+  );
+}
+
 export function run(): Report {
   const report: Report = { failures: [], lines: [] };
 
@@ -256,6 +352,23 @@ export function run(): Report {
     const tri = audit(small.body).triangles;
     if (tri <= 15000) report.failures.push(`${preset.id} : ${tri} triangles a 100 mm`);
     small.dispose();
+  }
+
+  // Import STL et industrialisation (module AD). Le popper creuse n'est pas
+  // decoupable en tranches : son refus nomme doit etre la.
+  for (const id of ['minnow', 'crankbait', 'deepdiver', 'stickbait', 'lipless']) checkImport(id, report);
+  checkImport('minnow', report, true);
+  {
+    const popper = clonePreset('popper');
+    const mesh = importMesh('popper.stl', familyStl(popper));
+    const body = createMeshBody('e2e-popper', 'popper.stl', mesh.body);
+    registerMeshBody(body);
+    const { params, report: made } = industrialise(mesh, body, popper, { hollow: true, wall: 1.6 });
+    if (params || !made.blocked.some((line) => /cuvette/.test(line))) {
+      report.failures.push('import popper : la face creusee devait etre refusee et nommee');
+    } else {
+      report.lines.push('import popper                 refus nomme : face avant creusee');
+    }
   }
 
   // Projets des versions precedentes : ils s'ouvrent et restent fermes.

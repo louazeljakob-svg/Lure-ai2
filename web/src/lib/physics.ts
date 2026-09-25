@@ -59,6 +59,7 @@ import {
   type MountWarning,
 } from './tackle';
 import { pinPath, pinWireLength, STAINLESS_DENSITY } from './hardware';
+import { meshBodyOf } from './meshBody';
 
 export type Buoyancy = 'float' | 'suspend' | 'sink';
 export type Attitude = 'nose-up' | 'level' | 'nose-down';
@@ -638,7 +639,23 @@ export function computePhysics(
       totalMass,
       bill: cavities.bill,
       billProblem: cavities.billProblem,
-      problems: cavities.problems,
+      problems: [
+        ...cavities.problems,
+        // Un projet a corps maille dont le maillage n'est plus en memoire
+        // retombe sur le corps de sa famille : tout ce qui suit est calcule
+        // sur une autre forme, et il faut le dire.
+        ...(params.meshBody && !meshBodyOf(params)
+          ? [
+              {
+                id: 'mesh-missing',
+                title: 'Corps importe absent',
+                detail:
+                  `Le maillage « ${params.meshBody.name} » n est plus en memoire : les chiffres portent sur le corps ` +
+                  'parametrique de la famille. Reimportez le STL ou rouvrez le projet JSON qui l embarque.',
+              },
+            ]
+          : []),
+      ],
       joint: geo.jointPlan,
       // Module V.4 : une vis qui passe pres d'une boucle de goupille ou de son
       // chemin de debattement doit etre detectee par le test de collision. Les

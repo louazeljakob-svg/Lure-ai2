@@ -489,6 +489,25 @@ export default function App() {
     setFitKey((n) => n + 1);
   }, []);
 
+  /**
+   * Projet industrialise depuis un maillage importe (module AD.3) : il
+   * s'ouvre comme un projet neuf, sur l'onglet Fabrication, ou chaque
+   * implantation proposee se regle a la main.
+   */
+  const openIndustrial = useCallback(
+    (next: LureParams, label: string) => {
+      history.reset(next);
+      setName(label);
+      setActiveId(null);
+      setImported(null);
+      setFitKey((n) => n + 1);
+      setRoute('editor');
+      setPanelTab('fabrication');
+      pushToast('ok', `« ${label} » ouvert : reglez les implantations dans Fabrication.`);
+    },
+    [pushToast],
+  );
+
   const openShape = useCallback(
     (shape: ShapeId) => {
       loadPreset(shape);
@@ -1501,6 +1520,7 @@ export default function App() {
                     onSavePalette={savePalette}
                     onApplyPalette={applyPalette}
                     onDeletePalette={deletePalette}
+                    ballastSeats={preview?.ballastSeats}
                   />
                 ) : null}
                 {section === 'assembly' ? (
@@ -1517,6 +1537,7 @@ export default function App() {
                     onAddAnchor={() => addAnchor()}
                     onUpdateAnchor={updateAnchor}
                     onRemoveAnchor={removeAnchor}
+                    hollow={preview?.hollow ?? null}
                   />
                 ) : null}
                 {section === 'tackle' ? (
@@ -1553,6 +1574,7 @@ export default function App() {
                     mesh={imported}
                     onMesh={setImported}
                     onToast={(message, kind) => pushToast(kind ?? 'ok', message)}
+                    onOpenIndustrial={openIndustrial}
                   />
                 ) : null}
                 {section === 'library' ? (
