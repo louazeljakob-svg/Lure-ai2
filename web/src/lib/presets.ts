@@ -908,7 +908,7 @@ const FAMILY_PRESETS: ShapePreset[] = [
     'Poisson nageur classique : bavette nettement plus grande que celle du minnow, chambre de billes longitudinale creusee dans le plan de joint, lestage cale pour la suspension neutre. Billes achetees : pesees, listees dans la fiche de montage, jamais imprimees. Plage 80 a 140 mm.',
     (base) => ({
       length: 100,
-      maxWidth: 13.5,
+      maxWidth: 15,
       thickness: 22,
       anatomy: {
         ...base.anatomy!,
@@ -923,16 +923,16 @@ const FAMILY_PRESETS: ShapePreset[] = [
           [0.7, 0.3], [0.82, 0.2], [0.9, 0.16], [0.96, 0.17], [1, 0.2],
         ]),
         dorsalFin: fin(0.42, 0.6, 0.13, 12),
-        analFin: fin(0.71, 0.78, 0.08, 9),
+        analFin: fin(0.76, 0.83, 0.08, 9),
         pectoralFin: fin(0.22, 0.3, 0.26, 10),
         pelvicFin: fin(0.52, 0.575, 0.18, 7),
       },
       billThickness: 1.5,
-      billOffset: 6,
-      billInsertion: 7,
+      billOffset: 8,
+      billInsertion: 5,
       bibAngle: 35,
       bibLength: 30,
-      bibWidth: 17,
+      bibWidth: 14,
       tailShape: 'forked',
       tailSize: 0.85,
       gills: { enabled: true, position: 0.21, size: 4, relief: -0.5 },
@@ -940,36 +940,39 @@ const FAMILY_PRESETS: ShapePreset[] = [
       assembly: assembly({
         anchors: [
           anchor('nez', 0.08, 0, 'nose'),
-          anchor('ventre', 0.33, -0.5, 'belly'),
-          anchor('arriere', 0.67, -0.5, 'belly'),
+          anchor('ventre', 0.3, -0.5, 'belly'),
+          anchor('arriere', 0.71, -0.5, 'belly'),
         ],
       }),
       screws: {
         enabled: true,
         nutFit: 0.1,
         screws: [
-          { id: 'vis-avant', position: 0.2, size: 'auto', head: 'countersunk', length: 15 },
-          { id: 'vis-arriere', position: 0.74, size: 'auto', head: 'countersunk', length: 12 },
+          { id: 'vis-avant', position: 0.13, size: 'auto', head: 'countersunk', length: 12 },
+          // Vis courte : son ecrou reste sous la chambre de billes.
+          { id: 'vis-arriere', position: 0.62, size: 'auto', head: 'countersunk', length: 8 },
         ],
       },
       infill: 15,
-      ballasts: [ballast(0.27, -0.55, 2, 'nag', 'cylinder'), ballast(0.62, -0.55, 1.5, 'nag', 'sphere')],
+      // Suspension neutre : lest avant et lest sous la chambre, billes comprises.
+      ballasts: [ballast(0.21, -0.55, 1.8, 'nag', 'sphere'), ballast(0.47, -0.75, 2.1, 'nag', 'sphere')],
       // Trois billes inox de 6 mm, tube de 6,6 mm : 0,6 mm de jeu, de quoi
       // rouler et claquer. Le tube court dans le plan de joint, au-dessus de
-      // l'axe pour laisser passer les portees ventrales.
+      // l'axe : les portees ventrales, le lest et la vis passent dessous. Il
+      // descend vers l'arriere, ou les billes se tassent au lancer.
       chamber: {
         enabled: true,
         diameter: 6.6,
-        fromPosition: 0.37,
-        fromHeight: 0.18,
-        toPosition: 0.64,
-        toHeight: 0.1,
+        fromPosition: 0.3,
+        fromHeight: 0.38,
+        toPosition: 0.55,
+        toHeight: 0.32,
         ball: 6,
         balls: 3,
       },
       mounts: [
-        mount('mount-ventre', 'Support ventral', 'ventre', 0.33, -1, treble('#6'), ring('#3')),
-        mount('mount-arriere', 'Support arriere', 'arriere', 0.67, -1, treble('#6'), ring('#3')),
+        mount('mount-ventre', 'Support ventral', 'ventre', 0.3, -1, treble('#6'), ring('#3')),
+        mount('mount-arriere', 'Support arriere', 'arriere', 0.71, -1, treble('#6'), ring('#3')),
       ],
       paint: paint('#3a4a2c', '#dfe3cf', { pattern: 'scales' }),
     }),
@@ -1002,7 +1005,7 @@ const FAMILY_PRESETS: ShapePreset[] = [
         dorsalFin: fin(0.46, 0.62, 0.11, 11),
         analFin: fin(0.7, 0.78, 0.08, 8),
         pectoralFin: fin(0.21, 0.29, 0.22, 9),
-        pelvicFin: fin(0.5, 0.55, 0.15, 6),
+        pelvicFin: fin(0.44, 0.49, 0.15, 6),
       },
       hasBib: false,
       tailShape: 'paddle',
@@ -1011,22 +1014,24 @@ const FAMILY_PRESETS: ShapePreset[] = [
       eyes: { enabled: true, position: 0.09, size: 5.5, relief: 0.3 },
       assembly: assembly({
         anchors: [
-          anchor('dos', 0.16, 0.5, 'back'),
-          anchor('ventre', 0.56, -0.5, 'belly'),
+          anchor('dos', 0.2, 0.5, 'back'),
+          anchor('ventre', 0.64, -0.5, 'belly'),
         ],
       }),
       screws: {
         enabled: true,
         nutFit: 0.1,
         screws: [
-          { id: 'vis-avant', position: 0.24, size: 'auto', head: 'countersunk', length: 15 },
-          { id: 'vis-arriere', position: 0.68, size: 'auto', head: 'countersunk', length: 12 },
+          // Le lest ventral occupe le premier tiers : une vis devant lui, une
+          // derriere.
+          { id: 'vis-avant', position: 0.1, size: 'auto', head: 'countersunk', length: 10 },
+          { id: 'vis-arriere', position: 0.57, size: 'auto', head: 'countersunk', length: 12 },
         ],
       },
       material: 'tpu',
       infill: 25,
       ballasts: [ballast(0.35, -0.35, 18, 'sou', 'cylinder')],
-      mounts: [mount('mount-ventre', 'Support ventral', 'ventre', 0.56, -1, treble('#4'), ring('#3'))],
+      mounts: [mount('mount-ventre', 'Support ventral', 'ventre', 0.64, -1, treble('#4'), ring('#3'))],
       paint: paint('#5a6b74', '#e6e9eb', { pattern: 'none' }),
     }),
   ),

@@ -3975,6 +3975,9 @@ export function buildAssembly(
       score: number;
     }
     const candidates: Candidate[] = [];
+    // Places de repli : une hauteur moins epaisse de la meme station, quand
+    // la plus epaisse est prise (canal de fil traversant, chambre de billes).
+    const fallback: Candidate[] = [];
     const reasons = new Map<string, number>();
     const note = (why: string) => reasons.set(why, (reasons.get(why) ?? 0) + 1);
     const SAMPLES = 90;
@@ -3998,38 +4001,43 @@ export function buildAssembly(
       // longueur : l'ergot se decale alors vers la hauteur libre suivante
       // plutot que de renoncer a la station.
       heights.sort((a, b) => b.room - a.room);
-      const tries = wireTakesEnds ? heights : heights.slice(0, 1);
-      let placed = false;
-      for (const { t, room } of tries) {
+      let first = true;
+      for (const { t, room } of heights) {
         if (room < height + clearance + SKIN) {
-          note('coque trop mince pour le logement');
+          if (first) note('coque trop mince pour le logement');
           break;
         }
         const center = new THREE.Vector2(station.x, t);
         const near = clearanceTo(center);
         if (near.distance < keepOut) {
-          note(near.label);
+          if (first) note(near.label);
+          first = false;
           continue;
         }
-        candidates.push({ center, score: near.distance });
-        placed = true;
+        // La hauteur la plus epaisse est la place de reference ; les autres
+        // ne servent que si elle ne suffit pas a loger tous les ergots.
+        (first ? candidates : fallback).push({ center, score: near.distance });
         break;
       }
-      if (!placed) continue;
     }
     const chosen: THREE.Vector2[] = [];
-    if (candidates.length > 0) {
-      const xs = candidates.map((c) => c.center.x);
+    const all = candidates.length > 0 ? candidates : fallback;
+    if (all.length > 0) {
+      const xs = [...candidates, ...fallback].map((c) => c.center.x);
       const x0 = Math.min(...xs);
       const x1 = Math.max(...xs);
-      for (let n = 0; n < pegConfig.count; n++) {
-        const target =
-          pegConfig.count === 1 ? (x0 + x1) / 2 : x0 + ((x1 - x0) * n) / (pegConfig.count - 1);
+      const nearest = (pool: Candidate[], target: number): Candidate | null => {
         let pick: Candidate | null = null;
-        for (const c of candidates) {
+        for (const c of pool) {
           if (chosen.some((other) => other.distanceTo(c.center) < 4 * base)) continue;
           if (!pick || Math.abs(c.center.x - target) < Math.abs(pick.center.x - target)) pick = c;
         }
+        return pick;
+      };
+      for (let n = 0; n < pegConfig.count; n++) {
+        const target =
+          pegConfig.count === 1 ? (x0 + x1) / 2 : x0 + ((x1 - x0) * n) / (pegConfig.count - 1);
+        const pick = nearest(candidates, target) ?? nearest(fallback, target);
         if (pick) chosen.push(pick.center);
       }
     }
