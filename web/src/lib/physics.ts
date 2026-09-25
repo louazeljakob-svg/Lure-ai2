@@ -110,7 +110,7 @@ export interface PhysicsResult {
   clipMass: number;
   /** Masse de la goupille en 8 traversante. */
   pinMass: number;
-  /** Masse des billes mobiles (rattle ponctuel et chambre). */
+  /** Masse des billes de la chambre de bruit. */
   rattleMass: number;
   /** Volume interne mesure de la coque a paroi mince, en cm3. */
   cavityCm3: number;
@@ -691,7 +691,7 @@ export function computePhysics(
 }
 
 /**
- * Matiere reellement imprimee, et billes mobiles logees dedans.
+ * Matiere reellement imprimee, et billes de chambre logees dedans.
  *
  * On mesure les deux coques telles qu'elles sortiront plutot que d'estimer
  * chaque logement : c'est le generateur d'assemblage qui decide lesquels
