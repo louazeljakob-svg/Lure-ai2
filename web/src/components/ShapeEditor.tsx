@@ -491,6 +491,7 @@ export function ShapeEditor({
           value={params.billFillet}
           {...LIMITS.billFillet}
           display={params.billFillet < 0.05 ? 'Vif' : mm(params.billFillet)}
+          unit="mm"
           disabled={!params.hasBib || params.billProfile === 'rounded'}
           hint={
             params.billProfile === 'rounded'

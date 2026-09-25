@@ -132,6 +132,7 @@ export function AssemblyPanel({
           label="Orientation du joint"
           value={assembly.planeAngle}
           {...LIMITS.planeAngle}
+          unit="deg"
           display={
             assembly.planeAngle < 5
               ? 'Vertical'
@@ -471,6 +472,7 @@ export function AssemblyPanel({
                     label="Profondeur du puits"
                     value={anchor.depth}
                     {...LIMITS.anchorDepth}
+                    unit="mm"
                     display={
                       anchor.depth > 0
                         ? mm(anchor.depth)

@@ -632,6 +632,8 @@ export function MaterialPanel({
           label="Etendue de la tete"
           value={params.paint.headLength}
           {...LIMITS.zoneLength}
+          unit="%"
+          scale={100}
           display={
             params.paint.headLength < 0.01
               ? 'Aucune'
@@ -644,6 +646,8 @@ export function MaterialPanel({
           label="Etendue de la queue"
           value={params.paint.tailLength}
           {...LIMITS.zoneLength}
+          unit="%"
+          scale={100}
           display={
             params.paint.tailLength < 0.01
               ? 'Aucune'
@@ -655,6 +659,8 @@ export function MaterialPanel({
           label="Fondu des zones"
           value={params.paint.blend}
           {...LIMITS.paintBlend}
+          unit="%"
+          scale={100}
           display={
             params.paint.blend < 0.15
               ? 'Franc'

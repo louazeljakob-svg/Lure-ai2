@@ -319,7 +319,11 @@ export function Slider({
   const hintId = `${id}-hint`;
   const fieldId = `${id}-field`;
   const parsed = readDisplay(display);
-  const unit = unitProp ?? parsed.unit ?? '';
+  // Un affichage en toutes lettres (« Aucune », « Vif ») ne dit pas l'unite :
+  // on garde la derniere lue, pour que le champ ne change pas de nature.
+  const lastUnit = useRef<string | null>(null);
+  if (parsed.unit !== null) lastUnit.current = parsed.unit;
+  const unit = unitProp ?? parsed.unit ?? lastUnit.current ?? '';
   // L'echelle ne se lit que si la valeur n'est pas nulle : on garde la
   // derniere lue, pour qu'un « 0 % » ne fasse pas basculer le champ.
   const lastScale = useRef<number | null>(null);
