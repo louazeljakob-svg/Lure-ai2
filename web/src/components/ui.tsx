@@ -147,8 +147,9 @@ export function NumberField({
   const metric = unit === 'mm' || angular;
   const stepShown = step * scale;
   const stepDecimals = integer ? 0 : decimalsOf(stepShown);
-  const fine = metric ? 0.1 : integer ? 1 : stepShown;
-  const coarse = metric ? 1 : integer ? 5 : stepShown * 10;
+  // Deux decimales au plus : un pas plus fin que 0,01 ne se verrait pas.
+  const fine = metric ? 0.1 : integer ? 1 : Math.max(stepShown, 0.01);
+  const coarse = metric ? 1 : integer ? 5 : Math.max(stepShown, 0.01) * 10;
   const unitLabel = angular ? '°' : unit === 'x' ? '×' : unit;
   const format = (raw: number) => formatNumber(raw * scale, stepDecimals);
   const said = (shown: number) => `${formatNumber(shown, stepDecimals)}${unitLabel ? ` ${unitLabel}` : ''}`;
