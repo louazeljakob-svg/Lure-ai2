@@ -14,8 +14,9 @@ import { FINISHES, MATERIALS, getMaterial } from '../lib/materials';
 import { paintPreviewCss } from '../lib/paint';
 import { LIVERY_LIBRARY, cloneLivery } from '../lib/liveries';
 import { LIMITS } from '../lib/presets';
-import { ColorField, Fieldset, Segmented, Slider, Switch } from './ui';
-import type { BallastSeatReport } from '../lib/assembly';
+import { ColorField, Derived, Fieldset, Segmented, Slider, Switch } from './ui';
+import type { BallastSeatReport, ChamberReport } from '../lib/assembly';
+import type { PhysicsResult } from '../lib/physics';
 
 interface Props {
   params: LureParams;
@@ -27,6 +28,11 @@ interface Props {
   onDeletePalette: (id: string) => void;
   /** Chambres de lest calculees par l'assemblage, une par lest. */
   ballastSeats?: BallastSeatReport[];
+  /** Chambre de billes retenue ou refusee par l'assemblage (module AP.2). */
+  chamber?: ChamberReport | null;
+  chamberProblem?: string | null;
+  /** Centre de gravite billes a l'avant / a l'arriere. */
+  rattleShift?: PhysicsResult['rattleShift'];
 }
 
 const MAX_BALLASTS = 8;
@@ -36,7 +42,7 @@ const ballastDiameter = (mass: number, density: number, shape: 'sphere' | 'cylin
   const volume = Math.max(mass, 0.01) / Math.max(density, 0.5);
   const radius =
     shape === 'cylinder'
-      ? Math.cbrt(volume / (2.5 * Math.PI))
+      ? Math.cbrt(volume / (5 * Math.PI))
       : Math.cbrt((3 * volume) / (4 * Math.PI));
   return radius * 20;
 };
@@ -106,6 +112,9 @@ export function MaterialPanel({
   onApplyPalette,
   onDeletePalette,
   ballastSeats,
+  chamber = null,
+  chamberProblem = null,
+  rattleShift = null,
 }: Props) {
   const material = getMaterial(params.material);
   const [paletteName, setPaletteName] = useState('');
@@ -152,6 +161,16 @@ export function MaterialPanel({
 
   const setChamber = (patch: Partial<RattleChamber>) =>
     onChange({ chamber: { ...params.chamber, ...patch } });
+  // Course : mesuree par l'assemblage quand il existe, sinon deduite des
+  // cotes saisies (axe du tube + calottes - train de billes).
+  const chamberTravel =
+    chamber?.travelMm ??
+    Math.max(
+      (params.chamber.toPosition - params.chamber.fromPosition) * params.length +
+        (params.chamber.diameter - params.chamber.ball) -
+        params.chamber.ball * params.chamber.balls,
+      0,
+    );
 
   return (
     <div className="panel__body">
@@ -299,8 +318,8 @@ export function MaterialPanel({
       </Fieldset>
 
       <Fieldset
-        legend="Chambre de bruit"
-        hint="Un tube creuse dans le plan de joint, dans lequel les billes roulent d un bout a l autre pendant la nage."
+        legend="Chambre de billes"
+        hint="Un tube creuse dans le plan de joint, moitie dans chaque coque. Les billes s achetent : pesees, listees dans la fiche de montage, jamais dans un STL."
       >
         <Switch
           label="Chambre a billes"
@@ -308,12 +327,22 @@ export function MaterialPanel({
           onChange={(enabled) => setChamber({ enabled })}
         />
         <Slider
-          label="Diametre du tube"
+          label="Diametre de chambre"
           value={params.chamber.diameter}
           {...LIMITS.chamberDiameter}
           display={`${params.chamber.diameter.toFixed(1)} mm`}
           disabled={!params.chamber.enabled}
           onChange={(diameter) => setChamber({ diameter })}
+        />
+        <Slider
+          label="Jeu bille / chambre"
+          value={Math.max(params.chamber.diameter - params.chamber.ball, LIMITS.chamberFit.hardMin)}
+          {...LIMITS.chamberFit}
+          unit="mm"
+          display={`${(params.chamber.diameter - params.chamber.ball).toFixed(2)} mm`}
+          disabled={!params.chamber.enabled}
+          hint="Ecart diametral : c est lui qui laisse la bille rouler et claquer. Le regler redimensionne la chambre."
+          onChange={(fit) => setChamber({ diameter: params.chamber.ball + fit })}
         />
         <Slider
           label="Depart : position"
@@ -354,7 +383,8 @@ export function MaterialPanel({
           {...LIMITS.rattleBall}
           display={`${params.chamber.ball.toFixed(1)} mm`}
           disabled={!params.chamber.enabled}
-          onChange={(ball) => setChamber({ ball })}
+          hint="Le jeu est conserve : la chambre suit la bille."
+          onChange={(ball) => setChamber({ ball, diameter: ball + (params.chamber.diameter - params.chamber.ball) })}
         />
         <Slider
           label="Nombre de billes"
@@ -364,6 +394,47 @@ export function MaterialPanel({
           disabled={!params.chamber.enabled}
           onChange={(balls) => setChamber({ balls })}
         />
+        <Slider
+          label="Longueur de course"
+          value={chamberTravel}
+          {...LIMITS.chamberTravel}
+          unit="mm"
+          display={`${chamberTravel.toFixed(1)} mm`}
+          disabled={!params.chamber.enabled}
+          hint="Chemin libre du train de billes d un bout a l autre. La regler allonge ou raccourcit la chambre vers l arriere."
+          onChange={(travel) => {
+            // Longueur d'axe du tube : course + train de billes - rayon utile des deux calottes.
+            const r = params.chamber.diameter / 2;
+            const rb = params.chamber.ball / 2;
+            const axis = travel + 2 * rb * params.chamber.balls - 2 * (r - rb);
+            const to = params.chamber.fromPosition + Math.max(axis, 0) / Math.max(params.length, 1);
+            setChamber({ toPosition: Math.min(Math.max(to, params.chamber.fromPosition + 0.01), 0.97) });
+          }}
+        />
+        {params.chamber.enabled ? (
+          chamberProblem ? (
+            <p className="control__hint" style={{ color: 'var(--amber)' }}>
+              {chamberProblem}
+            </p>
+          ) : chamber ? (
+            <Derived
+              label="Assiette au lancer"
+              value={
+                rattleShift
+                  ? `CG ${rattleShift.frontPct.toFixed(1)} % billes avant, ${rattleShift.rearPct.toFixed(1)} % billes arriere`
+                  : '—'
+              }
+              how={
+                rattleShift
+                  ? `Les billes (${rattleShift.ballMassG.toFixed(2)} g) deplacent le centre de gravite de ${rattleShift.deltaMm.toFixed(1)} mm ` +
+                    `sur ${rattleShift.travelMm.toFixed(1)} mm de course. Au repos elles se tassent ${
+                      rattleShift.restAt === 'rear' ? 'a l arriere (tube descendant)' : rattleShift.restAt === 'front' ? 'a l avant (tube montant)' : 'au milieu (tube horizontal)'
+                    } : c est cette position qui entre dans le bilan.`
+                  : ''
+              }
+            />
+          ) : null
+        ) : null}
       </Fieldset>
 
       <Fieldset

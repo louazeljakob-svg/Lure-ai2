@@ -32,6 +32,8 @@ import {
   softTailBlocker,
 } from '../lib/insert';
 import { mountTrails, resolveMount } from '../lib/tackle';
+import { PROPELLER_ANCHOR, planPropeller, type PropellerPlan } from '../lib/propeller';
+import { propellerActive } from '../lib/throughWire';
 import type { ThreeEvent } from '@react-three/fiber';
 import { FINISHES } from '../lib/materials';
 import { createLiveryNormalMap, createPaintTexture, createScaleNormalMap } from '../lib/paint';
@@ -364,6 +366,48 @@ function LureModel({
           />
         </mesh>
       ) : null}
+
+      {geo.propeller ? (
+        // Helice et perle en place sur leur axe (module AP.1), et le troncon
+        // de fil qui depasse de la queue jusqu'a sa boucle.
+        <group>
+          <mesh geometry={geo.propeller.propeller}>
+            <meshStandardMaterial
+              color={params.paint.tailLength > 0.01 ? params.paint.tail : params.paint.flank}
+              roughness={finish.roughness}
+              metalness={finish.metalness}
+              side={THREE.DoubleSide}
+            />
+          </mesh>
+          <mesh geometry={geo.propeller.bead}>
+            <meshStandardMaterial
+              color={params.propeller.beadPrinted ? params.paint.belly : '#c9a24a'}
+              roughness={params.propeller.beadPrinted ? finish.roughness : 0.25}
+              metalness={params.propeller.beadPrinted ? finish.metalness : 0.6}
+            />
+          </mesh>
+          <AxleWire plan={geo.propeller.plan} />
+        </group>
+      ) : null}
+    </group>
+  );
+}
+
+/** Troncon d'axe derriere la queue et sa boucle de retenue. */
+function AxleWire({ plan }: { plan: PropellerPlan }) {
+  const ringR = Math.max(plan.loop.outer - plan.wireRadius, plan.wireRadius);
+  const from = plan.xTail - 0.05;
+  const to = plan.loop.x - ringR;
+  return (
+    <group>
+      <mesh position={[(from + to) / 2, 0, 0]} rotation={[0, 0, Math.PI / 2]}>
+        <cylinderGeometry args={[plan.wireRadius, plan.wireRadius, Math.max(to - from, 0.01), 10]} />
+        <meshStandardMaterial color="#b9bec7" roughness={0.3} metalness={0.94} />
+      </mesh>
+      <mesh position={[plan.loop.x, 0, 0]}>
+        <torusGeometry args={[ringR, plan.wireRadius, 8, 28]} />
+        <meshStandardMaterial color="#b9bec7" roughness={0.3} metalness={0.94} />
+      </mesh>
     </group>
   );
 }
@@ -387,6 +431,12 @@ function TackleMarkers({ params, visible }: { params: LureParams; visible: boole
         .map((mount) => resolveMount(params.catalogue, mount)),
     [params.mounts, params.catalogue],
   );
+  // Supports montes sur la boucle de queue, derriere l'helice.
+  const axleX = useMemo(() => {
+    if (!propellerActive(params)) return null;
+    const plan = planPropeller(params, profile);
+    return plan.loop.x + plan.loop.outer;
+  }, [params, profile]);
   if (!visible) return null;
 
   const MM = 0.1; // mm -> cm, l'unite de la scene
@@ -397,14 +447,16 @@ function TackleMarkers({ params, visible }: { params: LureParams; visible: boole
         const { mount, ring, hook } = entry;
         if (!ring && !hook) return null;
         const p = Math.min(Math.max(mount.position, 0.02), profile.bodyEnd - 0.01);
-        const x = profile.xAt(p);
+        const onAxle = mount.anchorId === PROPELLER_ANCHOR && axleX !== null;
+        const x = onAxle ? axleX : profile.xAt(p);
         const section = profile.section(p);
-        const surfaceY =
-          mount.height < 0 ? section.bottom * -mount.height : section.top * mount.height;
+        const surfaceY = onAxle
+          ? 0
+          : mount.height < 0 ? section.bottom * -mount.height : section.top * mount.height;
         // Support de queue : la chaine part vers l'arriere (+x), pas vers le
         // bas. Le groupe bascule alors d'un quart de tour, et « vers le bas »
         // devient « vers l'arriere » dans son repere local.
-        const trails = mountTrails(mount.position);
+        const trails = onAxle || mountTrails(mount.position);
         const down = trails ? 1 : mount.height <= 0 ? -1 : 1;
 
         const ringR = ring ? (ring.spanMm * MM) / 2 : 0;

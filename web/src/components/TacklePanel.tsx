@@ -9,6 +9,10 @@
 import { useMemo, useRef, useState } from 'react';
 import type { LureParams, TackleFamily, TackleItem, TackleMount } from '../types/lure';
 import type { PhysicsResult } from '../lib/physics';
+import type { LureGeometry } from '../lib/geometry';
+import type { AssemblyResult } from '../lib/assembly';
+import { montageSheet, type MontageLine } from '../lib/montage';
+import { PROPELLER_ANCHOR } from '../lib/propeller';
 import {
   TACKLE_FAMILY_LABEL,
   isHook,
@@ -26,6 +30,9 @@ interface Props {
   params: LureParams;
   physics: PhysicsResult;
   onChange: (patch: Partial<LureParams>) => void;
+  geo: LureGeometry;
+  /** Assemblage retenu : la fiche de montage ne liste que ce qui sera monte. */
+  assembly: AssemblyResult | null;
 }
 
 const n = (value: number, digits = 2): string =>
@@ -39,7 +46,7 @@ const PROVENANCE = {
 
 const FAMILIES: TackleFamily[] = ['treble', 'inline', 'assist', 'split', 'solid', 'swivel'];
 
-export function TacklePanel({ params, physics, onChange }: Props) {
+export function TacklePanel({ params, physics, onChange, geo, assembly }: Props) {
   const [family, setFamily] = useState<TackleFamily>('treble');
   const [preview, setPreview] = useState<CsvPreview | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
@@ -106,8 +113,46 @@ export function TacklePanel({ params, physics, onChange }: Props) {
       ],
     });
 
+  const sheet = useMemo(() => montageSheet(params, geo, assembly), [params, geo, assembly]);
+  const sheetTable = (lines: MontageLine[], caption: string) => (
+    <div className="viz__table-scroll">
+      <table className="balance-table montage-table">
+        <caption className="sr-only">{caption}</caption>
+        <thead>
+          <tr>
+            <th scope="col">Piece</th>
+            <th scope="col">Qte</th>
+            <th scope="col">Masse</th>
+          </tr>
+        </thead>
+        <tbody>
+          {lines.map((line, index) => (
+            <tr key={`${line.item}-${index}`}>
+              <th scope="row">
+                {line.item}
+                <span className="montage-table__detail">{line.detail}</span>
+              </th>
+              <td>{line.qty}</td>
+              <td>{line.massG === null ? '—' : `${n(line.massG, 2)} g`}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+
   return (
     <div className="panel__body">
+      <Fieldset
+        legend="Fiche de montage"
+        hint="Ce qui ne sort dans aucun STL mais entre dans le leurre, puis les pieces a imprimer. Lue sur l assemblage retenu : un logement refuse n y figure pas."
+      >
+        <p className="control__hint">Quincaillerie a prevoir</p>
+        {sheet.hardware.length > 0 ? sheetTable(sheet.hardware, 'Quincaillerie a prevoir') : <p className="control__hint">Aucune.</p>}
+        <p className="control__hint">Pieces imprimees</p>
+        {sheetTable(sheet.printed, 'Pieces imprimees')}
+      </Fieldset>
+
       <Fieldset
         legend="Montages"
         hint="Un support porte un anneau brise, qui porte un hamecon. Les deux masses se placent a leur bras de levier reel."
@@ -173,26 +218,35 @@ export function TacklePanel({ params, physics, onChange }: Props) {
                 </label>
               </div>
 
-              <Slider
-                label="Position sur l axe"
-                value={mount.position}
-                min={0.02}
-                max={0.98}
-                step={0.01}
-                display={`${Math.round(mount.position * 100)} %`}
-                onChange={(position) => setMount(mount.id, { position })}
-              />
-              <Slider
-                label="Hauteur"
-                value={mount.height}
-                min={-1}
-                max={1}
-                step={0.05}
-                display={
-                  mount.height < -0.2 ? 'ventre' : mount.height > 0.2 ? 'dos' : 'axe'
-                }
-                onChange={(height) => setMount(mount.id, { height })}
-              />
+              {mount.anchorId === PROPELLER_ANCHOR && params.propeller.enabled ? (
+                <p className="control__hint">
+                  Monte sur la boucle de queue, derriere l helice : il traine dans son sillage. Le balayage de
+                  rotation verifie que les pales ne l atteignent pas.
+                </p>
+              ) : (
+                <>
+                  <Slider
+                    label="Position sur l axe"
+                    value={mount.position}
+                    min={0.02}
+                    max={0.98}
+                    step={0.01}
+                    display={`${Math.round(mount.position * 100)} %`}
+                    onChange={(position) => setMount(mount.id, { position })}
+                  />
+                  <Slider
+                    label="Hauteur"
+                    value={mount.height}
+                    min={-1}
+                    max={1}
+                    step={0.05}
+                    display={
+                      mount.height < -0.2 ? 'ventre' : mount.height > 0.2 ? 'dos' : 'axe'
+                    }
+                    onChange={(height) => setMount(mount.id, { height })}
+                  />
+                </>
+              )}
               <Switch
                 label="Afficher en 3D"
                 checked={mount.visible}

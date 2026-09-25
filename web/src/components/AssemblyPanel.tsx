@@ -31,6 +31,9 @@ import {
   throughWireBlocker,
 } from '../lib/throughWire';
 import { Fieldset, Segmented, Slider, Switch } from './ui';
+import { PropellerPanel } from './PropellerPanel';
+import type { PhysicsResult } from '../lib/physics';
+import type { PropellerPlan } from '../lib/propeller';
 import { HEAD_LABEL, SCREWS, SCREW_LENGTHS, SCREW_SIZES, headOf, suggestSize, usefulLength } from '../lib/screws';
 import { createProfile, MM_TO_CM } from '../lib/profile';
 
@@ -50,6 +53,9 @@ interface Props {
   onRemoveAnchor: (id: string) => void;
   /** Compte rendu du creusage, s'il est calcule. */
   hollow?: HollowReport | null;
+  /** Helice de queue : masses, balayage de rotation, cotes (module AP.1). */
+  propeller?: PhysicsResult['propeller'];
+  propellerPlan?: PropellerPlan | null;
 }
 
 const mm = (value: number) => `${value.toFixed(value < 10 ? 2 : 1)} mm`;
@@ -74,6 +80,8 @@ export function AssemblyPanel({
   onUpdateAnchor,
   onRemoveAnchor,
   hollow = null,
+  propeller = null,
+  propellerPlan = null,
 }: Props) {
   const { assembly, fabrication } = params;
   const anchors = assembly.anchors;
@@ -366,6 +374,10 @@ export function AssemblyPanel({
           </>
         ) : null}
       </Fieldset>
+
+      {wire.enabled || params.propeller.enabled ? (
+        <PropellerPanel params={params} onChange={onChange} result={propeller ?? null} plan={propellerPlan ?? null} />
+      ) : null}
 
       <Fieldset
         legend="Points d ancrage"

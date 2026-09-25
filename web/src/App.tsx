@@ -1525,6 +1525,9 @@ export default function App() {
                     onApplyPalette={applyPalette}
                     onDeletePalette={deletePalette}
                     ballastSeats={preview?.ballastSeats}
+                    chamber={preview?.chamber ?? null}
+                    chamberProblem={preview?.chamberProblem ?? null}
+                    rattleShift={physics.rattleShift}
                   />
                 ) : null}
                 {section === 'assembly' ? (
@@ -1542,10 +1545,12 @@ export default function App() {
                     onUpdateAnchor={updateAnchor}
                     onRemoveAnchor={removeAnchor}
                     hollow={preview?.hollow ?? null}
+                    propeller={physics.propeller}
+                    propellerPlan={geo.propeller?.plan ?? null}
                   />
                 ) : null}
                 {section === 'tackle' ? (
-                  <TacklePanel params={params} physics={physics} onChange={updateParams} />
+                  <TacklePanel params={params} physics={physics} onChange={updateParams} geo={geo} assembly={preview} />
                 ) : null}
                 {section === 'reference' ? (
                   <ReferencePanel

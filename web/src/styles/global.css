@@ -3318,3 +3318,17 @@ select:hover {
 .contour__coords .control__field {
   width: 58px;
 }
+
+/* Fiche de montage : designation sur une ligne, cote et emplacement dessous. */
+.montage-table th[scope='row'] {
+  text-align: left;
+  white-space: normal;
+}
+
+.montage-table__detail {
+  display: block;
+  font-weight: 400;
+  color: var(--ink-3, var(--ink-2));
+  font-size: 10.5px;
+  line-height: 1.35;
+}

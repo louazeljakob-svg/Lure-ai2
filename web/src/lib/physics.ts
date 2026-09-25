@@ -22,6 +22,7 @@ import {
   disposeAssembly,
   resolvePin,
   type AssemblyResult,
+  type ChamberReport,
 } from './assembly';
 import { printedBodies } from './geometry';
 import {
@@ -136,6 +137,20 @@ export interface PhysicsResult {
     /** Contribution de l'helice, de la perle et de l'axe au moment de tangage autour du CG, en g.mm2. */
     pitchInertia: number;
     sweep: PropellerSweep;
+  } | null;
+  /**
+   * Chambre de billes (module AP.2) : centre de gravite billes tassees a
+   * l'avant, a l'arriere, et ecart entre les deux — c'est ce qui decide de
+   * l'assiette au lancer. Null sans chambre retenue.
+   */
+  rattleShift: {
+    restAt: 'front' | 'rear' | 'middle';
+    frontPct: number;
+    rearPct: number;
+    /** Deplacement du CG entre billes avant et billes arriere, en mm. */
+    deltaMm: number;
+    travelMm: number;
+    ballMassG: number;
   } | null;
   /** Masse des hamecons et anneaux affectes depuis le catalogue. */
   tackleMass: number;
@@ -331,6 +346,7 @@ export function computePhysics(
         dowels: [] as DowelPlacement[],
         screws: [] as ScrewPlan[],
         problems: [] as { id: string; title: string; detail: string }[],
+        chamber: null as ChamberReport | null,
       };
   // La caudale ne fait pas partie des coques : son volume s'ajoute a celui
   // des deux demi-corps.
@@ -654,6 +670,28 @@ export function computePhysics(
     share: totalMass > 1e-9 ? (line.massG / totalMass) * 100 : 0,
   }));
 
+  // Billes tassees a l'avant ou a l'arriere : le CG glisse de la difference
+  // des moments, rapportee a la masse totale.
+  const chamberReport = cavities.chamber;
+  const rattleShift = chamberReport && massSum > 1e-9
+    ? (() => {
+        const moment = (list: [number, number, number][]) =>
+          list.reduce((sum, position) => sum + position[0] * chamberReport.massEach, 0);
+        const rest = moment(chamberReport.rest);
+        const toPct = (x: number) => ((x + halfLength) / lengthCm) * 100;
+        const cgFront = cg.x + (moment(chamberReport.front) - rest) / massSum;
+        const cgRear = cg.x + (moment(chamberReport.rear) - rest) / massSum;
+        return {
+          restAt: chamberReport.restAt,
+          frontPct: toPct(cgFront),
+          rearPct: toPct(cgRear),
+          deltaMm: (cgRear - cgFront) * 10,
+          travelMm: chamberReport.travelMm,
+          ballMassG: chamberReport.massEach * chamberReport.count,
+        };
+      })()
+    : null;
+
   // Balayage de rotation de l'helice : un tour complet par pas de 5 degres.
   const sweep = spin ? propellerSweep(params, profile, spin) : null;
   // Inertie de tangage apportee par l'arriere tournant : masse fois bras de
@@ -669,6 +707,7 @@ export function computePhysics(
   return {
     volumeCm3: volume,
     solidFraction: fill,
+    rattleShift,
     propeller:
       spin && sweep
         ? {
@@ -807,6 +846,7 @@ function shellContent(
   screws: ScrewPlan[];
   /** Refus motives de l'assemblage : charniere, fente de queue, ergots. */
   problems: { id: string; title: string; detail: string }[];
+  chamber: ChamberReport | null;
 } {
   const owned = preview ? null : buildAssembly(profile, params, ASSEMBLY_PREVIEW);
   const assembly = preview ?? owned!;
@@ -845,6 +885,7 @@ function shellContent(
     dowelAdded: dowelVolumes(assembly.dowels).added,
     dowels: assembly.dowels,
     screws: assembly.screws,
+    chamber: assembly.chamber && assembly.chamber.valid ? assembly.chamber : null,
     problems: [
       ...(assembly.jointProblem ? [{ id: 'joint-hinge', title: 'Logement de charniere refuse', detail: assembly.jointProblem }] : []),
       ...(assembly.tailSlotProblem

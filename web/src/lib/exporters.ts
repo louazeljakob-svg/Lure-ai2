@@ -26,6 +26,8 @@ import {
   assemblyExport,
   billPlanFor,
   buildAssembly,
+  disposeAssembly,
+  type AssemblyResult,
 } from './assembly';
 import { bibOutline, bibShape, billHalfWidthAt, billSize } from './billTemplate';
 import { createProfile } from './profile';
@@ -145,7 +147,7 @@ export function collectParts(
   }
 
   const profile = createProfile(params);
-  const assembly = buildAssembly(profile, params, coarse ? ASSEMBLY_STEP : assemblyExport(params));
+  const assembly = coarse ? buildAssembly(profile, params, ASSEMBLY_STEP) : shellAssembly(profile, params);
   owned.push(assembly.male, assembly.female, ...assembly.pins.map((pin) => pin.geometry));
   if (assembly.socketPreview) owned.push(assembly.socketPreview);
   if (assembly.tenons) owned.push(assembly.tenons);
@@ -194,6 +196,81 @@ export function collectParts(
   return { parts, owned };
 }
 import { sanitizeName, sanitizeParams, sanitizePalettes } from './validation';
+
+/**
+ * Densite visee pour une demi-coque de corps, en triangles par millimetre de
+ * longueur, mesuree sur le STL exporte (module AQ) : une coque de 100 mm sort
+ * entre 15 000 et 20 000 triangles.
+ */
+export const SHELL_DENSITY = { min: 150, max: 200, target: 175 };
+
+const trianglesOf = (geometry: THREE.BufferGeometry | null | undefined): number =>
+  geometry ? (geometry.getIndex() ? geometry.getIndex()!.count : geometry.getAttribute('position').count) / 3 : 0;
+
+/**
+ * Coques d'export a la densite du module AQ.
+ *
+ * La resolution de depart suit des pas absolus (0,9 mm le long du corps,
+ * 0,75 mm autour). Selon la finesse du corps et ses details, la densite
+ * reelle en sort plus ou moins loin de la cible : on MESURE les deux fichiers
+ * que l'export produira — coque, goujons, demi-caudale, barreaux — et, hors
+ * de la fourchette, on recale le nombre de stations une fois. Le calcul ne
+ * depend que des parametres : la coque male et la coque femelle, exportees
+ * separement, sortent toujours de la meme grille et se referment l'une sur
+ * l'autre.
+ */
+export function shellAssembly(profile: ReturnType<typeof createProfile>, params: LureParams): AssemblyResult {
+  const base = assemblyExport(params);
+  const first = buildAssembly(profile, params, base);
+  const vertical = params.assembly.planeAngle < 5;
+  let finMale = 0;
+  let finFemale = 0;
+  if (profile.hasFin) {
+    const male = buildTailFin(profile, params, vertical ? 'male' : 'full');
+    finMale = trianglesOf(male);
+    male.dispose();
+    if (vertical) {
+      const female = buildTailFin(profile, params, 'female');
+      finFemale = trianglesOf(female);
+      female.dispose();
+    }
+  }
+  const retention = first.jointPlan ? buildRetentionPins(first.jointPlan) : null;
+  const extraMale = trianglesOf(first.tenons) + trianglesOf(first.dowelPins) + trianglesOf(retention) + finMale;
+  retention?.dispose();
+  const extraFemale = finFemale;
+  const extras = (extraMale + extraFemale) / 2;
+  const shellsOf = (a: AssemblyResult) => (trianglesOf(a.male) + trianglesOf(a.female)) / 2;
+  const densityOf = (a: AssemblyResult) => (shellsOf(a) + extras) / Math.max(params.length, 1);
+  // Marge de 10 tri/mm a l'interieur de la fourchette : un reglage voisin ne
+  // doit pas faire basculer la coque hors de la plage.
+  const settled = (a: AssemblyResult) =>
+    densityOf(a) >= SHELL_DENSITY.min + 10 && densityOf(a) <= SHELL_DENSITY.max - 10;
+  const inBand = (a: AssemblyResult) =>
+    densityOf(a) >= SHELL_DENSITY.min && densityOf(a) <= SHELL_DENSITY.max;
+  if (params.scales.enabled || inBand(first) || shellsOf(first) <= 0) return first;
+  const wanted = SHELL_DENSITY.target * params.length - extras;
+  // Premier recalage proportionnel, puis secante sur les deux mesures : le
+  // nombre de triangles n'est pas strictement proportionnel aux stations
+  // (faces de joint, stations imposees par la fente de bavette).
+  let previous = { stations: base.stations, shells: shellsOf(first) };
+  let current = first;
+  let stations = Math.round(base.stations * (wanted / previous.shells));
+  for (let pass = 0; pass < 2; pass++) {
+    stations = Math.min(Math.max(stations, 60), 900);
+    if (stations === previous.stations) break;
+    const next = buildAssembly(profile, params, { ...base, stations });
+    disposeAssembly(current);
+    current = next;
+    if (settled(current)) break;
+    const measured = { stations, shells: shellsOf(current) };
+    const slope = (measured.shells - previous.shells) / Math.max(measured.stations - previous.stations, 1e-6);
+    if (!(slope > 0)) break;
+    stations = Math.round(measured.stations + (wanted - measured.shells) / slope);
+    previous = measured;
+  }
+  return current;
+}
 
 export const slugify = (value: string): string =>
   value

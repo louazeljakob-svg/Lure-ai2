@@ -13,6 +13,7 @@ import type {
 import { articulationBlocker } from '../lib/articulation';
 import { LIMITS, SHAPE_PRESETS, cloneAnatomy, getPreset } from '../lib/presets';
 import { AnatomyEditor } from './AnatomyEditor';
+import { FamilyPanel } from './FamilyPanel';
 import { billSize } from '../lib/billTemplate';
 import { meshBodyOf } from '../lib/meshBody';
 import { Derived, Fieldset, Segmented, Slider, Switch } from './ui';
@@ -112,6 +113,8 @@ export function ShapeEditor({
           onChange={onLoadPreset}
         />
       </Fieldset>
+
+      <FamilyPanel params={params} onChange={onChange} />
 
       <Fieldset
         legend="Corps"

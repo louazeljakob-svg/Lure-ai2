@@ -73,6 +73,9 @@ export function ExportManager({
     ...(params.softTail.enabled
       ? [{ value: 'softTail' as ExportKind, label: 'Queue souple' }]
       : []),
+    // Helice et perle (module AP.1) : une perle achetee n'a pas de STL.
+    ...(geo.propeller ? [{ value: 'propeller' as ExportKind, label: 'Helice' }] : []),
+    ...(geo.propeller && params.propeller.beadPrinted ? [{ value: 'bead' as ExportKind, label: 'Perle' }] : []),
   ];
   const allowed = new Set<ExportKind>([
     'assembly',
