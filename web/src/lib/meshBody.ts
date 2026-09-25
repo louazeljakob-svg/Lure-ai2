@@ -80,11 +80,30 @@ export interface MeshSkin {
   inconsistentRays: number;
   /** Volume de l'enveloppe echantillonnee, en cm3. */
   envelopeVolume: number;
+  /** Plus grand vide interne traverse par un rayon, en mm (logements existants). */
+  internalVoidMm: number;
+  /** Plus grand creux dans la fente d'une bavette detachee, en mm. */
+  slotGapMm: number;
+  /** Plus grand passage de fabrication existant, au ras du plan de joint, en mm. */
+  railGapMm: number;
   fins: MeshFinSpan[];
 }
 
 /** Recouvrement de la caudale dans le corps : la trancheuse les unit. */
 const TAIL_OVERLAP_CM = 0.1;
+
+/**
+ * Demi-ouverture angulaire, autour du dos et du ventre, ou un creux est lu
+ * comme un passage de fabrication dans le plan de joint (25 degres).
+ */
+const RAIL_BAND = (25 * Math.PI) / 180;
+
+/**
+ * Profondeur au-dela de laquelle une encoche du dos ou du ventre est une
+ * bouche de logement et non du relief : 0,3 mm, juste au-dessus de la rainure
+ * a collant (0,25 mm), qui doit rester.
+ */
+const NOTCH_CM = 0.03;
 
 /** Resolution d'echantillonnage : 0,2 mm entre tranches, 512 rayons. */
 const RAYS = 512;
@@ -94,6 +113,15 @@ interface SliceHit {
   j: number;
   t: number;
   exit: boolean;
+  /** Segment traverse : sa boucle dit s'il borde un vide interne. */
+  s: number;
+}
+
+/** Zone ou un creux est attendu : la fente d'une bavette detachee du fichier. */
+export interface GapAllowance {
+  /** Etendue en X, en cm, repere de travail. */
+  x0: number;
+  x1: number;
 }
 
 /**
@@ -116,7 +144,7 @@ function cutEdge(
 /**
  * Echantillonne la peau d'un maillage ferme, oriente, en cm, nez vers -X.
  */
-export function sampleSkin(positions: Float32Array): MeshSkin {
+export function sampleSkin(positions: Float32Array, allowance: GapAllowance | null = null, onProgress?: (fraction: number) => void): MeshSkin {
   let xmin = Infinity;
   let xmax = -Infinity;
   for (let k = 0; k < positions.length; k += 3) {
@@ -167,7 +195,12 @@ export function sampleSkin(positions: Float32Array): MeshSkin {
   const gapAt: MeshGap[] = [];
   let missingRays = 0;
   let inconsistentRays = 0;
+  let internalVoids = 0;
+  let slotGap = 0;
+  let railGap = 0;
   const dTheta = (Math.PI * 2) / nT;
+  const railRays = Math.round(RAIL_BAND / dTheta);
+  const notch = new Uint8Array(railRays * 2 + 1);
   const cosT = new Float64Array(nT);
   const sinT = new Float64Array(nT);
   for (let j = 0; j < nT; j++) {
@@ -177,6 +210,7 @@ export function sampleSkin(positions: Float32Array): MeshSkin {
 
   for (let i = 1; i < nP - 1; i++) {
     const seg = segments[i];
+    if (onProgress && i % 60 === 0) onProgress(i / nP);
     if (seg.length === 0) continue;
     // --- Centre : barycentre de l'aire, ramene dans le plan de joint -------
     let A = 0;
@@ -221,6 +255,39 @@ export function sampleSkin(positions: Float32Array): MeshSkin {
     }
     yc[i] = oy;
 
+    // --- Boucles de la tranche ---------------------------------------------
+    // Les points de coupe sont canoniques : un segment commence exactement ou
+    // finit son voisin. Une boucle parcourue a rebours (aire negative) borde
+    // un VIDE INTERNE — logement de vis, poche, chambre — et non l'exterieur.
+    const segCount = seg.length / 4;
+    const startOf = new Map<string, number>();
+    for (let k = 0; k < segCount; k++) startOf.set(`${seg[k * 4]},${seg[k * 4 + 1]}`, k);
+    const loopOf = new Int32Array(segCount).fill(-1);
+    const loopSign: number[] = [];
+    for (let k = 0; k < segCount; k++) {
+      if (loopOf[k] >= 0) continue;
+      const id = loopSign.length;
+      let area = 0;
+      let j = k;
+      let closed = false;
+      for (let guard = 0; guard <= segCount; guard++) {
+        loopOf[j] = id;
+        area += seg[j * 4] * seg[j * 4 + 3] - seg[j * 4 + 2] * seg[j * 4 + 1];
+        const next = startOf.get(`${seg[j * 4 + 2]},${seg[j * 4 + 3]}`);
+        if (next === undefined || (loopOf[next] >= 0 && next !== k)) break;
+        if (next === k) {
+          closed = true;
+          break;
+        }
+        j = next;
+      }
+      loopSign.push(closed ? Math.sign(area) : 0);
+    }
+    const allowed =
+      allowance !== null &&
+      xmin + i * dx >= allowance.x0 - 0.1 &&
+      xmin + i * dx <= allowance.x1 + 0.1;
+
     // --- Rayons ------------------------------------------------------------
     const hits: SliceHit[] = [];
     for (let s = 0; s < seg.length; s += 4) {
@@ -242,7 +309,7 @@ export function sampleSkin(positions: Float32Array): MeshSkin {
         const t = (Py * ez - Pz * ex) / denom;
         const u = (Py * dz - Pz * dy) / denom;
         if (u < 0 || u >= 1 || t <= 1e-9) continue;
-        hits.push({ j, t, exit: denom > 0 });
+        hits.push({ j, t, exit: denom > 0, s: s / 4 });
       }
     }
     hits.sort((a, b) => a.j - b.j || a.t - b.t);
@@ -260,7 +327,29 @@ export function sampleSkin(positions: Float32Array): MeshSkin {
       let gap = 0;
       for (let k = h; k < e - 1; k++) {
         w += hits[k].exit ? -1 : 1;
-        if (w <= 0) gap += hits[k + 1].t - hits[k].t;
+        if (w > 0) continue;
+        const span = hits[k + 1].t - hits[k].t;
+        // Sortie dans un vide interne : il sera comble puis recreuse par
+        // l'industrialisation, ce n'est pas un creux de la forme.
+        if (loopSign[loopOf[hits[k].s]] < 0) {
+          internalVoids = Math.max(internalVoids, span);
+          continue;
+        }
+        // Fente d'une bavette detachee, sous le menton : attendue.
+        const theta = hits[h].j * dTheta;
+        if (allowed && theta > Math.PI / 2 && theta < (3 * Math.PI) / 2) {
+          slotGap = Math.max(slotGap, span);
+          continue;
+        }
+        // Au ras du plan de joint, dos ou ventre : un passage de fabrication
+        // existant — bouche de vis, canal de goupille, fente. Il est comble
+        // puis recreuse par l'industrialisation ; il ne change pas la forme.
+        const fromRail = Math.min(Math.abs(theta - Math.PI), theta, Math.PI * 2 - theta);
+        if (fromRail < RAIL_BAND) {
+          railGap = Math.max(railGap, span);
+          continue;
+        }
+        gap += span;
       }
       r[row + hits[h].j] = hits[e - 1].t;
       if (gap > worstGap) {
@@ -285,6 +374,37 @@ export function sampleSkin(positions: Float32Array): MeshSkin {
         const ra = r[row + ((j - a + nT) % nT)];
         const rb = r[row + ((j + b) % nT)];
         r[row + j] = ra + ((rb - ra) * a) / (a + b);
+      }
+    }
+    // Bouches de logement au ras du dos ou du ventre (tete de vis, sortie de
+    // goupille) : le rayon s'y engouffre et s'arrete au fond du logement. Une
+    // encoche etroite, plus profonde que la rainure a collant, est refermee
+    // sur ses bords — la hauteur de section redevient celle du corps.
+    for (const centre of [0, nT / 2]) {
+      notch.fill(0);
+      for (let jj = -railRays; jj <= railRays; jj++) {
+        const j = (centre + jj + nT) % nT;
+        let left = 0;
+        let right = 0;
+        for (let k = 1; k <= railRays; k++) {
+          left = Math.max(left, r[row + ((j - k + nT) % nT)]);
+          right = Math.max(right, r[row + ((j + k) % nT)]);
+        }
+        const depth = Math.min(left, right) - r[row + j];
+        if (depth > NOTCH_CM) {
+          notch[jj + railRays] = 1;
+          railGap = Math.max(railGap, depth);
+        }
+      }
+      for (let jj = -railRays; jj <= railRays; jj++) {
+        if (!notch[jj + railRays]) continue;
+        let a = 1;
+        while (jj - a >= -railRays && notch[jj - a + railRays]) a++;
+        let b = 1;
+        while (jj + b <= railRays && notch[jj + b + railRays]) b++;
+        const ra = r[row + ((centre + jj - a + nT) % nT)];
+        const rb = r[row + ((centre + jj + b) % nT)];
+        r[row + ((centre + jj + nT) % nT)] = ra + ((rb - ra) * a) / (a + b);
       }
     }
     if (worstGap > 0.005) {
@@ -410,6 +530,9 @@ export function sampleSkin(positions: Float32Array): MeshSkin {
     missingRays,
     inconsistentRays,
     envelopeVolume,
+    internalVoidMm: internalVoids * 10,
+    slotGapMm: slotGap * 10,
+    railGapMm: railGap * 10,
     fins,
   };
 }
@@ -621,8 +744,10 @@ export function createMeshBody(
   name: string,
   source: Float32Array,
   display: Float32Array | null = null,
+  allowance: GapAllowance | null = null,
+  onProgress?: (fraction: number) => void,
 ): MeshBody {
-  const skin = sampleSkin(source);
+  const skin = sampleSkin(source, allowance, onProgress);
   const extent = (axis: number) => {
     let lo = Infinity;
     let hi = -Infinity;

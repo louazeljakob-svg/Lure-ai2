@@ -12,16 +12,17 @@
 import { useEffect, useRef, useState } from 'react';
 import type { LureParams, WaterId } from '../types/lure';
 import { getMaterial, WATER_LABEL } from '../lib/materials';
-import { decimate, importMesh, type ImportedMesh, type OrientationOverride } from '../lib/importMesh';
-import { createMeshBody, registerMeshBody, type MeshBody } from '../lib/meshBody';
+import { decimate, type ImportedMesh, type OrientationOverride } from '../lib/importMesh';
+import type { MeshBody } from '../lib/meshBody';
+import { guessFamily, topologyBlocks, type BenchResult, type IndustrialReport } from '../lib/industrialise';
 import {
-  guessFamily,
-  industrialise,
-  runBench,
-  topologyBlocks,
-  type BenchResult,
-  type IndustrialReport,
-} from '../lib/industrialise';
+  benchInBackground,
+  computeSite,
+  importInBackground,
+  industrialiseInBackground,
+  overallProgress,
+  Superseded,
+} from '../lib/importJobs';
 import { FLOAT_LABEL } from '../lib/archetypes';
 import { LIMITS } from '../lib/presets';
 import { Fieldset, Segmented, Slider, Switch } from './ui';
@@ -38,6 +39,7 @@ interface Props {
 
 const mm = (value: number) => `${value.toFixed(1)} mm`;
 const pct = (value: number) => `${Math.round(value * 100)} %`;
+const seconds = (ms: number) => `${(ms / 1000).toFixed(2).replace('.', ',')} s`;
 
 type Unit = '1' | '10' | '25.4';
 const UNITS: { value: Unit; label: string }[] = [
@@ -48,8 +50,16 @@ const UNITS: { value: Unit; label: string }[] = [
 
 type Target = 'auto' | 'float' | 'suspend' | 'sink';
 
-/** Laisse le navigateur peindre l'etat « en cours » avant un calcul lourd. */
-const later = (task: () => void) => window.setTimeout(task, 30);
+interface ReadOptions {
+  unit: Unit;
+  targetLength: number;
+  override: OrientationOverride;
+  factor: number;
+  mirrorHalf: boolean;
+}
+
+/** Taille au-dela de laquelle un fichier est refuse avant lecture. */
+const MAX_FILE_BYTES = 400 * 1024 * 1024;
 
 export function ImportPanel({ params, water, mesh, onMesh, onToast, onOpenIndustrial }: Props) {
   const input = useRef<HTMLInputElement>(null);
@@ -59,60 +69,101 @@ export function ImportPanel({ params, water, mesh, onMesh, onToast, onOpenIndust
   const [targetLength, setTargetLength] = useState(0);
   const [factor, setFactor] = useState(1);
   const [override, setOverride] = useState<OrientationOverride>({});
+  const [mirrorHalf, setMirrorHalf] = useState(true);
   const [body, setBody] = useState<MeshBody | null>(null);
-  const [reading, setReading] = useState(false);
+  const [progress, setProgress] = useState<{ stage: string; value: number } | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+  const [importMs, setImportMs] = useState<number | null>(null);
+  const [site, setSite] = useState<'worker' | 'main' | null>(null);
   const [bench, setBench] = useState<BenchResult | null>(null);
   const [benchBusy, setBenchBusy] = useState(false);
   const [hollow, setHollow] = useState(true);
   const [wall, setWall] = useState(1.6);
   const [target, setTarget] = useState<Target>('auto');
   const [acceptEnvelope, setAcceptEnvelope] = useState(false);
-  const [industrial, setIndustrial] = useState<{ params: LureParams | null; report: IndustrialReport } | null>(null);
+  const [industrial, setIndustrial] = useState<{ params: LureParams | null; report: IndustrialReport; ms: number } | null>(null);
   const [industrialBusy, setIndustrialBusy] = useState(false);
+  const reading = progress !== null;
+
+  useEffect(() => {
+    void computeSite().then(setSite);
+  }, []);
 
   /** (Re)lit la source avec les reglages courants ; rien n'est modifie en place. */
-  const read = (
-    file: { name: string; data: ArrayBuffer },
-    options: { unit: Unit; targetLength: number; override: OrientationOverride; factor: number },
-  ) => {
-    setReading(true);
-    later(() => {
-      try {
-        const loaded = importMesh(file.name, file.data, {
-          unitToMm: Number(options.unit) * options.factor,
-          targetLengthMm: options.targetLength > 0 ? options.targetLength : undefined,
-          orientation: options.override,
-        });
-        const created = createMeshBody(`maillage-${Date.now()}`, file.name, loaded.body, null);
-        registerMeshBody(created);
+  const read = (file: { name: string; data: ArrayBuffer }, options: ReadOptions) => {
+    setFailure(null);
+    setProgress({ stage: 'Lecture du fichier', value: 0 });
+    importInBackground(
+      file.name,
+      file.data,
+      {
+        unitToMm: Number(options.unit) * options.factor,
+        targetLengthMm: options.targetLength > 0 ? options.targetLength : undefined,
+        orientation: options.override,
+        mirrorHalf: options.mirrorHalf,
+      },
+      (stage, fraction) => setProgress({ stage, value: overallProgress(stage, fraction) }),
+    ).then(
+      ({ mesh: loaded, body: created, ms }) => {
+        setProgress(null);
+        setImportMs(ms);
         setBody(created);
         setIndustrial(null);
         onMesh(loaded);
-        onToast(`${file.name} : ${loaded.diagnosis.triangles.toLocaleString('fr-FR')} facettes`, 'ok');
-      } catch (error) {
-        onToast(error instanceof Error ? error.message : 'Import impossible', 'error');
-      } finally {
-        setReading(false);
-      }
-    });
+        onToast(`${file.name} : ${loaded.diagnosis.triangles.toLocaleString('fr-FR')} facettes lues en ${seconds(ms)}`, 'ok');
+      },
+      (error: unknown) => {
+        if (error instanceof Superseded) return;
+        setProgress(null);
+        const message = error instanceof Error ? error.message : 'cause inconnue';
+        setFailure(`Import de ${file.name} impossible — ${message}`);
+        onToast(`Import impossible : ${message}`, 'error');
+      },
+    );
   };
 
   const load = async (file: File) => {
-    const data = await file.arrayBuffer();
+    setFailure(null);
+    if (file.size === 0) {
+      setFailure(`Import de ${file.name} impossible — le fichier est vide (0 octet).`);
+      return;
+    }
+    if (file.size > MAX_FILE_BYTES) {
+      setFailure(
+        `Import de ${file.name} impossible — ${(file.size / 1048576).toFixed(0)} Mo depassent la limite de ` +
+          `${MAX_FILE_BYTES / 1048576} Mo que le navigateur peut tenir en memoire avec ses reparations.`,
+      );
+      return;
+    }
+    let data: ArrayBuffer;
+    try {
+      data = await file.arrayBuffer();
+    } catch (error) {
+      setFailure(
+        `Import de ${file.name} impossible — le navigateur n a pas pu lire le fichier (${
+          error instanceof Error ? error.message : 'acces refuse'
+        }).`,
+      );
+      return;
+    }
     const next = { name: file.name, data };
     setSource(next);
     setOverride({});
-    read(next, { unit, targetLength, override: {}, factor });
+    setMirrorHalf(true);
+    read(next, { unit, targetLength, override: {}, factor, mirrorHalf: true });
   };
 
-  const reread = (patch: Partial<{ unit: Unit; targetLength: number; override: OrientationOverride; factor: number }>) => {
-    const options = { unit, targetLength, override, factor, ...patch };
+  const reread = (patch: Partial<ReadOptions>) => {
+    const options = { unit, targetLength, override, factor, mirrorHalf, ...patch };
     if (patch.factor !== undefined) setFactor(patch.factor);
     if (patch.unit !== undefined) setUnit(patch.unit);
     if (patch.targetLength !== undefined) setTargetLength(patch.targetLength);
     if (patch.override !== undefined) setOverride(patch.override);
+    if (patch.mirrorHalf !== undefined) setMirrorHalf(patch.mirrorHalf);
     if (source) read(source, options);
   };
+
+  const turn = (axis: 'x' | 'y' | 'z') => reread({ override: { ...override, turns: [...(override.turns ?? []), axis] } });
 
   // Banc d'essai : recalcule quand le maillage, le materiau ou l'eau changent.
   const settings = `${params.material}|${params.infill}|${params.print.perimeters}|${water}`;
@@ -121,18 +172,24 @@ export function ImportPanel({ params, water, mesh, onMesh, onToast, onOpenIndust
       setBench(null);
       return;
     }
+    let live = true;
     setBenchBusy(true);
-    const timer = later(() => {
-      try {
-        setBench(runBench(mesh, body, params, water));
-      } catch (error) {
-        setBench(null);
-        onToast(error instanceof Error ? `Banc d essai : ${error.message}` : 'Banc d essai impossible', 'error');
-      } finally {
+    benchInBackground({ material: params.material, infill: params.infill, print: params.print }, water).then(
+      ({ bench: result }) => {
+        if (!live) return;
+        setBench(result);
         setBenchBusy(false);
-      }
-    });
-    return () => window.clearTimeout(timer);
+      },
+      (error: unknown) => {
+        if (!live || error instanceof Superseded) return;
+        setBench(null);
+        setBenchBusy(false);
+        onToast(error instanceof Error ? `Banc d essai : ${error.message}` : 'Banc d essai impossible', 'error');
+      },
+    );
+    return () => {
+      live = false;
+    };
     // Les reglages qui comptent sont resumes dans `settings`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mesh, body, settings]);
@@ -140,22 +197,20 @@ export function ImportPanel({ params, water, mesh, onMesh, onToast, onOpenIndust
   const run = () => {
     if (!mesh || !body) return;
     setIndustrialBusy(true);
-    later(() => {
-      try {
-        setIndustrial(
-          industrialise(mesh, body, params, {
-            hollow,
-            wall,
-            target: target === 'auto' ? undefined : target,
-            acceptEnvelope,
-          }),
-        );
-      } catch (error) {
-        onToast(error instanceof Error ? `Industrialisation : ${error.message}` : 'Industrialisation impossible', 'error');
-      } finally {
+    industrialiseInBackground(
+      { material: params.material, infill: params.infill, print: params.print },
+      { hollow, wall, target: target === 'auto' ? undefined : target, acceptEnvelope },
+    ).then(
+      (result) => {
+        setIndustrial(result);
         setIndustrialBusy(false);
-      }
-    });
+      },
+      (error: unknown) => {
+        setIndustrialBusy(false);
+        if (error instanceof Superseded) return;
+        onToast(error instanceof Error ? `Industrialisation : ${error.message}` : 'Industrialisation impossible', 'error');
+      },
+    );
   };
 
   const clear = () => {
@@ -164,17 +219,21 @@ export function ImportPanel({ params, water, mesh, onMesh, onToast, onOpenIndust
     setBody(null);
     setBench(null);
     setIndustrial(null);
+    setFailure(null);
+    setImportMs(null);
   };
 
   const blocks = mesh && body ? topologyBlocks(mesh, body, acceptEnvelope) : [];
+  const envelopeMatters = mesh && body ? topologyBlocks(mesh, body, false).length !== topologyBlocks(mesh, body, true).length : false;
   const family = mesh && body ? guessFamily(body, mesh.bib) : null;
   const material = getMaterial(params.material);
+  const intersections = mesh?.intersections;
 
   return (
     <div className="panel__body">
       <Fieldset
         legend="Importer un maillage"
-        hint="STL binaire ou ASCII, et OBJ. Les fichiers STL n ont pas d unite : dites laquelle, ou imposez la longueur reelle."
+        hint="STL binaire ou ASCII (reconnu a son contenu, pas a son extension), et OBJ. Les fichiers STL n ont pas d unite : dites laquelle, ou imposez la longueur reelle."
       >
         <div
           className={`import-drop${dragging ? ' import-drop--over' : ''}`}
@@ -190,7 +249,19 @@ export function ImportPanel({ params, water, mesh, onMesh, onToast, onOpenIndust
             if (file) void load(file);
           }}
         >
-          <p>{reading ? 'Lecture et reparation du maillage…' : 'Glissez un fichier ici, ou'}</p>
+          {progress ? (
+            <div className="import-progress" role="status" aria-live="polite">
+              <div className="import-progress__row">
+                <span>{progress.stage}…</span>
+                <span>{Math.round(progress.value * 100)} %</span>
+              </div>
+              <div className="import-progress__bar" aria-hidden="true">
+                <span style={{ width: `${Math.max(2, progress.value * 100)}%` }} />
+              </div>
+            </div>
+          ) : (
+            <p>Glissez un fichier ici, ou</p>
+          )}
           <button type="button" className="toolbtn" disabled={reading} onClick={() => input.current?.click()}>
             Importer un STL
           </button>
@@ -205,7 +276,19 @@ export function ImportPanel({ params, water, mesh, onMesh, onToast, onOpenIndust
               event.target.value = '';
             }}
           />
+          {site ? (
+            <p className="import-site">
+              {site === 'worker'
+                ? 'Calcul en arriere-plan : l interface reste utilisable pendant la lecture.'
+                : 'Ce navigateur refuse le calcul en arriere-plan : la lecture se fait sur la page, qui peut ralentir.'}
+            </p>
+          ) : null}
         </div>
+        {failure ? (
+          <p className="import-failure" role="alert">
+            {failure}
+          </p>
+        ) : null}
         <Segmented
           label="Unite du fichier"
           value={unit}
@@ -218,18 +301,23 @@ export function ImportPanel({ params, water, mesh, onMesh, onToast, onOpenIndust
           min={0.25}
           max={4}
           step={0.05}
+          hardMin={0.01}
+          hardMax={100}
           display={`x ${factor.toFixed(2)}`}
+          unit="x"
           disabled={targetLength > 0}
           hint="Agrandit ou reduit le modele d un bloc, apres conversion d unite."
           onChange={(value) => reread({ factor: value })}
         />
         <Slider
-          label="Longueur reelle imposee"
+          label="Longueur cible"
           value={targetLength}
           min={0}
           max={LIMITS.length.max}
           step={1}
+          hardMax={1000}
           display={targetLength > 0 ? mm(targetLength) : 'Echelle du fichier'}
+          unit="mm"
           hint="Zero : le fichier est pris a son unite. Sinon, le modele est mis a cette longueur hors-tout."
           onChange={(value) => reread({ targetLength: value })}
         />
@@ -242,8 +330,61 @@ export function ImportPanel({ params, water, mesh, onMesh, onToast, onOpenIndust
 
       {mesh && body ? (
         <>
-          <Fieldset legend="Orientation" hint="Nez vers -X, dos vers +Y, plan de symetrie vertical : c'est le repere de fabrication.">
-            <p className="control__hint">{mesh.orientation.note}</p>
+          <Fieldset legend="Fiche du maillage" hint="Mesures sur le maillage repare et mis en place, a l echelle choisie.">
+            <table className="balance-table">
+              <tbody>
+                <tr>
+                  <th>Facettes</th>
+                  <td>
+                    {mesh.diagnosis.triangles.toLocaleString('fr-FR')} ({mesh.format}
+                    {importMs !== null ? `, lues en ${seconds(importMs)}` : ''})
+                  </td>
+                </tr>
+                <tr>
+                  <th>Cotes hors-tout</th>
+                  <td>
+                    {mm(mesh.bounds.length)} x {mm(mesh.bounds.height)} x {mm(mesh.bounds.width)}
+                    <span className="control__hint"> (longueur x hauteur x largeur)</span>
+                  </td>
+                </tr>
+                <tr>
+                  <th>Volume</th>
+                  <td>{mesh.volume.toFixed(2)} cm3</td>
+                </tr>
+                {mesh.halfShell ? (
+                  <tr>
+                    <th>Demi-coque</th>
+                    <td>
+                      Face de joint de {mesh.halfShell.jointAreaCm2.toFixed(2)} cm2 · fichier {mesh.halfShell.fileVolume.toFixed(2)} cm3
+                      {mesh.halfShell.completed ? ' · leurre entier reconstitue' : ' · prise telle quelle'}
+                    </td>
+                  </tr>
+                ) : null}
+                <tr>
+                  <th>Orientation detectee</th>
+                  <td>{mesh.orientation.note}</td>
+                </tr>
+              </tbody>
+            </table>
+            {mesh.warnings.length ? (
+              <ul className="import-limits">
+                {mesh.warnings.map((warning) => (
+                  <li key={warning}>{warning}</li>
+                ))}
+              </ul>
+            ) : null}
+          </Fieldset>
+
+          <Fieldset
+            legend="Orientation"
+            hint="Repere de fabrication : nez vers -X, dos vers +Y, plan de symetrie vertical. Le modele est toujours recentre sur l origine."
+          >
+            <Switch
+              label="Mode manuel"
+              checked={override.manual === true}
+              hint="Garde le repere du fichier sans detection : vous le corrigez par quarts de tour et inversions."
+              onChange={(manual) => reread({ override: { manual } })}
+            />
             <div className="button-row">
               <button type="button" className="toolbtn" onClick={() => reread({ override: { ...override, flipNose: !override.flipNose } })}>
                 Inverser nez / queue
@@ -251,30 +392,51 @@ export function ImportPanel({ params, water, mesh, onMesh, onToast, onOpenIndust
               <button type="button" className="toolbtn" onClick={() => reread({ override: { ...override, flipBack: !override.flipBack } })}>
                 Inverser dos / ventre
               </button>
-              <button
-                type="button"
-                className="toolbtn"
-                onClick={() => reread({ override: { ...override, roll: ((override.roll ?? mesh.orientation.roll) + 1) % 4 } })}
-              >
-                Quart de tour autour de l axe
+            </div>
+            <div className="button-row" role="group" aria-label="Rotation par quart de tour">
+              <button type="button" className="toolbtn" onClick={() => turn('x')}>
+                90 deg autour de X
+              </button>
+              <button type="button" className="toolbtn" onClick={() => turn('y')}>
+                90 deg autour de Y
+              </button>
+              <button type="button" className="toolbtn" onClick={() => turn('z')}>
+                90 deg autour de Z
               </button>
             </div>
-            <Segmented
-              label="Axe longitudinal du fichier"
-              value={String(override.axis ?? mesh.orientation.axis) as '0' | '1' | '2'}
-              options={[
-                { value: '0', label: 'X' },
-                { value: '1', label: 'Y' },
-                { value: '2', label: 'Z' },
-              ]}
-              onChange={(value) => reread({ override: { ...override, axis: Number(value) as 0 | 1 | 2 } })}
-            />
-            <Switch
-              label="Aligner sur les axes principaux"
-              checked={override.align === true}
-              hint="Pour un modele dessine de biais : recale l axe du corps sur ses axes d inertie avant de l orienter."
-              onChange={(align) => reread({ override: { ...override, align } })}
-            />
+            {override.manual ? null : (
+              <>
+                <Segmented
+                  label="Axe longitudinal du fichier"
+                  value={String(override.axis ?? mesh.orientation.axis) as '0' | '1' | '2'}
+                  options={[
+                    { value: '0', label: 'X' },
+                    { value: '1', label: 'Y' },
+                    { value: '2', label: 'Z' },
+                  ]}
+                  onChange={(value) => reread({ override: { ...override, axis: Number(value) as 0 | 1 | 2 } })}
+                />
+                <Switch
+                  label="Aligner sur les axes principaux"
+                  checked={override.align === true}
+                  hint="Pour un modele dessine de biais : recale l axe du corps sur ses axes d inertie avant de l orienter."
+                  onChange={(align) => reread({ override: { ...override, align } })}
+                />
+              </>
+            )}
+            {Object.keys(override).length ? (
+              <button type="button" className="toolbtn" onClick={() => reread({ override: {} })}>
+                Revenir a l orientation detectee
+              </button>
+            ) : null}
+            {mesh.halfShell ? (
+              <Switch
+                label="Reconstituer le leurre entier par symetrie"
+                checked={mirrorHalf}
+                hint="Le fichier est une demi-coque, reconnue a sa face de joint plane. Sans reconstitution, volume et banc portent sur la moitie, et l industrialisation est bloquee."
+                onChange={(on) => reread({ mirrorHalf: on })}
+              />
+            ) : null}
           </Fieldset>
 
           <Fieldset legend="Diagnostic et reparations" hint="Seules les reparations sures sont faites ; les autres sont signalees avec ce qu elles bloquent.">
@@ -293,6 +455,8 @@ export function ImportPanel({ params, water, mesh, onMesh, onToast, onOpenIndust
                     ['Aretes ouvertes', mesh.before.openEdges, mesh.diagnosis.openEdges],
                     ['Aretes non-manifold', mesh.before.nonManifold, mesh.diagnosis.nonManifold],
                     ['Faces a contresens', mesh.before.flipped, mesh.diagnosis.flipped],
+                    ['Sommets dupliques', mesh.before.welded, 0],
+                    ['Faces en double', mesh.diagnosis.duplicates, 0],
                   ] as [string, number, number][]
                 ).map(([label, before, after]) => (
                   <tr key={label}>
@@ -305,6 +469,15 @@ export function ImportPanel({ params, water, mesh, onMesh, onToast, onOpenIndust
                   <th>Etanche</th>
                   <td>{mesh.before.watertight ? 'oui' : 'non'}</td>
                   <td>{mesh.diagnosis.watertight ? 'oui' : 'non'}</td>
+                </tr>
+                <tr>
+                  <th>Auto-intersections</th>
+                  <td colSpan={2}>
+                    {intersections
+                      ? `${intersections.within.toLocaleString('fr-FR')} dans une meme piece · ${intersections.between.toLocaleString('fr-FR')} entre pieces` +
+                        (intersections.partial ? ' (recherche arretee au plafond)' : '')
+                      : '—'}
+                  </td>
                 </tr>
               </tbody>
             </table>
@@ -320,10 +493,17 @@ export function ImportPanel({ params, water, mesh, onMesh, onToast, onOpenIndust
               <p className="control__hint">Aucune reparation necessaire.</p>
             )}
             <p className="control__hint">
-              Cotes {mm(mesh.bounds.length)} x {mm(mesh.bounds.height)} x {mm(mesh.bounds.width)} ·{' '}
               {mesh.components.length} piece(s) :{' '}
               {mesh.components
-                .map((part) => (part.role === 'body' ? 'corps' : part.role === 'bib' ? 'bavette detachee' : 'piece rapportee'))
+                .map((part) =>
+                  part.role === 'body'
+                    ? 'corps'
+                    : part.role === 'bib'
+                      ? 'bavette detachee'
+                      : part.role === 'ignored'
+                        ? 'piece a l ecart (ignoree)'
+                        : 'piece rapportee',
+                )
                 .join(', ')}
               {mesh.bib
                 ? ` · bavette ${mm(mesh.bib.lengthMm)} x ${mm(mesh.bib.widthMm)} x ${mm(mesh.bib.thicknessMm)} a ${Math.round(mesh.bib.angleDeg)} deg`
@@ -523,11 +703,11 @@ export function ImportPanel({ params, water, mesh, onMesh, onToast, onOpenIndust
               ]}
               onChange={setTarget}
             />
-            {body.skin.maxGapMm > 0.3 ? (
+            {envelopeMatters ? (
               <Switch
                 label="Accepter l enveloppe"
                 checked={acceptEnvelope}
-                hint={`Les coques combleraient ${body.skin.maxGapMm.toFixed(1)} mm de creux la ou une tranche n est pas etoilee. A n accepter qu en connaissance de cause.`}
+                hint="La face avant est creusee : les coques combleraient la cuvette et changeraient l action. A n accepter qu en connaissance de cause."
                 onChange={setAcceptEnvelope}
               />
             ) : null}
@@ -544,6 +724,7 @@ export function ImportPanel({ params, water, mesh, onMesh, onToast, onOpenIndust
 
             {industrial ? (
               <>
+                <p className="control__hint">Calcule en {seconds(industrial.ms)}.</p>
                 {industrial.report.physics ? (
                   <p className="ready ready--ok">
                     {FLOAT_LABEL[industrial.report.physics.buoyancy]} · {industrial.report.physics.totalMass.toFixed(1)} g · rapport{' '}
@@ -557,6 +738,14 @@ export function ImportPanel({ params, water, mesh, onMesh, onToast, onOpenIndust
                       <div>
                         <strong>{item.label}</strong>
                         <span>{item.detail}</span>
+                      </div>
+                    </li>
+                  ))}
+                  {industrial.report.envelope.map((line, index) => (
+                    <li key={`enveloppe-${index}`} className="checks__info">
+                      <span aria-hidden="true">ℹ️</span>
+                      <div>
+                        <span>{line}</span>
                       </div>
                     </li>
                   ))}

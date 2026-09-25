@@ -30,29 +30,37 @@ writeFileSync(
 import { renderThumb } from '${root}src/components/ArchetypePreview';
 import { SHAPE_PRESETS, clonePreset } from '${root}src/lib/presets';
 import { DISPLAY_RESOLUTION, buildLure } from '${root}src/lib/geometry';
-import { assemblyExport, assemblyPlans, buildAssembly } from '${root}src/lib/assembly';
+import { assemblyExport, assemblyPlans, assemblyPreview, buildAssembly, disposeAssembly } from '${root}src/lib/assembly';
 import { computePhysics } from '${root}src/lib/physics';
 import { createProfile } from '${root}src/lib/profile';
+import { countExportTriangles } from '${root}src/lib/exporters';
 
 const count = (g) => (g.getIndex() ? g.getIndex().count : g.getAttribute('position').count) / 3;
 
 window.generate = () =>
   SHAPE_PRESETS.map((preset) => {
+    // Exactement ce que l'editeur calcule a l'ouverture de la famille, a la
+    // resolution d'export : apercu d'assemblage, geometrie, physique.
     const params = clonePreset(preset.id);
     const profile = createProfile(params);
-    const plans = assemblyPlans(profile, params);
+    const preview = assemblyPreview(profile, params);
+    const plans = assemblyPlans(profile, params, preview);
     const geo = buildLure(params, DISPLAY_RESOLUTION, plans.billPlan?.root ?? null);
-    const physics = computePhysics(params, geo, 'fresh');
+    const physics = computePhysics(params, geo, 'fresh', preview);
     const shells = buildAssembly(profile, params, assemblyExport(params));
     const record = {
       id: preset.id,
       image: renderThumb(params, DISPLAY_RESOLUTION, 'image/webp', plans.billPlan?.root ?? null),
       buoyancy: physics.buoyancy,
       massG: Math.round(physics.totalMass * 10) / 10,
+      volumeCm3: Math.round(physics.volumeCm3 * 100) / 100,
+      exportTriangles: countExportTriangles(params, geo, 'assembly'),
       bodyTriangles: count(geo.body),
       shellTriangles: count(shells.male) + count(shells.female),
     };
     geo.dispose();
+    disposeAssembly(shells);
+    if (preview) disposeAssembly(preview);
     return record;
   });
 `,
@@ -92,6 +100,7 @@ try {
     .map(
       (r) =>
         `  ${r.id}: {\n    image: '${r.image}',\n    buoyancy: '${r.buoyancy}',\n    massG: ${r.massG},\n` +
+        `    volumeCm3: ${r.volumeCm3},\n    exportTriangles: ${r.exportTriangles},\n` +
         `    bodyTriangles: ${r.bodyTriangles},\n    shellTriangles: ${r.shellTriangles},\n  },`,
     )
     .join('\n');
@@ -107,9 +116,12 @@ try {
 export interface FamilyThumbnail {
   /** Image WebP en data URI. */
   image: string;
-  /** Verdict et masse calcules sur le modele livre. */
+  /** Verdict, masse en service et volume calcules sur le modele livre. */
   buoyancy: 'float' | 'suspend' | 'sink';
   massG: number;
+  volumeCm3: number;
+  /** Triangles du fichier STL exporte (piece assemblee), a la taille par defaut. */
+  exportTriangles: number;
   /** Triangles du corps et des deux coques a la resolution d'export. */
   bodyTriangles: number;
   shellTriangles: number;
@@ -121,7 +133,7 @@ ${body}
 `,
   );
   for (const r of records) {
-    console.log(`${r.id.padEnd(10)} ${Math.round(r.image.length / 1024)} Ko · ${r.buoyancy} · ${r.massG} g · corps ${r.bodyTriangles} tri · coques ${r.shellTriangles} tri`);
+    console.log(`${r.id.padEnd(10)} ${Math.round(r.image.length / 1024)} Ko · ${r.buoyancy} · ${r.massG} g · ${r.volumeCm3} cm3 · export ${r.exportTriangles} tri · corps ${r.bodyTriangles} tri · coques ${r.shellTriangles} tri`);
   }
 } finally {
   rmSync(dir, { recursive: true, force: true });

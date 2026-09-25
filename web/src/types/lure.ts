@@ -9,16 +9,12 @@
  */
 
 export type ShapeId =
-  // Les sept familles de la bibliotheque (module AB). Une variante — chugger,
-  // minnow nervure, vibe de traine — est un REGLAGE de sa famille, pas une
-  // entree de plus.
+  // Les deux familles de la bibliotheque (module AH). Une variante — minnow
+  // nervure, suspendu, vibe de traine — est un REGLAGE de sa famille, pas une
+  // entree de plus. Les autres corps (trapu, fusele, face creusee) restent
+  // atteignables par les curseurs de forme.
   | 'minnow'
-  | 'crankbait'
-  | 'deepdiver'
-  | 'popper'
-  | 'stickbait'
   | 'lipless'
-  | 'swimbait'
   // Cuiller : forme historique sans tete, conservee pour rouvrir les anciens
   // projets a l'identique. Elle ne figure plus dans la bibliotheque.
   | 'spoon';

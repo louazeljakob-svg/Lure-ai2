@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Outline, OutlineNode, OutlineReference } from '../types/lure';
 import { flattenOutline, outlineNode } from '../lib/outline';
+import { NumberField } from './ui';
 
 type Mode = 'pen' | 'select';
 
@@ -171,6 +172,8 @@ export function OutlineEditor({
     },
     [outline.nodes, outline.closed, addNode, update],
   );
+
+  const selectedNode = outline.nodes.find((node) => node.id === selected) ?? null;
 
   const removeSelected = useCallback(() => {
     if (!selected) return;
@@ -406,8 +409,8 @@ export function OutlineEditor({
         </div>
 
         <div className="contour__group contour__group--grow">
-          <label className="contour__slider">
-            Opacite
+          <div className="contour__slider">
+            <span>Opacite</span>
             <input
               type="range"
               min={0}
@@ -415,25 +418,48 @@ export function OutlineEditor({
               step={1}
               value={reference.opacity}
               disabled={!reference.src}
+              aria-label="Opacite de l image de reference (curseur)"
               onChange={(event) =>
                 onReference({ ...reference, opacity: Number(event.target.value) })
               }
             />
-          </label>
-          <label className="contour__slider">
-            Echelle
+            <NumberField
+              step={1}
+              unit="%"
+              hardMin={0}
+              hardMax={100}
+              value={reference.opacity}
+              disabled={!reference.src}
+              label="Opacite de l image de reference"
+              onChange={(opacity) => onReference({ ...reference, opacity })}
+            />
+          </div>
+          <div className="contour__slider">
+            <span>Echelle</span>
             <input
               type="range"
               min={0.1}
-              max={6}
+              max={Math.max(6, reference.scale)}
               step={0.01}
               value={reference.scale}
               disabled={!reference.src}
+              aria-label="Echelle de l image de reference (curseur)"
               onChange={(event) =>
                 onReference({ ...reference, scale: Number(event.target.value) })
               }
             />
-          </label>
+            <NumberField
+              step={0.01}
+              unit="x"
+              hardMin={0.01}
+              hardMax={100}
+              limitReason="L echelle d une image est un facteur strictement positif."
+              value={reference.scale}
+              disabled={!reference.src}
+              label="Echelle de l image de reference"
+              onChange={(scale) => onReference({ ...reference, scale })}
+            />
+          </div>
         </div>
 
         <div className="contour__group">
@@ -626,6 +652,28 @@ export function OutlineEditor({
         <span>{mode === 'pen' ? 'Clic : poser un point' : 'Clic sur le trace : inserer'}</span>
         <span>·</span>
         <span>Suppr : effacer le point · Maj + glisser : deplacer la vue</span>
+        {selectedNode ? (
+          <span className="contour__coords">
+            <span>X</span>
+            <NumberField
+              step={0.01}
+              hardMin={-10}
+              hardMax={10}
+              value={selectedNode.x}
+              label="Abscisse du point, en unites de contour"
+              onChange={(x) => update(outline.nodes.map((n) => (n.id === selectedNode.id ? { ...n, x } : n)))}
+            />
+            <span>Y</span>
+            <NumberField
+              step={0.01}
+              hardMin={-10}
+              hardMax={10}
+              value={selectedNode.y}
+              label="Ordonnee du point, en unites de contour"
+              onChange={(y) => update(outline.nodes.map((n) => (n.id === selectedNode.id ? { ...n, y } : n)))}
+            />
+          </span>
+        ) : null}
         {selected ? (
           <button type="button" className="btn btn--sm btn--ghost btn--danger" onClick={removeSelected}>
             Supprimer le point

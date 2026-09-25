@@ -590,6 +590,8 @@ export interface AssemblyResult {
   billPlan: BillSlotPlan | null;
   /** Pourquoi la fente de bavette est absente ou reduite, le cas echeant. */
   billProblem: string | null;
+  /** Enfoncement maximal admissible, en mm, quand un enfoncement a ete refuse. */
+  billMaxInsertionMm: number | null;
   /** Goupilles cylindriques d'assemblage, avec leur controle. */
   dowels: DowelPlacement[];
   /** Vis d'assemblage et leur controle (module U). */
@@ -2351,6 +2353,16 @@ export function billPlanFor(
   return buildAssembly(profile, params).billPlan;
 }
 
+/** Plus grand tour de section du corps, en cm (ellipse de Ramanujan simplifiee). */
+function girthOf(profile: ProfileSampler): number {
+  let girth = 0;
+  for (let k = 1; k < 24; k++) {
+    const section = profile.section((k / 24) * profile.bodyEnd);
+    girth = Math.max(girth, (Math.PI * (section.halfWidth * 2 + (section.top - section.bottom))) / 2);
+  }
+  return girth;
+}
+
 export function buildAssembly(
   profile: ProfileSampler,
   params: LureParams,
@@ -2359,11 +2371,13 @@ export function buildAssembly(
   // Un corps anatomique porte des details de quelques dixiemes de
   // millimetre : ses coques s'echantillonnent plus finement que la goutte
   // historique, qui garde exactement sa resolution d'avant.
+  // Le facteur suit la taille (module AI) : pas constant en millimetres,
+  // calibre sur le minnow de 110 mm (sections de 53 mm de tour).
   const resolution: AssemblyResolution = profile.anatomy
     ? {
         ...requested,
-        stations: Math.round(requested.stations * 2.2),
-        arcSamples: Math.round(requested.arcSamples * 2.4),
+        stations: Math.round(requested.stations * 2.2 * Math.min(Math.max(profile.lengthCm / 11, 0.5), 3)),
+        arcSamples: Math.round(requested.arcSamples * 2.4 * Math.min(Math.max(girthOf(profile) / 5.3, 0.5), 3)),
       }
     : requested;
   const skin = createSurfaceSampler(profile, params, resolution.bakeScales === true);
@@ -2857,13 +2871,15 @@ export function buildAssembly(
     return null;
   };
 
-  // Deux bouches ne peuvent pas se chevaucher : elles partagent les memes
-  // stations et les faces de coupe se recouperaient.
-  const taken: [number, number][] = [];
-  const reserve = (iStart: number, iEnd: number): boolean => {
+  // Deux bouches du meme rail ne peuvent pas se chevaucher : elles partagent
+  // les memes stations et les faces de coupe se recouperaient. Une bouche de
+  // dos et une bouche de ventre rognent chacune leur bord de l'arc : elles
+  // peuvent se trouver au droit l'une de l'autre.
+  const taken: [number, number, 'lo' | 'hi'][] = [];
+  const reserve = (iStart: number, iEnd: number, rail: 'lo' | 'hi'): boolean => {
     if (vJoint && iStart < split && iEnd >= split - 1) return false;
-    for (const [a, b] of taken) if (iStart <= b + 1 && a - 1 <= iEnd) return false;
-    taken.push([iStart, iEnd]);
+    for (const [a, b, side] of taken) if (side === rail && iStart <= b + 1 && a - 1 <= iEnd) return false;
+    taken.push([iStart, iEnd, rail]);
     return true;
   };
   /** Encoches deja placees dans une face de coupe, pour eviter qu'elles se touchent. */
@@ -2952,7 +2968,7 @@ export function buildAssembly(
       // Le contour du puits doit passer au large des rails, sinon le percage
       // profond mordrait sur la paroi de la rainure.
       const outer = Math.hypot(R, Math.max(aLo, aHi)) + LEDGE;
-      if (iStart < 1 || iEnd > stations.length - 2 || !reserve(iStart, iEnd)) {
+      if (iStart < 1 || iEnd > stations.length - 2 || !reserve(iStart, iEnd, rail)) {
         plan.valid = false;
         plan.problem = 'Le passage de sortie ne tient pas ici : deplacez l ancrage.';
         continue;
@@ -3086,7 +3102,7 @@ export function buildAssembly(
         iEnd - iStart >= 1 &&
         baseT >= tMin + WALL &&
         topT <= tMax - SKIN &&
-        reserve(iStart, iEnd)
+        reserve(iStart, iEnd, 'lo')
       ) {
         chinSlots.push({ iStart, iEnd, topT: topT_, baseT, depth: bill.depth, back });
         billResult = {
@@ -3094,10 +3110,15 @@ export function buildAssembly(
           insertion: billInsertion,
           root: bill.along(bill.depthU(billInsertion), 0),
         };
-      } else {
+      } else if (iEnd - iStart >= 1 && baseT >= tMin + WALL && topT <= tMax - SKIN) {
         refuse(
           `La bouche de la fente de bavette (${((bill.mouth.x - profile.xAt(0)) / MM_TO_CM).toFixed(1)} mm ` +
             'du nez) croise un autre passage ouvert dans le ventre. Deplacez l un des deux.',
+        );
+      } else {
+        refuse(
+          `La bouche de la fente de bavette (${((bill.mouth.x - profile.xAt(0)) / MM_TO_CM).toFixed(1)} mm ` +
+            'du nez) sortirait de la tete a l arriere de la bouche : reculez l ancrage ou reduisez l angle.',
         );
       }
     }
@@ -3244,7 +3265,7 @@ export function buildAssembly(
         `le ventre au droit de ${clash}. Deplacez la vis le long du corps.`;
       continue;
     }
-    if (iStart < 1 || iEnd > stations.length - 2 || !reserve(iStart, iEnd)) {
+    if (iStart < 1 || iEnd > stations.length - 2 || !reserve(iStart, iEnd, 'lo')) {
       screw.valid = false;
       screw.problem =
         `Vis a ${((screw.x - profile.xAt(0)) / MM_TO_CM).toFixed(0)} mm : un autre passage ` +
@@ -4142,6 +4163,7 @@ export function buildAssembly(
     }),
     billPlan: billResult,
     billProblem,
+    billMaxInsertionMm: placement?.maxInsertion !== undefined ? placement.maxInsertion / MM_TO_CM : null,
     dowels,
     screws: screwPlans,
     pegs: pegPlacements,

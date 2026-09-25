@@ -36,7 +36,7 @@ import {
 import { throughWireBlocker } from '../lib/throughWire';
 import { resolveMount } from '../lib/tackle';
 import { EstimateStat, LineChart, RankBars, VIZ, type VizPoint } from './charts';
-import { Fieldset, Segmented, Slider, Switch } from './ui';
+import { Fieldset, NumberField, Segmented, Slider, Switch } from './ui';
 
 interface Props {
   params: LureParams;
@@ -96,9 +96,10 @@ export function SwimSimulator({ params, physics, sockets }: Props) {
   const [massOffsetG, setMassOffsetG] = useState(0);
 
   // Recalage : trois mesures suffisent, une par famille de resultat.
-  const [obsDepth, setObsDepth] = useState('');
-  const [obsCritical, setObsCritical] = useState('');
-  const [obsStrength, setObsStrength] = useState('');
+  // Zero : pas de mesure notee.
+  const [obsDepth, setObsDepth] = useState(0);
+  const [obsCritical, setObsCritical] = useState(0);
+  const [obsStrength, setObsStrength] = useState(0);
 
   const base: SwimInput = useMemo(
     () => ({
@@ -254,10 +255,9 @@ export function SwimSimulator({ params, physics, sockets }: Props) {
     setAssumptions((prev) => ({ ...prev, [key]: value }));
 
   /** Recalage : le rapport mesure / predit, borne pour rester credible. */
-  const fit = (measured: string, predicted: number): number | null => {
-    const value = Number(measured.replace(',', '.'));
-    if (!Number.isFinite(value) || value <= 0 || predicted <= 0) return null;
-    return Math.min(Math.max(value / predicted, 0.3), 3);
+  const fit = (measured: number, predicted: number): number | null => {
+    if (!Number.isFinite(measured) || measured <= 0 || predicted <= 0) return null;
+    return Math.min(Math.max(measured / predicted, 0.3), 3);
   };
 
   const predictedDepth = diveDepth({ ...base, calibration: NEUTRAL_CALIBRATION }, troll, lineM);
@@ -749,12 +749,13 @@ export function SwimSimulator({ params, physics, sockets }: Props) {
                   key={row.key}
                 >
                   <label htmlFor={`asm-${row.key}`}>{row.label}</label>
-                  <input
+                  <NumberField
                     id={`asm-${row.key}`}
-                    type="number"
                     step={row.step}
+                    hardMin={0}
+                    limitReason="Un coefficient de trainee, de portance ou d amortissement negatif n a pas de sens physique."
                     value={assumptions[row.key]}
-                    onChange={(event) => setAssumption(row.key, Number(event.target.value))}
+                    onChange={(value) => setAssumption(row.key, value)}
                   />
                 </div>
               ))}
@@ -785,24 +786,28 @@ export function SwimSimulator({ params, physics, sockets }: Props) {
                   Profondeur mesuree a {lineM} m de ligne et {n(troll, 1)} km/h (m) — predit{' '}
                   {n(predictedDepth, 2)}
                 </label>
-                <input
+                <NumberField
                   id="obs-depth"
-                  type="number"
                   step={0.1}
+                  unit="m"
+                  hardMin={0}
+                  hardMax={100}
                   value={obsDepth}
-                  onChange={(event) => setObsDepth(event.target.value)}
+                  onChange={setObsDepth}
                 />
               </div>
               <div className="assumption">
                 <label htmlFor="obs-crit">
                   Vitesse de decrochage observee (km/h) — predit {n(predictedCritical, 1)}
                 </label>
-                <input
+                <NumberField
                   id="obs-crit"
-                  type="number"
                   step={0.1}
+                  unit="km/h"
+                  hardMin={0}
+                  hardMax={50}
                   value={obsCritical}
-                  onChange={(event) => setObsCritical(event.target.value)}
+                  onChange={setObsCritical}
                 />
               </div>
               <div className="assumption">
@@ -810,12 +815,14 @@ export function SwimSimulator({ params, physics, sockets }: Props) {
                   Charge de rupture mesuree sur le premier ancrage (kgf) — predit{' '}
                   {n(predictedStrength, 1)}
                 </label>
-                <input
+                <NumberField
                   id="obs-str"
-                  type="number"
                   step={0.5}
+                  unit="kgf"
+                  hardMin={0}
+                  hardMax={200}
                   value={obsStrength}
-                  onChange={(event) => setObsStrength(event.target.value)}
+                  onChange={setObsStrength}
                 />
               </div>
               <div className="row-actions">
@@ -837,9 +844,9 @@ export function SwimSimulator({ params, physics, sockets }: Props) {
                   className="btn btn--ghost"
                   onClick={() => {
                     setCalibration(NEUTRAL_CALIBRATION);
-                    setObsDepth('');
-                    setObsCritical('');
-                    setObsStrength('');
+                    setObsDepth(0);
+                    setObsCritical(0);
+                    setObsStrength(0);
                   }}
                 >
                   Neutraliser

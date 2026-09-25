@@ -53,12 +53,12 @@ export interface Archetype {
 }
 
 /**
- * Les sept familles de la bibliotheque — module AB.
+ * Les deux familles de la bibliotheque — modules AB et AH.
  *
- * Une entree par famille : ce qui n'est qu'une variante (chugger, minnow
- * nervure, vibe de traine, glide bait) est un reglage de sa famille. Les
- * anciens archetypes, les formes historiques et les modeles guides ont ete
- * retires (module AA) : c'etaient des volumes lisses, sans anatomie.
+ * Une entree par famille : ce qui n'est qu'une variante (minnow nervure,
+ * suspendu, vibe de traine) est un reglage de sa famille. Crankbait, deep
+ * diver, popper, stickbait et swimbait ont quitte la bibliotheque (module
+ * AH) ; leurs corps restent atteignables par les curseurs de forme.
  */
 export const ARCHETYPES: Archetype[] = [
   {
@@ -75,58 +75,6 @@ export const ARCHETYPES: Archetype[] = [
     tie: 'Attache de nez, bavette polycarbonate en sandwich',
   },
   {
-    shape: 'crankbait',
-    rank: 2,
-    family: 'Crankbait',
-    action: 'Plonge vite et vibre large ; les epaules pleines portent le roulis.',
-    actionTag: 'roulis',
-    hasBib: true,
-    articulated: false,
-    buoyancy: 'float',
-    lengths: [40, 90],
-    slenderness: [2, 3],
-    tie: 'Attache de nez, grande bavette',
-  },
-  {
-    shape: 'deepdiver',
-    rank: 3,
-    family: 'Deep diver de traine',
-    action: 'Descend et tient sa profondeur en traine ; lacet regulier.',
-    actionTag: 'lacet',
-    hasBib: true,
-    articulated: false,
-    buoyancy: 'float',
-    lengths: [120, 260],
-    slenderness: [4.5, 6.5],
-    tie: 'Attache de nez, tete renforcee pour la bavette',
-  },
-  {
-    shape: 'popper',
-    rank: 4,
-    family: 'Popper',
-    action: 'Gerbe et « plop » sonore : la face creusee fait tout le bruit.',
-    actionTag: 'surface',
-    hasBib: false,
-    articulated: false,
-    buoyancy: 'float',
-    lengths: [60, 160],
-    slenderness: [3, 4.5],
-    tie: 'Attache au fond de la cuvette',
-  },
-  {
-    shape: 'stickbait',
-    rank: 5,
-    family: 'Stickbait / pencil',
-    action: 'Marche du chien en surface, ou chute glissee en version coulante.',
-    actionTag: 'surface',
-    hasBib: false,
-    articulated: false,
-    buoyancy: 'float',
-    lengths: [110, 220],
-    slenderness: [5, 8],
-    tie: 'Attache de nez',
-  },
-  {
     shape: 'lipless',
     rank: 6,
     family: 'Lipless / vibe',
@@ -139,19 +87,6 @@ export const ARCHETYPES: Archetype[] = [
     slenderness: [2.5, 3.5],
     tie: 'Attache dorsale',
   },
-  {
-    shape: 'swimbait',
-    rank: 7,
-    family: 'Swimbait articule',
-    action: 'Nage ondulante segment par segment, caudale souple rapportee.',
-    actionTag: 'glide',
-    hasBib: false,
-    articulated: true,
-    buoyancy: 'suspend',
-    lengths: [90, 250],
-    slenderness: [3.5, 5],
-    tie: 'Attache de nez',
-  },
 ];
 
 /** Elancement reel du preset : longueur / hauteur, recalcule et non saisi. */
@@ -163,3 +98,58 @@ export const archetypeOf = (shape: ShapeId): Archetype | undefined =>
 
 /** Parametres de depart d'une famille, prets a ouvrir comme projet. */
 export const archetypeParams = (shape: ShapeId): LureParams => getPreset(shape).params;
+
+// ---------------------------------------------------------------------------
+// Filtres de la bibliotheque (module AH)
+// ---------------------------------------------------------------------------
+
+export type FilterKey = 'action' | 'bib' | 'articulated' | 'float';
+export type LibraryChoice = Partial<Record<FilterKey, string>>;
+
+export interface LibraryFilter {
+  key: FilterKey;
+  label: string;
+  all: string;
+  value: (item: Archetype) => string;
+  name: (value: string) => string;
+}
+
+export const LIBRARY_FILTERS: LibraryFilter[] = [
+  { key: 'action', label: 'Action', all: 'Toutes', value: (item) => item.actionTag, name: (value) => ACTION_LABEL[value as ActionTag] },
+  {
+    key: 'bib',
+    label: 'Bavette',
+    all: 'Indifferent',
+    value: (item) => (item.hasBib ? 'oui' : 'non'),
+    name: (value) => (value === 'oui' ? 'Avec bavette' : 'Sans bavette'),
+  },
+  {
+    key: 'articulated',
+    label: 'Articulation',
+    all: 'Indifferent',
+    value: (item) => (item.articulated ? 'oui' : 'non'),
+    name: (value) => (value === 'oui' ? 'Articule' : 'Monobloc'),
+  },
+  { key: 'float', label: 'Flottaison', all: 'Toutes', value: (item) => item.buoyancy, name: (value) => FLOAT_LABEL[value as FloatTag] },
+];
+
+/** Vrai si la famille passe tous les filtres choisis, sauf `except`. */
+export const matchesChoice = (item: Archetype, chosen: LibraryChoice, except?: FilterKey): boolean =>
+  LIBRARY_FILTERS.every((filter) => filter.key === except || !chosen[filter.key] || filter.value(item) === chosen[filter.key]);
+
+/**
+ * Filtres proposes : un critere que toutes les familles partagent n'en est
+ * pas un — il ne ferait que vider la liste.
+ */
+export const activeFilters = (): LibraryFilter[] =>
+  LIBRARY_FILTERS.filter((filter) => new Set(ARCHETYPES.map(filter.value)).size > 1);
+
+/**
+ * Valeurs proposees par un filtre : celles qui renvoient au moins une
+ * famille compte tenu des autres filtres. Aucune combinaison ne peut donc
+ * produire une liste vide.
+ */
+export const filterValues = (key: FilterKey, chosen: LibraryChoice): string[] => {
+  const filter = LIBRARY_FILTERS.find((item) => item.key === key)!;
+  return [...new Set(ARCHETYPES.filter((item) => matchesChoice(item, chosen, key)).map(filter.value))];
+};

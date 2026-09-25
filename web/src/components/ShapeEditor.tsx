@@ -1,5 +1,6 @@
 /** Panneau gauche — parametres de forme du corps, de la bavette et de la queue. */
 
+import { useState } from 'react';
 import type {
   BillMode,
   BillProfile,
@@ -14,7 +15,7 @@ import { LIMITS, SHAPE_PRESETS, cloneAnatomy, getPreset } from '../lib/presets';
 import { AnatomyEditor } from './AnatomyEditor';
 import { billSize } from '../lib/billTemplate';
 import { meshBodyOf } from '../lib/meshBody';
-import { Fieldset, Segmented, Slider, Switch } from './ui';
+import { Derived, Fieldset, Segmented, Slider, Switch } from './ui';
 
 interface Props {
   params: LureParams;
@@ -22,6 +23,8 @@ interface Props {
   /** Coupe le corps en deux segments articules, depuis le panneau de forme. */
   onAddArticulation: () => void;
   onLoadPreset: (shape: ShapeId) => void;
+  /** Enfoncement de bavette maximal a l'ancrage courant, en mm (fente d'assemblage). */
+  billMaxInsertionMm?: number | null;
 }
 
 const TAIL_OPTIONS: { value: TailShape; label: string; title: string }[] = [
@@ -53,8 +56,41 @@ export function ShapeEditor({
   onChange,
   onAddArticulation,
   onLoadPreset,
+  billMaxInsertionMm = null,
 }: Props) {
   const jointBlocker = articulationBlocker(params);
+  const [lockRatio, setLockRatio] = useState(false);
+  type Dimension = 'length' | 'maxWidth' | 'thickness';
+  const DIMENSIONS: Dimension[] = ['length', 'maxWidth', 'thickness'];
+  const DIMENSION_LABEL: Record<Dimension, string> = { length: 'la longueur', maxWidth: 'la largeur', thickness: 'l epaisseur' };
+  /** Cotes liees par le verrou de proportions (AJ.6). */
+  const linked = (key: Dimension, value: number): Partial<LureParams> => {
+    if (!lockRatio || params[key] <= 0) return { [key]: value };
+    const ratio = value / params[key];
+    const patch: Partial<LureParams> = {};
+    for (const dimension of DIMENSIONS) {
+      patch[dimension] = dimension === key ? value : Math.round(params[dimension] * ratio * 100) / 100;
+    }
+    return patch;
+  };
+  const linkedRefusal = (key: Dimension, value: number): string | null => {
+    if (!lockRatio) return null;
+    const patch = linked(key, value);
+    for (const dimension of DIMENSIONS) {
+      if (dimension === key) continue;
+      const range = LIMITS[dimension];
+      const next = patch[dimension] as number;
+      if (next < range.hardMin || next > range.hardMax) {
+        const bound = next < range.hardMin ? range.hardMin : range.hardMax;
+        const admissible = (bound / params[dimension]) * params[key];
+        return (
+          `Verrou de proportions : ${DIMENSION_LABEL[dimension]} passerait a ${next.toFixed(2)} mm, hors de ` +
+          `${range.hardMin}-${range.hardMax} mm. ${next < range.hardMin ? 'Minimum' : 'Maximum'} admissible ici : ${admissible.toFixed(2)} mm.`
+        );
+      }
+    }
+    return null;
+  };
   const setDetail = (key: 'gills' | 'eyes', patch: Partial<DetailConfig>) =>
     onChange({ [key]: { ...params[key], ...patch } });
 
@@ -106,28 +142,40 @@ export function ShapeEditor({
             </button>
           </div>
         ) : null}
+        <Switch
+          label="Verrou de proportions"
+          checked={lockRatio}
+          hint="Actif : saisir la longueur, la largeur ou l epaisseur ajuste les deux autres dans le meme rapport."
+          onChange={setLockRatio}
+        />
         <Slider
           label="Longueur totale"
           value={params.length}
           {...LIMITS.length}
           display={mm(params.length)}
-          onChange={(length) => onChange({ length })}
+          unit="mm"
+          validate={(length) => linkedRefusal('length', length)}
+          onChange={(length) => onChange(linked('length', length))}
         />
         <Slider
           label="Largeur max"
           value={params.maxWidth}
           {...LIMITS.maxWidth}
           display={mm(params.maxWidth)}
+          unit="mm"
           hint="Vue de dessus : largeur laterale au point le plus large."
-          onChange={(maxWidth) => onChange({ maxWidth })}
+          validate={(maxWidth) => linkedRefusal('maxWidth', maxWidth)}
+          onChange={(maxWidth) => onChange(linked('maxWidth', maxWidth))}
         />
         <Slider
           label="Epaisseur"
           value={params.thickness}
           {...LIMITS.thickness}
           display={mm(params.thickness)}
+          unit="mm"
           hint="Vue de profil : hauteur dos-ventre du corps."
-          onChange={(thickness) => onChange({ thickness })}
+          validate={(thickness) => linkedRefusal('thickness', thickness)}
+          onChange={(thickness) => onChange(linked('thickness', thickness))}
         />
         {params.anatomy || params.meshBody ? null : (
         <Slider
@@ -139,18 +187,11 @@ export function ShapeEditor({
           onChange={(bellyPosition) => onChange({ bellyPosition })}
         />
         )}
-        <div className="control">
-          <div className="control__row">
-            <span className="control__label">Elancement</span>
-            <output className="control__value">
-              {(params.length / Math.max(params.thickness, 1)).toFixed(2)}
-            </output>
-          </div>
-          <p className="control__hint">
-            Longueur / hauteur, recalcule et non saisi. Un vibe tient entre 2,5 et 3,5, un
-            minnow de traine entre 5 et 7, un pencil monte a 9.
-          </p>
-        </div>
+        <Derived
+          label="Elancement"
+          value={(params.length / Math.max(params.thickness, 1)).toFixed(2)}
+          how="longueur / epaisseur, recalcule a chaque cote. Un vibe tient entre 2,5 et 3,5, un minnow de traine entre 5 et 7, un pencil monte a 9."
+        />
         {params.anatomy || params.meshBody ? null : (
           <>
         <Slider
@@ -423,7 +464,14 @@ export function ShapeEditor({
           value={params.billInsertion}
           {...LIMITS.billInsertion}
           display={params.billInsertion > 0 ? mm(params.billInsertion) : 'jusqu a buter'}
+          unit="mm"
           disabled={!params.hasBib}
+          validate={(billInsertion) =>
+            billMaxInsertionMm !== null && billMaxInsertionMm !== undefined && billInsertion > billMaxInsertionMm + 0.005
+              ? `${billInsertion.toFixed(2)} mm refuse : la bavette serait plus profonde que la tete, la fente en percerait la peau. ` +
+                `Maximum admissible a cet ancrage : ${(Math.floor(billMaxInsertionMm * 100) / 100).toFixed(2)} mm.`
+              : null
+          }
           hint="Longueur de plaque logee dans la tete, depuis la peau du menton. Au-dela de ce que la tete admet, la fente est refusee et la profondeur maximale est annoncee."
           onChange={(billInsertion) => onChange({ billInsertion })}
         />

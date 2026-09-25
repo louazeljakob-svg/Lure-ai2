@@ -2,7 +2,7 @@
 
 import { useRef, useState } from 'react';
 import { REFERENCE_PLANES, type ReferenceImage, type ReferencePlane } from '../lib/reference';
-import { Fieldset, Segmented, Slider, Switch } from './ui';
+import { Fieldset, NumberField, Segmented, Slider, Switch } from './ui';
 
 interface Props {
   references: ReferenceImage[];
@@ -26,7 +26,7 @@ export function ReferencePanel({
   onApplyCalibration,
 }: Props) {
   const fileRef = useRef<HTMLInputElement>(null);
-  const [distance, setDistance] = useState('108');
+  const [distance, setDistance] = useState(108);
 
   return (
     <div className="panel__body">
@@ -198,19 +198,21 @@ export function ReferencePanel({
                   <label className="sr-only" htmlFor={`cal-${image.id}`}>
                     Distance reelle en millimetres
                   </label>
-                  <input
+                  <NumberField
                     id={`cal-${image.id}`}
-                    type="number"
-                    min="1"
-                    step="0.1"
+                    step={0.1}
+                    unit="mm"
+                    hardMin={0.1}
+                    hardMax={5000}
+                    limitReason="La distance entre les deux reperes doit etre positive."
                     value={distance}
-                    onChange={(event) => setDistance(event.target.value)}
+                    onChange={setDistance}
                   />
                   <button
                     type="button"
                     className="btn btn--primary"
                     disabled={picks.length < 2}
-                    onClick={() => onApplyCalibration(Number(distance))}
+                    onClick={() => onApplyCalibration(distance)}
                   >
                     Appliquer
                   </button>

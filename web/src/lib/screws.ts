@@ -165,6 +165,16 @@ function hardwareMass(spec: ScrewSpec, head: ScrewHead, lengthMm: number): numbe
 }
 
 /**
+ * Hauteur de corps minimale, en mm, pour loger une vis a cet endroit : tete
+ * noyee, longueur utile, epaulement d'ecrou et peau du dos.
+ */
+export function minBodyHeightMm(size: ScrewSize, head: ScrewHead, lengthMm: number): number {
+  const spec = SCREWS[size];
+  const cap = headOf(spec, head);
+  return (RECESS + SHOULDER + SKIN) / MM_TO_CM + cap.height + usefulLength(spec, head, lengthMm);
+}
+
+/**
  * Place et verifie chaque vis.
  *
  * Le placement n'a qu'un degre de liberte reel : la profondeur de la portee

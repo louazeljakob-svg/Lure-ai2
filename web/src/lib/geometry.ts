@@ -312,14 +312,25 @@ export const thetaAt = (profile: ProfileSampler, s: number): number =>
  *
  * Un corps de 100 mm a 3 000 triangles montre ses facettes ; l'anatomie
  * (sillon de machoire, bord d'opercule, rayons) demande un pas de quelques
- * dixiemes de millimetre. Le maillage s'epaissit donc d'un facteur fixe,
- * applique a toutes les qualites d'apercu comme a l'export.
+ * dixiemes de millimetre. Le pas est donc FIXE en millimetres — 0,34 mm le
+ * long du corps, 0,22 mm autour de sa section maitresse, a la qualite
+ * d'export — et le nombre de facettes suit la taille du leurre : un corps
+ * deux fois plus long en porte deux fois plus (module AI). La qualite
+ * d'apercu module ce pas pour l'affichage seul.
  */
 export function anatomicalResolution(profile: ProfileSampler, base: Resolution): Resolution {
   if (!profile.anatomy) return base;
+  const quality = base.lengthSegments / LENGTH_SEGMENTS;
+  const lengthMm = profile.lengthCm / MM_TO_CM;
+  let girthMm = 0;
+  for (let k = 1; k < 24; k++) {
+    const section = profile.section((k / 24) * profile.bodyEnd);
+    const height = section.top - section.bottom;
+    girthMm = Math.max(girthMm, (Math.PI * (section.halfWidth * 2 + height)) / 2 / MM_TO_CM);
+  }
   return {
-    lengthSegments: Math.round(base.lengthSegments * 2.5),
-    radialSegments: Math.round(base.radialSegments * 5),
+    lengthSegments: Math.min(Math.max(Math.round((lengthMm / 0.34) * quality), 60), 1400),
+    radialSegments: Math.min(Math.max(Math.round((girthMm / 0.22) * quality), 48), 720),
   };
 }
 

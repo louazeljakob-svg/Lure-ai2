@@ -46,7 +46,7 @@ import {
   SoftTailInspector,
 } from './components/Inspector';
 import { runPrintChecks } from './lib/printCheck';
-import { Fieldset } from './components/ui';
+import { EditGesture, Fieldset } from './components/ui';
 import { computePhysics } from './lib/physics';
 import { clonePreset, getPreset } from './lib/presets';
 import {
@@ -1049,6 +1049,7 @@ export default function App() {
   const panelMeta = PANEL_META[panelTab];
 
   return (
+    <EditGesture.Provider value={history.mark}>
     <div className="app">
       <a className="skip-link" href="#contenu">
         Aller au contenu
@@ -1218,6 +1219,9 @@ export default function App() {
                 onChange={updateParams}
                 onAddArticulation={addArticulation}
                 onLoadPreset={loadPreset}
+                billMaxInsertionMm={
+                  preview?.billPlan ? preview.billPlan.maxInsertion * 10 : (preview?.billMaxInsertionMm ?? null)
+                }
               />
             </section>
 
@@ -1696,5 +1700,6 @@ export default function App() {
         ))}
       </div>
     </div>
+    </EditGesture.Provider>
   );
 }

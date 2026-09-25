@@ -20,7 +20,7 @@
 import type { BallastWeight, LureParams, ShapeId } from '../types/lure';
 import type { DetectedBib, ImportedMesh } from './importMesh';
 import { ARCHETYPES } from './archetypes';
-import { clonePreset, LIMITS } from './presets';
+import { clonePreset, LIMITS, type Range } from './presets';
 import { meshBodyRef, type MeshBody } from './meshBody';
 import { createProfile } from './profile';
 import { ASSEMBLY_PREVIEW, buildAssembly, disposeAssembly, type AssemblyResult } from './assembly';
@@ -29,6 +29,7 @@ import { computePhysics, type PhysicsResult } from './physics';
 import { seedId } from './tackle';
 import { getMaterial, WATER_DENSITY } from './materials';
 import { runPrintChecks, type PrintCheck } from './printCheck';
+import { minBodyHeightMm, SCREW_LENGTHS } from './screws';
 import {
   anchorStrength,
   applyCurrent,
@@ -44,7 +45,8 @@ import {
 } from './swim';
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi);
-const within = (value: number, range: { min: number; max: number }) => clamp(value, range.min, range.max);
+/** Cote relevee sur le maillage : bornee physiquement, jamais a la plage d'un curseur. */
+const within = (value: number, range: Range) => clamp(value, range.hardMin ?? range.min, range.hardMax ?? range.max);
 
 // ---------------------------------------------------------------------------
 // Lecture du corps
@@ -92,23 +94,13 @@ export function guessFamily(body: MeshBody, bib: DetectedBib | null): { id: Shap
   const H = body.heightMm;
   const W = body.widthMm;
   const slender = L / Math.max(H, 1e-6);
-  const marks = landmarks(body);
   if (bib) {
-    if (bib.lengthMm > Math.max(0.24 * L, 28)) {
-      return { id: 'deepdiver', why: `bavette longue (${bib.lengthMm.toFixed(0)} mm pour ${L.toFixed(0)} mm de corps)` };
-    }
-    if (slender < 3.3) {
-      return { id: 'crankbait', why: `corps trapu (elancement ${slender.toFixed(1)}) et bavette` };
-    }
-    return { id: 'minnow', why: `corps elance (elancement ${slender.toFixed(1)}) et bavette courte` };
-  }
-  if (marks.noseFullness > 0.3) {
-    return { id: 'popper', why: 'face avant pleine, sans bavette' };
+    return { id: 'minnow', why: `bavette detachee (elancement ${slender.toFixed(1)})` };
   }
   if (H / L > 0.28 && W / H < 0.6) {
     return { id: 'lipless', why: `corps haut et plat (hauteur ${Math.round((H / L) * 100)} % de la longueur), sans bavette` };
   }
-  return { id: 'stickbait', why: `corps fusele sans bavette (elancement ${slender.toFixed(1)})` };
+  return { id: 'minnow', why: `corps elance sans bavette (elancement ${slender.toFixed(1)}) : reglages du minnow, bavette retiree` };
 }
 
 /** Hamecon et anneau a la taille du corps : la progression des familles. */
@@ -245,6 +237,8 @@ export interface IndustrialReport {
   problems: string[];
   /** Operations bloquees par la topologie (AD.4), nommees. */
   blocked: string[];
+  /** Ce que la peau retraduite comble : a verifier, sans bloquer. */
+  envelope: string[];
   /** Verdict du leurre industrialise. */
   physics: Pick<PhysicsResult, 'buoyancy' | 'ratio' | 'totalMass' | 'cgPct' | 'cbPct' | 'trimDeg'> | null;
 }
@@ -273,6 +267,8 @@ export function topologyBlocks(imported: ImportedMesh, body: MeshBody, acceptEnv
         'croisees ou auto-intersections). L interieur du corps n est pas defini : operation bloquee.',
     );
   }
+  // Face avant creusee (cuvette) : c'est tout le nez qui serait faux, pas un
+  // detail. Le seul creux qui bloque.
   if (skin.maxGapMm > GAP_LIMIT_MM && !acceptEnvelope && skin.gaps[0].fromNoseMm < body.lengthMm * 0.08) {
     const worst = skin.gaps[0];
     out.push(
@@ -280,18 +276,44 @@ export function topologyBlocks(imported: ImportedMesh, body: MeshBody, acceptEnv
         `a ${worst.fromNoseMm.toFixed(0)} mm du nez). Une tranche transversale n y voit qu un anneau : les coques ` +
         'combleraient la cuvette. Operation bloquee — accepter l enveloppe la remplirait, ce qui change l action.',
     );
-  } else if (skin.maxGapMm > GAP_LIMIT_MM && !acceptEnvelope) {
-    const worst = skin.gaps[0];
-    out.push(
-      `Retraduction de la peau : la section a ${worst.fromNoseMm.toFixed(0)} mm du nez n est pas etoilee ` +
-        `depuis son centre (creux de ${worst.gapMm.toFixed(2)} mm a ${worst.thetaDeg.toFixed(0)} deg — ` +
-        'nageoire decollee du flanc, bavette soudee ?). Les coques suivraient l enveloppe et combleraient ' +
-        'ce creux : operation bloquee tant que vous ne l acceptez pas explicitement.',
-    );
   }
   if (imported.diagnosis.nonManifold > 0 && body.blocked.length === 0 && skin.bodyEnd < 1) {
     // Rien de plus : la decoupe de caudale a reussi malgre les aretes
     // non-manifold, elles sont hors du plan de coupe.
+  }
+  return out;
+}
+
+/**
+ * Ce que l'enveloppe comble, dit en clair. Ce n'est pas une geometrie
+ * corrompue — les coques restent fermees — mais une difference de forme a
+ * verifier : passages de fabrication existants (canaux de vis, portees),
+ * ou forme non etoilee (nageoire decollee du flanc, bavette soudee).
+ */
+export function envelopeNotes(body: MeshBody): string[] {
+  const { skin } = body;
+  const out: string[] = [];
+  const worst = skin.gaps.filter((gap) => gap.gapMm > GAP_LIMIT_MM).slice(0, 3);
+  for (const gap of worst) {
+    out.push(
+      `Creux de ${gap.gapMm.toFixed(2)} mm comble par l enveloppe a ${gap.fromNoseMm.toFixed(0)} mm du nez, ` +
+        `${gap.thetaDeg.toFixed(0)} deg depuis le dos : passage existant ou nageoire decollee — verifiez la vue.`,
+    );
+  }
+  if (skin.railGapMm > GAP_LIMIT_MM) {
+    out.push(
+      `Passages de fabrication existants au ras du plan de joint (jusqu a ${skin.railGapMm.toFixed(1)} mm) : combles, ` +
+        'puis les logements de l industrialisation sont recreuses a leur place.',
+    );
+  }
+  if (skin.internalVoidMm > GAP_LIMIT_MM) {
+    out.push(
+      `Cavites internes existantes (jusqu a ${skin.internalVoidMm.toFixed(1)} mm) : comblees dans la peau retraduite ; ` +
+        'le banc d essai, lui, les compte telles quelles.',
+    );
+  }
+  if (skin.slotGapMm > GAP_LIMIT_MM) {
+    out.push(`Fente de la bavette d origine (${skin.slotGapMm.toFixed(1)} mm) : remplacee par la fente commune.`);
   }
   return out;
 }
@@ -421,23 +443,44 @@ function fitProject(
     const section = shape.section(p);
     return (section.top - section.bottom) / 0.1;
   };
-  const tallEnough = (p: number) => heightAt(p) >= 17.5;
+  const MIN_HEIGHT = minBodyHeightMm('M2', 'countersunk', SCREW_LENGTHS[0]);
+  const tall: number[] = [];
+  let tallest = 0;
+  for (let p = 0.08; p <= marks.bodyEnd - 0.08 + 1e-9; p += 0.005) {
+    const h = heightAt(p);
+    tallest = Math.max(tallest, h);
+    if (h >= MIN_HEIGHT) tall.push(p);
+  }
   const nearestTall = (target: number, lo: number, hi: number) => {
-    for (let d = 0; d <= 0.3; d += 0.005) {
-      for (const p of [target + d, target - d]) if (p >= lo && p <= hi && tallEnough(p)) return p;
-    }
-    return target;
+    let best: number | null = null;
+    for (const p of tall) if (p >= lo && p <= hi && (best === null || Math.abs(p - target) < Math.abs(best - target))) best = p;
+    return best;
   };
-  const screwAt =
-    body.lengthMm < 70
-      ? [nearestTall(clamp(marks.maxSection + 0.06, 0.3, marks.bodyEnd - 0.2), 0.15, marks.bodyEnd - 0.12)]
-      : [
-          nearestTall(clamp(marks.maxSection - 0.14, 0.16, 0.32), 0.12, marks.maxSection),
-          nearestTall(clamp(marks.maxSection + 0.14, 0.42, marks.bodyEnd - 0.2), marks.maxSection + 0.06, marks.bodyEnd - 0.12),
-        ];
+  // Deux vis ecartees d'au moins 9 mm d'axe a axe (deux portees d'ecrou et
+  // une cloison), sinon une seule au plus haut du corps.
+  const spacing = Math.max(0.08, 9 / body.lengthMm);
+  let screwAt: number[] = [];
+  if (tall.length > 0) {
+    const lastTall = tall[tall.length - 1];
+    const front = body.lengthMm >= 70 ? nearestTall(marks.maxSection - 0.14, 0, lastTall - spacing) : null;
+    const rear =
+      front !== null ? nearestTall(Math.max(marks.maxSection + 0.14, (front + lastTall) / 2 + spacing / 2), front + spacing, 1) : null;
+    if (front !== null && rear !== null) screwAt = [front, rear];
+    else {
+      let peak = tall[0];
+      for (const p of tall) if (heightAt(p) > heightAt(peak)) peak = p;
+      screwAt = [peak];
+    }
+  } else {
+    report.problems.push(
+      `Visserie non posee : la plus courte vis du catalogue (M2 x ${SCREW_LENGTHS[0]} mm) demande ${MIN_HEIGHT.toFixed(1)} mm de hauteur ` +
+        `de corps, tete noyee et epaulement d ecrou compris ; ce corps culmine a ${tallest.toFixed(1)} mm. ` +
+        'Les demi-coques sont tenues par les ergots et la gorge de colle.',
+    );
+  }
   params.screws = {
     ...params.screws,
-    enabled: true,
+    enabled: screwAt.length > 0,
     screws: screwAt.map((position, i) => ({
       id: `vis-${i}-${Date.now()}`,
       position: Math.round(position * 1000) / 1000,
@@ -462,6 +505,25 @@ function fitProject(
         pegs: { ...candidate.assembly.pegs, enabled: false },
       },
     });
+
+  // --- Fente de bavette ------------------------------------------------------
+  // L'enfoncement propose d'apres la plaque du fichier est ramene au maximum
+  // admissible a cet ancrage quand la tete est trop mince pour le recevoir.
+  if (params.hasBib) {
+    const assembly = check(params);
+    const max = assembly.billPlan ? null : assembly.billMaxInsertionMm;
+    disposeAssembly(assembly);
+    if (max !== null && max >= 2) {
+      const insertion = Math.floor(max * 10) / 10;
+      report.placements.push({
+        label: 'Enfoncement de bavette ramene',
+        detail:
+          `${params.billInsertion.toFixed(1)} mm proposes d apres la plaque du fichier, ${insertion.toFixed(1)} mm ` +
+          'admissibles a cet ancrage : au-dela, la fente percerait la peau de la tete.',
+      });
+      params.billInsertion = insertion;
+    }
+  }
 
   // --- Longueur de vis : la plus longue qui tienne ------------------------
   // La plus longue du catalogue que la hauteur autorise, puis on descend
@@ -562,8 +624,17 @@ function fitProject(
       const index = params.screws.screws.findIndex((screw) => screw.id === screwPlan.id);
       if (index < 0) continue;
       const original = params.screws.screws[index];
-      for (const offset of OFFSETS) {
-        const position = clamp(original.position + offset, 0.08, marks.bodyEnd - 0.08);
+      // Candidats : assez hauts, a distance de l'autre vis et des portees de
+      // goupille (5 mm d'axe a axe), du plus proche au plus lointain. Seuls
+      // les douze premiers sont construits.
+      const candidates = (tall.length > 0 ? tall : OFFSETS.map((offset) => original.position + offset))
+        .map((p) => Math.round(clamp(p, 0.08, marks.bodyEnd - 0.08) * 1000) / 1000)
+        .filter((p) => Math.abs(p - original.position) > 1e-6)
+        .filter((p) => !params.screws.screws.some((other, i) => i !== index && Math.abs(other.position - p) < spacing))
+        .filter((p) => params.assembly.anchors.every((anchor) => Math.abs(anchor.position - p) * body.lengthMm >= 5))
+        .sort((a, b) => Math.abs(a - original.position) - Math.abs(b - original.position))
+        .slice(0, 12);
+      for (const position of candidates) {
         const screws = params.screws.screws.map((screw, i) => (i === index ? { ...screw, position } : screw));
         const trial = { ...params, screws: { ...params.screws, screws } };
         const probe = check(trial);
@@ -579,6 +650,19 @@ function fitProject(
         }
       }
     }
+  }
+
+  // Une vis qui ne trouve de place nulle part est retiree, et on le dit :
+  // une vis refusee n'est pas percee, elle ne tiendrait rien.
+  if (params.screws.enabled) {
+    const assembly = check(params);
+    const bad = assembly.screws.filter((screw) => !screw.valid);
+    disposeAssembly(assembly);
+    for (const plan of bad) {
+      params.screws = { ...params.screws, screws: params.screws.screws.filter((screw) => screw.id !== plan.id) };
+      report.problems.push(`Vis retiree — ${plan.problem ?? 'aucun emplacement valide'}`);
+    }
+    if (params.screws.screws.length === 0) params.screws = { ...params.screws, enabled: false };
   }
 
   return { params, profile, build, marks };
@@ -603,6 +687,7 @@ export function industrialise(
     placements: [],
     problems: [],
     blocked: topologyBlocks(imported, body, options.acceptEnvelope === true),
+    envelope: envelopeNotes(body),
     physics: null,
   };
   if (report.blocked.some((line) => /operation bloquee/i.test(line))) {
@@ -733,14 +818,6 @@ export function industrialise(
     cbPct: physics.cbPct,
     trimDeg: physics.trimDeg,
   };
-  for (const gap of body.skin.gaps.slice(0, 3)) {
-    if (gap.gapMm > 0.05) {
-      report.problems.push(
-        `Creux de ${gap.gapMm.toFixed(2)} mm comble par l enveloppe a ${gap.fromNoseMm.toFixed(0)} mm du nez ` +
-          `(${gap.thetaDeg.toFixed(0)} deg depuis le dos).`,
-      );
-    }
-  }
   return { params, report };
 }
 
@@ -846,7 +923,7 @@ export function runBench(
   // Rupture : les portees proposees ET verifiees — deplacees hors des
   // nageoires et des passages comme a l'industrialisation —, dans
   // l'assemblage qui les porterait.
-  const scratch: IndustrialReport = { family: 'minnow', familyWhy: '', placements: [], problems: [], blocked: [], physics: null };
+  const scratch: IndustrialReport = { family: 'minnow', familyWhy: '', placements: [], problems: [], blocked: [], envelope: [], physics: null };
   const fitted = fitProject(meshProject(imported, body), body, current, { hollow: false, wall: 1.6 }, scratch).params;
   const assembly = buildAssembly(createProfile(fitted), fitted, ASSEMBLY_PREVIEW);
   const anchors = assembly.sockets

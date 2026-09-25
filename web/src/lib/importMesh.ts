@@ -16,6 +16,7 @@
  */
 
 import * as THREE from 'three';
+import type { GapAllowance } from './meshBody';
 
 export interface MeshDiagnosis {
   /** Nombre de facettes. */
@@ -54,7 +55,12 @@ export interface MeshComponent {
   /** Encombrement en cm, repere de travail. */
   min: [number, number, number];
   max: [number, number, number];
-  role: 'body' | 'bib' | 'part';
+  /**
+   * `body` : piece principale ; `part` : piece rapportee qui touche le corps
+   * (nageoire, oeil, coque soeur) ; `bib` : bavette detachee ; `ignored` :
+   * piece a l'ecart du corps (posee a cote sur le plateau), non prise.
+   */
+  role: 'body' | 'bib' | 'part' | 'ignored';
 }
 
 /** Bavette detectee comme piece separee : ses cotes, relevees sur la piece. */
@@ -84,6 +90,8 @@ export interface MeshOrientation {
   roll: number;
   /** Vrai si le maillage a ete recale sur ses axes principaux d'inertie. */
   aligned: boolean;
+  /** Vrai si le repere du fichier a ete garde (mode manuel). */
+  manual: boolean;
   /** Comment l'orientation a ete trouvee, en clair. */
   note: string;
 }
@@ -95,6 +103,13 @@ export interface OrientationOverride {
   flipBack?: boolean;
   roll?: number;
   align?: boolean;
+  /**
+   * Mode manuel : aucune detection, le repere du fichier est garde tel quel,
+   * seulement recentre ; `turns` et les inversions le corrigent.
+   */
+  manual?: boolean;
+  /** Quarts de tour successifs autour de X, Y ou Z, appliques en premier. */
+  turns?: ('x' | 'y' | 'z')[];
 }
 
 export interface ImportedMesh {
@@ -125,6 +140,14 @@ export interface ImportedMesh {
   unitToMm: number;
   /** Ce que ce maillage ne permet pas, et pourquoi. */
   limits: string[];
+  /** Format reconnu sur le contenu du fichier. */
+  format: MeshFile['format'];
+  /** Ce que la lecture a corrige ou ecarte. */
+  warnings: string[];
+  /** Demi-coque reconnue a sa face de joint, et reconstituee ou non. */
+  halfShell: { jointAreaCm2: number; completed: boolean; fileVolume: number } | null;
+  /** Faces qui se traversent. */
+  intersections: Intersections;
 }
 
 export interface ImportOptions {
@@ -133,28 +156,95 @@ export interface ImportOptions {
   /** Unites du fichier vers mm : 1 = mm (defaut), 10 = cm, 25,4 = pouce. */
   unitToMm?: number;
   orientation?: OrientationOverride;
+  /**
+   * Demi-coque : reconstituer le corps entier par symetrie autour de sa face
+   * de joint (vrai par defaut). Faux : la piece est prise telle quelle.
+   */
+  mirrorHalf?: boolean;
 }
 
 // ---------------------------------------------------------------------------
 // Lecture
 // ---------------------------------------------------------------------------
 
-/** Vrai si le tampon commence par un en-tete STL ASCII. */
-function looksAscii(buffer: ArrayBuffer): boolean {
-  const head = new Uint8Array(buffer, 0, Math.min(buffer.byteLength, 256));
-  const text = new TextDecoder().decode(head).trim().toLowerCase();
-  if (!text.startsWith('solid')) return false;
-  // Un binaire peut commencer par « solid » : on tranche sur la taille, qui
-  // est exactement 84 + 50 n pour un binaire.
-  const view = new DataView(buffer);
-  if (buffer.byteLength < 84) return true;
-  const count = view.getUint32(80, true);
-  return buffer.byteLength !== 84 + count * 50;
+/**
+ * Echec d'import dont le message NOMME la cause — format, taille, contenu —
+ * au lieu d'un « fichier illisible » qui ne dit rien.
+ */
+export class ImportError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ImportError';
+  }
 }
 
-function parseBinaryStl(buffer: ArrayBuffer): Float32Array {
+/** Avancement d'une etape longue : libelle et fraction de 0 a 1. */
+export type ImportProgress = (stage: string, fraction: number) => void;
+
+/** Plus grand fichier accepte : au-dela, l'edition ne serait plus fluide. */
+export const MAX_TRIANGLES = 3_000_000;
+
+export interface MeshFile {
+  /** Soupe de triangles, en unites du fichier. */
+  positions: Float32Array;
+  format: 'STL binaire' | 'STL ASCII' | 'OBJ';
+  /** Ce que la lecture a du corriger ou ecarter, en clair. */
+  warnings: string[];
+}
+
+/**
+ * Nature d'un fichier STL, lue sur son CONTENU.
+ *
+ * L'extension et l'en-tete mentent souvent : quantite de logiciels ecrivent
+ * « solid … » en tete d'un STL binaire, ce qui le faisait prendre pour de
+ * l'ASCII. La preuve d'un binaire est sa taille — 84 octets d'en-tete puis
+ * 50 par facette annoncee — ; celle d'un ASCII, des lignes « facet » et
+ * « vertex ».
+ */
+function detectStl(buffer: ArrayBuffer): { kind: 'binary'; count: number; note: string | null } | { kind: 'ascii' } {
+  const size = buffer.byteLength;
+  if (size === 0) throw new ImportError('Fichier vide : 0 octet.');
+  const head = new TextDecoder('latin1').decode(new Uint8Array(buffer, 0, Math.min(size, 4096)));
+  const asciiSigns = /\bfacet\b/i.test(head) && /\bvertex\b/i.test(head);
+  if (size >= 84) {
+    const declared = new DataView(buffer).getUint32(80, true);
+    const expected = 84 + 50 * declared;
+    // Binaire exact, ou suivi de quelques octets de bourrage.
+    if (declared > 0 && expected <= size && size - expected <= 4096 && !asciiSigns) {
+      return {
+        kind: 'binary',
+        count: declared,
+        note: size > expected ? `${size - expected} octets de bourrage ignores en fin de fichier.` : null,
+      };
+    }
+    if (asciiSigns) return { kind: 'ascii' };
+    const available = Math.floor((size - 84) / 50);
+    if (declared > 0 && expected > size && available > 0) {
+      return {
+        kind: 'binary',
+        count: available,
+        note: `Fichier tronque : ${declared.toLocaleString('fr-FR')} facettes annoncees, ${available.toLocaleString('fr-FR')} presentes. Seules celles-ci sont lues.`,
+      };
+    }
+    if ((size - 84) % 50 === 0 && available > 0) {
+      return {
+        kind: 'binary',
+        count: available,
+        note: `Compteur de facettes de l en-tete faux (${declared}) : ${available.toLocaleString('fr-FR')} facettes deduites de la taille du fichier.`,
+      };
+    }
+    throw new ImportError(
+      `Format non reconnu. Un STL binaire de ${declared.toLocaleString('fr-FR')} facettes ferait ` +
+        `${expected.toLocaleString('fr-FR')} octets, celui-ci en fait ${size.toLocaleString('fr-FR')} ; ` +
+        'et aucune ligne « facet … vertex » d un STL ASCII n apparait au debut du fichier.',
+    );
+  }
+  if (asciiSigns) return { kind: 'ascii' };
+  throw new ImportError(`Fichier trop court pour un STL (${size} octets) et sans ligne « facet … vertex ».`);
+}
+
+function parseBinaryStl(buffer: ArrayBuffer, count: number, onProgress?: ImportProgress): Float32Array {
   const view = new DataView(buffer);
-  const count = Math.min(view.getUint32(80, true), Math.floor((buffer.byteLength - 84) / 50));
   const out = new Float32Array(count * 9);
   let offset = 84;
   for (let i = 0; i < count; i++) {
@@ -164,16 +254,21 @@ function parseBinaryStl(buffer: ArrayBuffer): Float32Array {
       offset += 4;
     }
     offset += 2; // attribute byte count
+    if (onProgress && i % 25000 === 0) onProgress('Lecture du STL binaire', i / count);
   }
   return out;
 }
 
-function parseAsciiStl(text: string): Float32Array {
+function parseAsciiStl(text: string, onProgress?: ImportProgress): Float32Array {
   const out: number[] = [];
-  const pattern = /vertex\s+(-?[\d.eE+-]+)\s+(-?[\d.eE+-]+)\s+(-?[\d.eE+-]+)/g;
+  // Mots-cles en majuscules ou minuscules, tabulations, notation 1.0E+01 :
+  // tout ce que les exporteurs produisent reellement.
+  const pattern = /vertex\s+(\S+)\s+(\S+)\s+(\S+)/gi;
   let match: RegExpExecArray | null;
+  let n = 0;
   while ((match = pattern.exec(text)) !== null) {
     out.push(Number(match[1]), Number(match[2]), Number(match[3]));
+    if (onProgress && ++n % 60000 === 0) onProgress('Lecture du STL ASCII', pattern.lastIndex / text.length);
   }
   return new Float32Array(out.slice(0, out.length - (out.length % 9)));
 }
@@ -198,18 +293,79 @@ function parseObj(text: string): Float32Array {
       }
     }
   }
+  if (points.length > 0 && out.length === 0) {
+    throw new ImportError(`OBJ sans face : ${points.length} sommets mais aucune ligne « f ». Un nuage de points ne se mesure pas.`);
+  }
   return new Float32Array(out);
 }
 
-/** Lit un fichier de maillage, en unites du fichier. */
-export function readMeshFile(name: string, data: ArrayBuffer | string): Float32Array {
+/**
+ * Lit un fichier de maillage, en unites du fichier. Toute impossibilite est
+ * une `ImportError` qui nomme sa cause ; ce qui a ete corrige en route est
+ * rapporte dans `warnings`.
+ */
+export function readMeshFile(name: string, data: ArrayBuffer | string, onProgress?: ImportProgress): MeshFile {
+  const warnings: string[] = [];
+  let positions: Float32Array;
+  let format: MeshFile['format'];
+  const isObj = name.toLowerCase().endsWith('.obj');
   if (typeof data === 'string') {
-    return name.toLowerCase().endsWith('.obj') ? parseObj(data) : parseAsciiStl(data);
+    format = isObj ? 'OBJ' : 'STL ASCII';
+    positions = isObj ? parseObj(data) : parseAsciiStl(data, onProgress);
+  } else if (isObj) {
+    format = 'OBJ';
+    positions = parseObj(new TextDecoder().decode(data));
+  } else {
+    const kind = detectStl(data);
+    if (kind.kind === 'binary') {
+      if (kind.count > MAX_TRIANGLES) {
+        throw new ImportError(
+          `${kind.count.toLocaleString('fr-FR')} facettes : au-dela de ${MAX_TRIANGLES.toLocaleString('fr-FR')}, ` +
+            'l edition ne serait plus fluide. Reduisez le maillage dans votre mailleur avant l import.',
+        );
+      }
+      format = 'STL binaire';
+      if (kind.note) warnings.push(kind.note);
+      positions = parseBinaryStl(data, kind.count, onProgress);
+    } else {
+      format = 'STL ASCII';
+      positions = parseAsciiStl(new TextDecoder().decode(data), onProgress);
+    }
   }
-  if (name.toLowerCase().endsWith('.obj')) {
-    return parseObj(new TextDecoder().decode(data));
+  // Coordonnees invalides : la facette entiere est ecartee, et comptee.
+  let bad = 0;
+  for (let k = 0; k < positions.length; k += 9) {
+    for (let c = 0; c < 9; c++) {
+      if (!Number.isFinite(positions[k + c]) || Math.abs(positions[k + c]) > 1e7) {
+        bad++;
+        break;
+      }
+    }
   }
-  return looksAscii(data) ? parseAsciiStl(new TextDecoder().decode(data)) : parseBinaryStl(data);
+  if (bad > 0) {
+    const kept = new Float32Array(positions.length - bad * 9);
+    let o = 0;
+    for (let k = 0; k < positions.length; k += 9) {
+      let ok = true;
+      for (let c = 0; c < 9; c++) if (!Number.isFinite(positions[k + c]) || Math.abs(positions[k + c]) > 1e7) ok = false;
+      if (ok) {
+        kept.set(positions.subarray(k, k + 9), o);
+        o += 9;
+      }
+    }
+    warnings.push(`${bad.toLocaleString('fr-FR')} facettes a coordonnees invalides (NaN, infinies ou aberrantes) ecartees.`);
+    positions = kept;
+  }
+  if (positions.length < 9) {
+    throw new ImportError(
+      format === 'STL ASCII'
+        ? 'Aucune facette lisible : le fichier se presente comme un STL ASCII mais ne contient aucune ligne « vertex x y z » valide.'
+        : bad > 0
+          ? 'Aucune facette utilisable : toutes les coordonnees sont invalides.'
+          : `Aucune facette dans ce ${format}.`,
+    );
+  }
+  return { positions, format, warnings };
 }
 
 // ---------------------------------------------------------------------------
@@ -250,13 +406,26 @@ function triVolume(points: Float64Array, a: number, b: number, c: number): numbe
  * de plusieurs centaines de milliers de facettes.
  */
 function weld(raw: Float32Array, epsilon: number): Indexed & { welded: number; degenerate: number } {
-  const map = new Map<string, number>();
+  // Cle numerique exacte : trois entiers de 17 bits au plus (la tolerance
+  // vaut un cent-millieme de la diagonale), ranges dans un seul double.
+  // Dix fois plus rapide qu'une cle en texte sur 500 000 sommets.
+  let mx = Infinity, my = Infinity, mz = Infinity;
+  for (let k = 0; k < raw.length; k += 3) {
+    if (raw[k] < mx) mx = raw[k];
+    if (raw[k + 1] < my) my = raw[k + 1];
+    if (raw[k + 2] < mz) mz = raw[k + 2];
+  }
+  const K = 131072;
+  const map = new Map<number, number>();
   const points: number[] = [];
   const count = raw.length / 3;
   const ids = new Uint32Array(count);
   for (let k = 0; k < count; k++) {
     const x = raw[k * 3], y = raw[k * 3 + 1], z = raw[k * 3 + 2];
-    const key = `${Math.round(x / epsilon)},${Math.round(y / epsilon)},${Math.round(z / epsilon)}`;
+    const qx = Math.min(Math.round((x - mx) / epsilon), K - 1);
+    const qy = Math.min(Math.round((y - my) / epsilon), K - 1);
+    const qz = Math.min(Math.round((z - mz) / epsilon), K - 1);
+    const key = (qx * K + qy) * K + qz;
     let found = map.get(key);
     if (found === undefined) {
       found = points.length / 3;
@@ -482,11 +651,64 @@ function orient(mesh: Indexed): { flipped: number; reversedParts: number; confli
   for (let t = 0; t < count; t++) {
     volumes[parts.of[t]] += triVolume(mesh.points, tris[t * 3], tris[t * 3 + 1], tris[t * 3 + 2]);
   }
+  // Une piece a volume negatif ENFERMEE dans une autre est une cavite — un
+  // logement, une chambre — et non une piece a l'envers : elle garde son
+  // sens. Le test : quelques-uns de ses sommets sont dans la matiere de la
+  // plus grande piece qui l'entoure (parite d'un rayon).
+  const box = Array.from({ length: parts.count }, () => ({ min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity], first: -1 }));
+  for (let t = 0; t < count; t++) {
+    const b2 = box[parts.of[t]];
+    for (let e = 0; e < 3; e++) {
+      const v = tris[t * 3 + e];
+      if (b2.first < 0) b2.first = v;
+      for (let a = 0; a < 3; a++) {
+        b2.min[a] = Math.min(b2.min[a], mesh.points[v * 3 + a]);
+        b2.max[a] = Math.max(b2.max[a], mesh.points[v * 3 + a]);
+      }
+    }
+  }
+  const insideOf = (container: number, v: number) => {
+    const px = mesh.points[v * 3], py = mesh.points[v * 3 + 1], pz = mesh.points[v * 3 + 2];
+    // Rayon oblique : il ne passe pas par les aretes d'une grille reguliere.
+    const dx = 0.8726, dy = 0.3317, dz = 0.3584;
+    let hits = 0;
+    for (let t = 0; t < count; t++) {
+      if (parts.of[t] !== container) continue;
+      const a = tris[t * 3] * 3, b = tris[t * 3 + 1] * 3, c = tris[t * 3 + 2] * 3;
+      const P = mesh.points;
+      const e1x = P[b] - P[a], e1y = P[b + 1] - P[a + 1], e1z = P[b + 2] - P[a + 2];
+      const e2x = P[c] - P[a], e2y = P[c + 1] - P[a + 1], e2z = P[c + 2] - P[a + 2];
+      const hx = dy * e2z - dz * e2y, hy = dz * e2x - dx * e2z, hz = dx * e2y - dy * e2x;
+      const det = e1x * hx + e1y * hy + e1z * hz;
+      if (Math.abs(det) < 1e-20) continue;
+      const f = 1 / det;
+      const sx = px - P[a], sy = py - P[a + 1], sz = pz - P[a + 2];
+      const u = f * (sx * hx + sy * hy + sz * hz);
+      if (u < 0 || u > 1) continue;
+      const qx = sy * e1z - sz * e1y, qy = sz * e1x - sx * e1z, qz = sx * e1y - sy * e1x;
+      const w = f * (dx * qx + dy * qy + dz * qz);
+      if (w < 0 || u + w > 1) continue;
+      if (f * (e2x * qx + e2y * qy + e2z * qz) > 1e-12) hits++;
+    }
+    return hits % 2 === 1;
+  };
+  const cavity = new Uint8Array(parts.count);
+  for (let c = 0; c < parts.count; c++) {
+    if (volumes[c] >= 0) continue;
+    for (let d = 0; d < parts.count; d++) {
+      if (d === c || Math.abs(volumes[d]) <= Math.abs(volumes[c])) continue;
+      const inBox = [0, 1, 2].every((a) => box[c].min[a] >= box[d].min[a] && box[c].max[a] <= box[d].max[a]);
+      if (inBox && insideOf(d, box[c].first)) {
+        cavity[c] = 1;
+        break;
+      }
+    }
+  }
   let reversedParts = 0;
-  for (let c = 0; c < parts.count; c++) if (volumes[c] < 0) reversedParts++;
+  for (let c = 0; c < parts.count; c++) if (volumes[c] < 0 && !cavity[c]) reversedParts++;
   if (reversedParts > 0) {
     for (let t = 0; t < count; t++) {
-      if (volumes[parts.of[t]] >= 0) continue;
+      if (volumes[parts.of[t]] >= 0 || cavity[parts.of[t]]) continue;
       const swap = tris[t * 3 + 1];
       tris[t * 3 + 1] = tris[t * 3 + 2];
       tris[t * 3 + 2] = swap;
@@ -579,6 +801,226 @@ function fillSmallHoles(mesh: Indexed): { mesh: Indexed; filled: number; left: n
   merged.set(tris);
   merged.set(added, tris.length);
   return { mesh: { points: new Float64Array(points), tris: merged }, filled, left, leftEdges };
+}
+
+// ---------------------------------------------------------------------------
+// Demi-coque : face de joint et reconstitution par symetrie
+// ---------------------------------------------------------------------------
+
+/** Plan de joint d'une demi-coque : normale sortante (cote vide) et cote. */
+export interface JointPlane {
+  normal: [number, number, number];
+  offset: number;
+  /** Aire de la face de joint, en unites du fichier au carre. */
+  area: number;
+}
+
+/**
+ * Une demi-coque se reconnait a sa face de joint : une grande face PLANE
+ * (au moins un sixieme de la surface), dont toute la matiere est d'un seul
+ * cote, et qui contient l'axe long. Un ergot qui depasse du plan est
+ * tolere ; un corps entier, lui, n'a pas de telle face.
+ */
+function findJointPlane(mesh: Indexed): JointPlane | null {
+  const { points, tris } = mesh;
+  const box = extents(points);
+  const diagonal = Math.hypot(box.max[0] - box.min[0], box.max[1] - box.min[1], box.max[2] - box.min[2]);
+  const tol = diagonal * 2e-4;
+  const buckets = new Map<string, { area: number; nx: number; ny: number; nz: number; d: number }>();
+  let total = 0;
+  for (let t = 0; t < tris.length; t += 3) {
+    const a = tris[t] * 3, b = tris[t + 1] * 3, c = tris[t + 2] * 3;
+    const ux = points[b] - points[a], uy = points[b + 1] - points[a + 1], uz = points[b + 2] - points[a + 2];
+    const vx = points[c] - points[a], vy = points[c + 1] - points[a + 1], vz = points[c + 2] - points[a + 2];
+    let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    const len = Math.hypot(nx, ny, nz);
+    if (len < 1e-18) continue;
+    const area = len / 2;
+    total += area;
+    nx /= len;
+    ny /= len;
+    nz /= len;
+    const d = nx * points[a] + ny * points[a + 1] + nz * points[a + 2];
+    const key = `${Math.round(nx * 200)},${Math.round(ny * 200)},${Math.round(nz * 200)},${Math.round(d / tol)}`;
+    const bucket = buckets.get(key);
+    if (bucket) bucket.area += area;
+    else buckets.set(key, { area, nx, ny, nz, d });
+  }
+  let best: { area: number; nx: number; ny: number; nz: number; d: number } | null = null;
+  for (const bucket of buckets.values()) if (!best || bucket.area > best.area) best = bucket;
+  if (!best || best.area < total * 0.15) return null;
+  // Le plan de joint contient l'axe long : sa normale lui est perpendiculaire.
+  const span = [0, 1, 2].map((a) => box.max[a] - box.min[a]);
+  const long = span.indexOf(Math.max(...span));
+  if (Math.abs([best.nx, best.ny, best.nz][long]) > 0.2) return null;
+  // Toute la matiere d'un cote : la face regarde vers le vide.
+  let beyond = 0;
+  const n = points.length / 3;
+  for (let v = 0; v < n; v++) {
+    const s2 = best.nx * points[v * 3] + best.ny * points[v * 3 + 1] + best.nz * points[v * 3 + 2] - best.d;
+    if (s2 > tol * 5) beyond++;
+  }
+  if (beyond > n * 0.08) return null;
+  return { normal: [best.nx, best.ny, best.nz], offset: best.d, area: best.area };
+}
+
+/**
+ * Corps entier reconstitue a partir d'une demi-coque : la piece et son
+ * image miroir, sans les faces du plan de joint — qui deviennent interieures.
+ * Les logements creuses dans la face de joint se referment en cavites.
+ */
+function mirrorComplete(mesh: Indexed, plane: JointPlane, epsilon: number): Indexed {
+  const { points, tris } = mesh;
+  const [nx, ny, nz] = plane.normal;
+  const n = points.length / 3;
+  const onPlane = (v: number) =>
+    Math.abs(nx * points[v * 3] + ny * points[v * 3 + 1] + nz * points[v * 3 + 2] - plane.offset) <= epsilon * 4;
+  const mirrored = new Float64Array(points.length * 2);
+  mirrored.set(points);
+  for (let v = 0; v < n; v++) {
+    const s2 = nx * points[v * 3] + ny * points[v * 3 + 1] + nz * points[v * 3 + 2] - plane.offset;
+    // Un sommet du plan reste EXACTEMENT a sa place : les deux moities s'y soudent.
+    const k = onPlane(v) ? 0 : 2 * s2;
+    mirrored[(n + v) * 3] = points[v * 3] - k * nx;
+    mirrored[(n + v) * 3 + 1] = points[v * 3 + 1] - k * ny;
+    mirrored[(n + v) * 3 + 2] = points[v * 3 + 2] - k * nz;
+  }
+  const out: number[] = [];
+  for (let t = 0; t < tris.length; t += 3) {
+    const a = tris[t], b = tris[t + 1], c = tris[t + 2];
+    if (onPlane(a) && onPlane(b) && onPlane(c)) continue;
+    out.push(a, b, c);
+    out.push(n + a, n + c, n + b);
+  }
+  // Les sommets du plan existent en double : une soudure les confond.
+  const soup = new Float32Array(out.length * 3);
+  for (let i = 0; i < out.length; i++) {
+    soup[i * 3] = mirrored[out[i] * 3];
+    soup[i * 3 + 1] = mirrored[out[i] * 3 + 1];
+    soup[i * 3 + 2] = mirrored[out[i] * 3 + 2];
+  }
+  const welded = weld(soup, epsilon);
+  return { points: welded.points, tris: welded.tris };
+}
+
+// ---------------------------------------------------------------------------
+// Auto-intersections
+// ---------------------------------------------------------------------------
+
+/** Faces qui se traversent : dans une meme piece, ou entre deux pieces. */
+export interface Intersections {
+  /** Paires de faces qui se coupent dans une MEME piece : auto-intersection. */
+  within: number;
+  /** Paires qui se coupent entre deux pieces : volumes qui se chevauchent. */
+  between: number;
+  /** Vrai si la recherche a ete arretee avant la fin (maillage enorme). */
+  partial: boolean;
+}
+
+function segmentHitsTriangle(
+  p: Float64Array, a: number, b: number,
+  t0: number, t1: number, t2: number,
+): boolean {
+  // Moller-Trumbore sur le segment [a, b], extremites exclues.
+  const e1x = p[t1] - p[t0], e1y = p[t1 + 1] - p[t0 + 1], e1z = p[t1 + 2] - p[t0 + 2];
+  const e2x = p[t2] - p[t0], e2y = p[t2 + 1] - p[t0 + 1], e2z = p[t2 + 2] - p[t0 + 2];
+  const dx = p[b] - p[a], dy = p[b + 1] - p[a + 1], dz = p[b + 2] - p[a + 2];
+  const hx = dy * e2z - dz * e2y, hy = dz * e2x - dx * e2z, hz = dx * e2y - dy * e2x;
+  const det = e1x * hx + e1y * hy + e1z * hz;
+  const scale = Math.hypot(e1x, e1y, e1z) * Math.hypot(e2x, e2y, e2z) * Math.hypot(dx, dy, dz);
+  if (Math.abs(det) <= scale * 1e-9) return false; // parallele ou coplanaire : contact, pas traversee
+  const f = 1 / det;
+  const sx = p[a] - p[t0], sy = p[a + 1] - p[t0 + 1], sz = p[a + 2] - p[t0 + 2];
+  const u = f * (sx * hx + sy * hy + sz * hz);
+  if (u <= 1e-9 || u >= 1 - 1e-9) return false;
+  const qx = sy * e1z - sz * e1y, qy = sz * e1x - sx * e1z, qz = sx * e1y - sy * e1x;
+  const w = f * (dx * qx + dy * qy + dz * qz);
+  if (w <= 1e-9 || u + w >= 1 - 1e-9) return false;
+  const t = f * (e2x * qx + e2y * qy + e2z * qz);
+  return t > 1e-9 && t < 1 - 1e-9;
+}
+
+/**
+ * Recherche des faces qui se traversent, par grille spatiale. Deux faces qui
+ * partagent un sommet ne sont pas testees : elles se touchent par
+ * construction. Le cout reste lineaire en pratique ; au-dela d'un budget de
+ * paires, la recherche s'arrete et le dit.
+ */
+function findIntersections(mesh: Indexed, part: Int32Array, onProgress?: ImportProgress): Intersections {
+  const { points, tris } = mesh;
+  const count = tris.length / 3;
+  if (count === 0) return { within: 0, between: 0, partial: false };
+  const lo = new Float64Array(count * 3);
+  const hi = new Float64Array(count * 3);
+  let sizeSum = 0;
+  for (let t = 0; t < count; t++) {
+    for (let a = 0; a < 3; a++) {
+      const v0 = points[tris[t * 3] * 3 + a], v1 = points[tris[t * 3 + 1] * 3 + a], v2 = points[tris[t * 3 + 2] * 3 + a];
+      lo[t * 3 + a] = Math.min(v0, v1, v2);
+      hi[t * 3 + a] = Math.max(v0, v1, v2);
+      sizeSum += hi[t * 3 + a] - lo[t * 3 + a];
+    }
+  }
+  const box = extents(points);
+  const cell = Math.max((sizeSum / (count * 3)) * 2.5, 1e-9);
+  const G = (a: number, v: number) => Math.floor((v - box.min[a]) / cell);
+  const NX = G(0, box.max[0]) + 1;
+  const NY = G(1, box.max[1]) + 1;
+  const grid = new Map<number, number[]>();
+  for (let t = 0; t < count; t++) {
+    const x0 = G(0, lo[t * 3]), x1 = G(0, hi[t * 3]);
+    const y0 = G(1, lo[t * 3 + 1]), y1 = G(1, hi[t * 3 + 1]);
+    const z0 = G(2, lo[t * 3 + 2]), z1 = G(2, hi[t * 3 + 2]);
+    if ((x1 - x0 + 1) * (y1 - y0 + 1) * (z1 - z0 + 1) > 64) continue; // facette geante : ignoree
+    for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) for (let z = z0; z <= z1; z++) {
+      const key = (z * NY + y) * NX + x;
+      const list = grid.get(key);
+      if (list) list.push(t);
+      else grid.set(key, [t]);
+    }
+  }
+  const stamp = new Int32Array(count).fill(-1);
+  let within = 0;
+  let between = 0;
+  let tests = 0;
+  const BUDGET = 6_000_000;
+  const cross = (i: number, j: number) => {
+    const A = [tris[i * 3] * 3, tris[i * 3 + 1] * 3, tris[i * 3 + 2] * 3];
+    const B = [tris[j * 3] * 3, tris[j * 3 + 1] * 3, tris[j * 3 + 2] * 3];
+    for (let e = 0; e < 3; e++) {
+      if (segmentHitsTriangle(points, A[e], A[(e + 1) % 3], B[0], B[1], B[2])) return true;
+      if (segmentHitsTriangle(points, B[e], B[(e + 1) % 3], A[0], A[1], A[2])) return true;
+    }
+    return false;
+  };
+  for (let i = 0; i < count && tests < BUDGET; i++) {
+    const x0 = G(0, lo[i * 3]), x1 = G(0, hi[i * 3]);
+    const y0 = G(1, lo[i * 3 + 1]), y1 = G(1, hi[i * 3 + 1]);
+    const z0 = G(2, lo[i * 3 + 2]), z1 = G(2, hi[i * 3 + 2]);
+    const ia = tris[i * 3], ib = tris[i * 3 + 1], ic = tris[i * 3 + 2];
+    for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) for (let z = z0; z <= z1; z++) {
+      const list = grid.get((z * NY + y) * NX + x);
+      if (!list) continue;
+      for (const j of list) {
+        if (j <= i || stamp[j] === i) continue;
+        stamp[j] = i;
+        const ja = tris[j * 3], jb = tris[j * 3 + 1], jc = tris[j * 3 + 2];
+        if (ja === ia || ja === ib || ja === ic || jb === ia || jb === ib || jb === ic || jc === ia || jc === ib || jc === ic) continue;
+        let overlap = true;
+        for (let a = 0; a < 3 && overlap; a++) {
+          if (hi[i * 3 + a] < lo[j * 3 + a] || hi[j * 3 + a] < lo[i * 3 + a]) overlap = false;
+        }
+        if (!overlap) continue;
+        tests++;
+        if (cross(i, j)) {
+          if (part[i] === part[j]) within++;
+          else between++;
+        }
+      }
+    }
+    if (onProgress && i % 20000 === 0) onProgress('Recherche des auto-intersections', i / count);
+  }
+  return { within, between, partial: tests >= BUDGET };
 }
 
 // ---------------------------------------------------------------------------
@@ -721,42 +1163,163 @@ function sliceAreas(mesh: Indexed, stations: number[]): number[] {
  * oppose a la bavette quand il y en a une, sinon la moitie la plus
  * detaillee (la dorsale y porte ses rayons). Tout est corrigeable.
  */
-function place(mesh: Indexed, override: OrientationOverride): MeshOrientation {
+const TURNS: Record<'x' | 'y' | 'z', number[]> = {
+  x: [1, 0, 0, 0, 0, -1, 0, 1, 0],
+  y: [0, 0, 1, 0, 1, 0, -1, 0, 0],
+  z: [0, -1, 0, 1, 0, 0, 0, 0, 1],
+};
+
+/** Mesure d'une piece plate dans le plan de profil : longueur, epaisseur, pente. */
+function plateOf(points: Float64Array, vertices: number[], factor: number) {
+  let mx = 0, my = 0;
+  for (const v of vertices) {
+    mx += points[v * 3] * factor;
+    my += points[v * 3 + 1] * factor;
+  }
+  mx /= vertices.length;
+  my /= vertices.length;
+  let sxx = 0, sxy = 0, syy = 0;
+  let zlo = Infinity, zhi = -Infinity;
+  for (const v of vertices) {
+    const dx = points[v * 3] * factor - mx;
+    const dy = points[v * 3 + 1] * factor - my;
+    sxx += dx * dx;
+    sxy += dx * dy;
+    syy += dy * dy;
+    zlo = Math.min(zlo, points[v * 3 + 2] * factor);
+    zhi = Math.max(zhi, points[v * 3 + 2] * factor);
+  }
+  const angle = 0.5 * Math.atan2(2 * sxy, sxx - syy);
+  const ux = Math.cos(angle), uy = Math.sin(angle);
+  let along0 = Infinity, along1 = -Infinity, across0 = Infinity, across1 = -Infinity;
+  for (const v of vertices) {
+    const dx = points[v * 3] * factor - mx;
+    const dy = points[v * 3 + 1] * factor - my;
+    const a = dx * ux + dy * uy;
+    const b = -dx * uy + dy * ux;
+    along0 = Math.min(along0, a);
+    along1 = Math.max(along1, a);
+    across0 = Math.min(across0, b);
+    across1 = Math.max(across1, b);
+  }
+  const plateLength = along1 - along0;
+  const thickness = across1 - across0;
+  const width = zhi - zlo;
+  return { plateLength, thickness, width, ux, uy, cy: my, flat: thickness <= 0.35 * Math.min(width, plateLength) };
+}
+
+/**
+ * Devine le sens du corps, et le ramene dans le repere de travail.
+ *
+ * Demi-coque : son plan de joint devient le plan de symetrie (Z), et l'axe
+ * long est pris dans ce plan. Corps entier : l'axe longitudinal est le plus
+ * long ; parmi les deux autres, la hauteur est la plus grande. Le nez est
+ * l'extremite la plus PLEINE du corps ; le dos est cote oppose a une
+ * bavette detachee — une piece PLATE a l'avant, pas un oeil —, sinon le cote
+ * des cretes minces du plan de symetrie. Mode manuel : rien n'est devine.
+ */
+function place(mesh: Indexed, override: OrientationOverride, symmetry: JointPlane | null): MeshOrientation {
   const { points } = mesh;
   const notes: string[] = [];
-  let aligned = false;
-  if (override.align) {
-    const axes = principalAxes(mesh);
-    // Repere direct : le troisieme axe est le produit des deux premiers.
-    const [e1, e2] = axes;
-    const e3 = [
-      e1[1] * e2[2] - e1[2] * e2[1],
-      e1[2] * e2[0] - e1[0] * e2[2],
-      e1[0] * e2[1] - e1[1] * e2[0],
-    ];
-    rotate(points, [...e1, ...e2, ...e3]);
-    aligned = true;
-    notes.push('Recale sur les axes principaux d inertie.');
+  // Quarts de tour : en mode manuel, sur le repere du fichier ; sinon, sur le
+  // resultat de la detection — ils tournent ce que l'on voit a l'ecran.
+  const turn = () => {
+    for (const axisTurn of override.turns ?? []) rotate(points, TURNS[axisTurn]);
+    if (override.turns?.length) {
+      notes.push(`${override.turns.length} quart(s) de tour impose(s) autour de ${override.turns.join(', ').toUpperCase()}.`);
+    }
+  };
+  if (override.manual) turn();
+  const recentre = (keepZ: boolean) => {
+    const box = extents(points);
+    const centre = [0, 1, 2].map((a) => (box.max[a] + box.min[a]) / 2);
+    if (keepZ) centre[2] = 0;
+    for (let k = 0; k < points.length; k += 3) {
+      points[k] -= centre[0];
+      points[k + 1] -= centre[1];
+      points[k + 2] -= centre[2];
+    }
+  };
+
+  if (override.manual) {
+    if (override.flipNose) rotate(points, [-1, 0, 0, 0, 1, 0, 0, 0, -1]);
+    if (override.flipBack) rotate(points, [1, 0, 0, 0, -1, 0, 0, 0, -1]);
+    recentre(false);
+    notes.push('Repere du fichier conserve (mode manuel) : X = axe du corps, nez vers -X, dos vers +Y, recentre sur l origine.');
+    return {
+      axis: 0,
+      flippedNose: override.flipNose === true,
+      flippedBack: override.flipBack === true,
+      roll: 0,
+      aligned: false,
+      manual: true,
+      note: notes.join(' '),
+    };
   }
 
-  let box = extents(points);
-  let span = [0, 1, 2].map((a) => box.max[a] - box.min[a]);
+  let aligned = false;
   let axis: 0 | 1 | 2 = 0;
-  if (span[1] > span[axis]) axis = 1;
-  if (span[2] > span[axis]) axis = 2;
-  if (override.axis !== undefined) axis = override.axis;
-  // Amene l'axe long sur X par une rotation propre.
-  if (axis === 1) rotate(points, [0, 1, 0, -1, 0, 0, 0, 0, 1]);
-  else if (axis === 2) rotate(points, [0, 0, 1, 0, 1, 0, -1, 0, 0]);
-  notes.push(`Axe longitudinal ${'XYZ'[axis]}${override.axis !== undefined ? ' (impose)' : ' (le plus long)'}.`);
-
-  // Hauteur sur Y : un quart de tour autour de X si l'epaisseur l'emporte.
-  box = extents(points);
-  span = [0, 1, 2].map((a) => box.max[a] - box.min[a]);
-  let roll = span[2] > span[1] * 1.02 ? 1 : 0;
-  if (override.roll !== undefined) roll = ((override.roll % 4) + 4) % 4;
-  for (let r = 0; r < roll; r++) rotate(points, [1, 0, 0, 0, 0, -1, 0, 1, 0]);
-  if (roll) notes.push(`${roll} quart(s) de tour autour de l axe pour mettre la hauteur sur Y.`);
+  let roll = 0;
+  let box = extents(points);
+  if (symmetry) {
+    // Repere direct : Z = normale du plan de joint, X = plus grande etendue
+    // dans ce plan, Y = Z x X.
+    const n = symmetry.normal;
+    const helper = Math.abs(n[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0];
+    let u = [n[1] * helper[2] - n[2] * helper[1], n[2] * helper[0] - n[0] * helper[2], n[0] * helper[1] - n[1] * helper[0]];
+    const lu = Math.hypot(u[0], u[1], u[2]);
+    u = u.map((c) => c / lu);
+    const w = [n[1] * u[2] - n[2] * u[1], n[2] * u[0] - n[0] * u[2], n[0] * u[1] - n[1] * u[0]];
+    // Direction de plus grande etendue dans le plan : balayage angulaire.
+    let bestAngle = 0;
+    let bestSpan = -1;
+    for (let k = 0; k < 90; k++) {
+      const a = (k / 90) * Math.PI;
+      const d = [0, 1, 2].map((i) => u[i] * Math.cos(a) + w[i] * Math.sin(a));
+      let lo = Infinity, hi = -Infinity;
+      for (let v = 0; v < points.length; v += 3) {
+        const s2 = points[v] * d[0] + points[v + 1] * d[1] + points[v + 2] * d[2];
+        if (s2 < lo) lo = s2;
+        if (s2 > hi) hi = s2;
+      }
+      if (hi - lo > bestSpan) {
+        bestSpan = hi - lo;
+        bestAngle = a;
+      }
+    }
+    const e1 = [0, 1, 2].map((i) => u[i] * Math.cos(bestAngle) + w[i] * Math.sin(bestAngle));
+    const e2 = [n[1] * e1[2] - n[2] * e1[1], n[2] * e1[0] - n[0] * e1[2], n[0] * e1[1] - n[1] * e1[0]];
+    rotate(points, [...e1, ...e2, ...n]);
+    for (let k = 2; k < points.length; k += 3) points[k] -= symmetry.offset;
+    notes.push('Demi-coque : sa face de joint devient le plan de symetrie, l axe long est pris dans ce plan.');
+  } else {
+    if (override.align) {
+      const axes = principalAxes(mesh);
+      const [e1, e2] = axes;
+      const e3 = [
+        e1[1] * e2[2] - e1[2] * e2[1],
+        e1[2] * e2[0] - e1[0] * e2[2],
+        e1[0] * e2[1] - e1[1] * e2[0],
+      ];
+      rotate(points, [...e1, ...e2, ...e3]);
+      aligned = true;
+      notes.push('Recale sur les axes principaux d inertie.');
+    }
+    box = extents(points);
+    let span = [0, 1, 2].map((a) => box.max[a] - box.min[a]);
+    if (span[1] > span[axis]) axis = 1;
+    if (span[2] > span[axis]) axis = 2;
+    if (override.axis !== undefined) axis = override.axis;
+    if (axis === 1) rotate(points, [0, 1, 0, -1, 0, 0, 0, 0, 1]);
+    else if (axis === 2) rotate(points, [0, 0, 1, 0, 1, 0, -1, 0, 0]);
+    notes.push(`Axe longitudinal ${'XYZ'[axis]}${override.axis !== undefined ? ' (impose)' : ' (le plus long)'}.`);
+    box = extents(points);
+    span = [0, 1, 2].map((a) => box.max[a] - box.min[a]);
+    roll = span[2] > span[1] * 1.02 ? 1 : 0;
+    if (override.roll !== undefined) roll = ((override.roll % 4) + 4) % 4;
+    for (let r = 0; r < roll; r++) rotate(points, [1, 0, 0, 0, 0, -1, 0, 1, 0]);
+    if (roll) notes.push(`${roll} quart(s) de tour autour de l axe pour mettre la hauteur sur Y.`);
+  }
 
   // Les indices se lisent sur la PIECE PRINCIPALE : une bavette qui depasse
   // devant le nez ferait croire a une extremite mince.
@@ -766,8 +1329,15 @@ function place(mesh: Indexed, override: OrientationOverride): MeshOrientation {
   let main = 0;
   for (let c = 1; c < parts.count; c++) if (size[c] > size[main]) main = c;
   const mainTris: number[] = [];
+  const others = new Map<number, number[]>();
   for (let t = 0; t < parts.of.length; t++) {
-    if (parts.of[t] === main) mainTris.push(mesh.tris[t * 3], mesh.tris[t * 3 + 1], mesh.tris[t * 3 + 2]);
+    const tri = [mesh.tris[t * 3], mesh.tris[t * 3 + 1], mesh.tris[t * 3 + 2]];
+    if (parts.of[t] === main) mainTris.push(...tri);
+    else {
+      const list = others.get(parts.of[t]);
+      if (list) list.push(...tri);
+      else others.set(parts.of[t], [...tri]);
+    }
   }
   const body: Indexed = { points, tris: new Uint32Array(mainTris) };
   const bodyBox = () => {
@@ -798,16 +1368,21 @@ function place(mesh: Indexed, override: OrientationOverride): MeshOrientation {
     `Nez ${flippedNose ? 'retourne' : 'deja'} vers -X${override.flipNose ? ' (corrige a la main)' : ' d apres l extremite la plus pleine du corps'}.`,
   );
 
-  // Dos : oppose a la bavette detachee s'il y en a une ; sinon le cote qui
-  // porte le plus de matiere MINCE dans le plan de symetrie — nageoire
-  // dorsale, arete du dos — face a un ventre plus plein.
+  // Dos : oppose a une bavette detachee — une piece PLATE a l'avant ; un
+  // oeil rapporte ne vote pas —, sinon le cote qui porte le plus de matiere
+  // MINCE dans le plan de symetrie (dorsale, arete du dos).
   box = bodyBox();
   const middle = (box.max[1] + box.min[1]) / 2;
   let bibSide = 0;
-  for (let t = 0; t < parts.of.length; t++) {
-    if (parts.of[t] === main) continue;
-    const v = mesh.tris[t * 3] * 3;
-    if (points[v] < box.min[0] + (box.max[0] - box.min[0]) * 0.3) bibSide += points[v + 1] > middle ? 1 : -1;
+  for (const tris of others.values()) {
+    const vertices = [...new Set(tris)];
+    let cx = 0;
+    for (const v of vertices) cx += points[v * 3];
+    cx /= vertices.length;
+    if (cx > box.min[0] + (box.max[0] - box.min[0]) * 0.3) continue;
+    const plate = plateOf(points, vertices, 1);
+    if (!plate.flat) continue;
+    bibSide += plate.cy > middle ? 1 : -1;
   }
   const BINS = 40;
   const bodySpan = Math.max(box.max[0] - box.min[0], 1e-9);
@@ -828,7 +1403,6 @@ function place(mesh: Indexed, override: OrientationOverride): MeshOrientation {
     if (seen[v]) continue;
     seen[v] = 1;
     const b = binOf(points[v * 3]);
-    // Pointes exclues : le nez et la caudale ne disent rien du dos.
     if (b < 4 || b > BINS - 8) continue;
     const centre = (lo[b] + hi[b]) / 2;
     const half = (hi[b] - lo[b]) / 2;
@@ -854,15 +1428,9 @@ function place(mesh: Indexed, override: OrientationOverride): MeshOrientation {
     }.`,
   );
 
-  // Recentrage sur l'origine.
-  box = extents(points);
-  const centre = [0, 1, 2].map((a) => (box.max[a] + box.min[a]) / 2);
-  for (let k = 0; k < points.length; k += 3) {
-    points[k] -= centre[0];
-    points[k + 1] -= centre[1];
-    points[k + 2] -= centre[2];
-  }
-  return { axis, flippedNose, flippedBack, roll, aligned, note: notes.join(' ') };
+  turn();
+  recentre(symmetry !== null && !override.turns?.length);
+  return { axis, flippedNose, flippedBack, roll, aligned, manual: false, note: notes.join(' ') };
 }
 
 /**
@@ -907,7 +1475,14 @@ function toSoup(mesh: Indexed, factor: number): Float32Array {
   return out;
 }
 
-/** Pieces du fichier, et la bavette s'il y en a une de detachee. */
+/**
+ * Pieces du fichier, et la bavette s'il y en a une de detachee.
+ *
+ * Le corps est la piece principale ET tout ce qui la touche — coque soeur,
+ * nageoires, yeux rapportes. Une piece a l'ecart (posee a cote sur le
+ * plateau : goupille, cylindre) n'en fait pas partie : elle est ignoree et
+ * signalee, plutot que de fausser l'orientation et l'echelle.
+ */
 function classify(
   mesh: Indexed,
   factor: number,
@@ -937,58 +1512,45 @@ function classify(
   }
   let main = 0;
   for (let c = 1; c < stats.length; c++) if (Math.abs(stats[c].volume) > Math.abs(stats[main].volume)) main = c;
+  // Grappe du corps : les pieces dont l'encombrement touche celui d'une
+  // piece deja retenue (0,5 mm de marge).
+  const inCluster = new Uint8Array(stats.length);
+  inCluster[main] = 1;
+  const touches = (a: (typeof stats)[number], b: (typeof stats)[number]) =>
+    [0, 1, 2].every((k) => a.min[k] <= b.max[k] + 0.05 && b.min[k] <= a.max[k] + 0.05);
+  for (let pass = 0; pass < 3; pass++) {
+    stats.forEach((s, c) => {
+      if (inCluster[c]) return;
+      for (let d = 0; d < stats.length; d++) {
+        if (inCluster[d] && touches(s, stats[d])) {
+          inCluster[c] = 1;
+          break;
+        }
+      }
+    });
+  }
   const body = stats[main];
   const length = body.max[0] - body.min[0];
   const bodyMid = (body.max[1] + body.min[1]) / 2;
   let bib: DetectedBib | null = null;
   let bibIndex = -1;
   stats.forEach((s, c) => {
-    if (c === main || bib) return;
+    if (c === main || bib || !inCluster[c]) return;
     const cx = (s.min[0] + s.max[0]) / 2;
     const cy = (s.min[1] + s.max[1]) / 2;
     if (cx > body.min[0] + length * 0.3 || cy > bodyMid) return;
     // Plaque : sa plus petite dimension, mesuree dans le plan de profil a
     // travers l'axe principal de la piece, reste petite devant la largeur.
-    let mx = 0, my = 0;
-    for (const v of s.vertices) {
-      mx += points[v * 3] * factor;
-      my += points[v * 3 + 1] * factor;
-    }
-    mx /= s.vertices.length;
-    my /= s.vertices.length;
-    let sxx = 0, sxy = 0, syy = 0;
-    for (const v of s.vertices) {
-      const dx = points[v * 3] * factor - mx;
-      const dy = points[v * 3 + 1] * factor - my;
-      sxx += dx * dx;
-      sxy += dx * dy;
-      syy += dy * dy;
-    }
-    const angle = 0.5 * Math.atan2(2 * sxy, sxx - syy);
-    const ux = Math.cos(angle), uy = Math.sin(angle);
-    let along0 = Infinity, along1 = -Infinity, across0 = Infinity, across1 = -Infinity;
-    for (const v of s.vertices) {
-      const dx = points[v * 3] * factor - mx;
-      const dy = points[v * 3 + 1] * factor - my;
-      const a = dx * ux + dy * uy;
-      const b = -dx * uy + dy * ux;
-      along0 = Math.min(along0, a);
-      along1 = Math.max(along1, a);
-      across0 = Math.min(across0, b);
-      across1 = Math.max(across1, b);
-    }
-    const plateLength = along1 - along0;
-    const thickness = across1 - across0;
-    const width = s.max[2] - s.min[2];
-    if (thickness > 0.35 * Math.min(width, plateLength)) return;
+    const plate = plateOf(points, [...new Set(s.vertices)], factor);
+    if (!plate.flat) return;
     bibIndex = c;
     // L'angle se compte sous l'horizontale, bavette pointant vers l'avant.
-    let tilt = (Math.atan2(Math.abs(uy), Math.abs(ux)) * 180) / Math.PI;
+    let tilt = (Math.atan2(Math.abs(plate.uy), Math.abs(plate.ux)) * 180) / Math.PI;
     if (tilt > 89) tilt = 89;
     bib = {
-      lengthMm: plateLength * 10,
-      widthMm: width * 10,
-      thicknessMm: thickness * 10,
+      lengthMm: plate.plateLength * 10,
+      widthMm: plate.width * 10,
+      thicknessMm: plate.thickness * 10,
       angleDeg: tilt,
       fromNoseMm: (s.min[0] - body.min[0]) * 10,
       rearFromNoseMm: (s.max[0] - body.min[0]) * 10,
@@ -999,13 +1561,14 @@ function classify(
     volume: s.volume,
     min: s.min,
     max: s.max,
-    role: c === main ? 'body' : c === bibIndex ? 'bib' : 'part',
+    role: c === main ? 'body' : c === bibIndex ? 'bib' : inCluster[c] ? 'part' : 'ignored',
   }));
-  // Le corps, sans la bavette detachee : c'est lui qu'on industrialise, la
-  // bavette etant remplacee par sa plaque dans la fente commune.
+  // Le corps, sans la bavette detachee ni les pieces a l'ecart : c'est lui
+  // qu'on mesure et qu'on industrialise, la bavette etant remplacee par sa
+  // plaque dans la fente commune.
   const kept: number[] = [];
   for (let t = 0; t < parts.of.length; t++) {
-    if (parts.of[t] === bibIndex) continue;
+    if (parts.of[t] === bibIndex || !inCluster[parts.of[t]]) continue;
     kept.push(tris[t * 3], tris[t * 3 + 1], tris[t * 3 + 2]);
   }
   return { components, bib, body: toSoup({ points, tris: new Uint32Array(kept) }, factor) };
@@ -1016,43 +1579,74 @@ function classify(
  * en place et mise a l'echelle. `targetLengthMm` impose la longueur
  * hors-tout reelle ; sinon `unitToMm` convertit les unites du fichier.
  */
-export function importMesh(name: string, data: ArrayBuffer | string, options: ImportOptions = {}): ImportedMesh {
-  const raw = readMeshFile(name, data);
-  if (raw.length < 9) {
-    throw new Error('Fichier illisible : aucun triangle trouve.');
-  }
+export function importMesh(
+  name: string,
+  data: ArrayBuffer | string,
+  options: ImportOptions = {},
+  onProgress?: ImportProgress,
+): ImportedMesh {
+  const file = readMeshFile(name, data, onProgress);
+  const raw = file.positions;
   const box = extents(raw);
   const diagonal = Math.hypot(box.max[0] - box.min[0], box.max[1] - box.min[1], box.max[2] - box.min[2]);
-  // Tolerance de soudure proportionnelle a la piece : un millionieme de sa
-  // diagonale, jamais une constante en millimetres.
-  const epsilon = Math.max(diagonal * 1e-6, 1e-9);
+  if (!(diagonal > 0)) throw new ImportError('Toutes les facettes sont confondues en un point : aucune piece a mesurer.');
+  // Tolerance de soudure proportionnelle a la piece : un cent-millieme de sa
+  // diagonale (0,002 mm sur un leurre de 150 mm), jamais une constante.
+  const epsilon = Math.max(diagonal * 1e-5, 1e-9);
 
+  onProgress?.('Soudure des sommets', 0);
   const welded = weld(raw, epsilon);
+  if (welded.tris.length === 0) {
+    throw new ImportError(`Les ${(raw.length / 9).toLocaleString('fr-FR')} facettes sont toutes d aire nulle : rien a mesurer.`);
+  }
   const before = diagnoseIndexed(welded, { welded: welded.welded, degenerate: welded.degenerate, duplicates: 0 });
 
+  onProgress?.('Reparations sures', 0);
   const repairs: MeshRepair[] = [];
   if (welded.welded > 0) repairs.push({ label: 'Sommets confondus soudes', count: welded.welded });
   if (welded.degenerate > 0) repairs.push({ label: 'Triangles d aire nulle retires', count: welded.degenerate });
-  const unique = removeDuplicates(welded);
-  if (unique.removed > 0) repairs.push({ label: 'Triangles en double retires', count: unique.removed });
-  let mesh = unique.mesh;
-  const oriented = orient(mesh);
-  if (oriented.flipped > 0) repairs.push({ label: 'Faces remises dans le sens de leurs voisines', count: oriented.flipped });
-  if (oriented.reversedParts > 0) {
-    repairs.push({ label: 'Pieces entieres retournees (volume negatif)', count: oriented.reversedParts });
+  const repair = (input: Indexed) => {
+    const unique = removeDuplicates(input);
+    let mesh = unique.mesh;
+    const oriented = orient(mesh);
+    const holes = fillSmallHoles(mesh);
+    mesh = removeDuplicates(holes.mesh).mesh;
+    return { mesh, unique, oriented, holes };
+  };
+  let pass = repair(welded);
+  if (pass.unique.removed > 0) repairs.push({ label: 'Triangles en double ou faces confondues retires', count: pass.unique.removed });
+  if (pass.oriented.flipped > 0) repairs.push({ label: 'Faces remises dans le sens de leurs voisines', count: pass.oriented.flipped });
+  if (pass.oriented.reversedParts > 0) {
+    repairs.push({ label: 'Pieces entieres retournees (volume negatif)', count: pass.oriented.reversedParts });
   }
-  const holes = fillSmallHoles(mesh);
-  mesh = holes.mesh;
-  if (holes.filled > 0) repairs.push({ label: `Petits trous rebouches (${SMALL_HOLE} aretes au plus)`, count: holes.filled });
-  const repaired = removeDuplicates(mesh);
-  mesh = repaired.mesh;
+  if (pass.holes.filled > 0) repairs.push({ label: `Petits trous rebouches (${SMALL_HOLE} aretes au plus)`, count: pass.holes.filled });
+
+  // Demi-coque : reconnue a sa face de joint, reconstituee par symetrie.
+  onProgress?.('Recherche d une face de joint', 0);
+  const joint = findJointPlane(pass.mesh);
+  let halfShell: ImportedMesh['halfShell'] = null;
+  if (joint) {
+    const fileVolume = Math.abs(pass.mesh.tris.length ? signedVolumeOf(pass.mesh) : 0);
+    const completed = options.mirrorHalf !== false;
+    if (completed) {
+      const mirrored = mirrorComplete(pass.mesh, joint, epsilon);
+      pass = repair(mirrored);
+      repairs.push({ label: 'Demi-coque completee par symetrie autour de sa face de joint', count: 1 });
+    }
+    halfShell = { jointAreaCm2: 0, completed, fileVolume };
+  }
+  const mesh = pass.mesh;
   const diagnosis = diagnoseIndexed(mesh, {
     welded: welded.welded,
     degenerate: welded.degenerate,
-    duplicates: unique.removed,
+    duplicates: pass.unique.removed,
   });
 
-  const orientation = place(mesh, options.orientation ?? {});
+  onProgress?.('Recherche des auto-intersections', 0);
+  const intersections = findIntersections(mesh, componentsOf(mesh).of, onProgress);
+
+  onProgress?.('Orientation', 0);
+  const orientation = place(mesh, options.orientation ?? {}, joint);
 
   // Mise a l'echelle. Les fichiers 3D sont en mm par convention, sauf avis
   // contraire ; l'application travaille en cm.
@@ -1065,13 +1659,24 @@ export function importMesh(name: string, data: ArrayBuffer | string, options: Im
   const factor = unitToMm / 10;
   const positions = toSoup(mesh, factor);
   const final = extents(positions);
+  onProgress?.('Pieces et bavette', 0);
   const { components, bib, body } = classify(mesh, factor);
+  if (halfShell && joint) {
+    halfShell.jointAreaCm2 = joint.area * factor * factor;
+    halfShell.fileVolume *= factor ** 3;
+  }
 
   const limits: string[] = [];
+  if (halfShell && !halfShell.completed) {
+    limits.push(
+      'Demi-coque prise telle quelle : l industrialisation en deux demi-coques est bloquee — une demi-coque ' +
+        'ne se redecoupe pas. Activez la reconstitution par symetrie pour mesurer et industrialiser le leurre entier.',
+    );
+  }
   if (diagnosis.openEdges > 0) {
     limits.push(
       `Maillage non etanche : ${diagnosis.openEdges} aretes ouvertes apres rebouchage des petits trous` +
-        (holes.left > 0 ? ` (${holes.left} ouverture(s) de plus de ${SMALL_HOLE} aretes, laissees telles quelles)` : '') +
+        (pass.holes.left > 0 ? ` (${pass.holes.left} ouverture(s) de plus de ${SMALL_HOLE} aretes, laissees telles quelles)` : '') +
         '. Volume, masse et verdict de flottabilite sont des estimations ; la decoupe en demi-coques ' +
         'est bloquee la ou un rayon ne trouve pas de paroi — une nageoire en simple face, sans ' +
         'epaisseur, en est la cause la plus frequente.',
@@ -1085,10 +1690,32 @@ export function importMesh(name: string, data: ArrayBuffer | string, options: Im
         'par un plan est bloquee si elle traverse une de ces aretes.',
     );
   }
-  if (oriented.conflicts > 0) {
+  if (pass.oriented.conflicts > 0) {
     limits.push(
-      `${oriented.conflicts} faces ne peuvent pas etre orientees de facon coherente (surface non ` +
+      `${pass.oriented.conflicts} faces ne peuvent pas etre orientees de facon coherente (surface non ` +
         'orientable ou faces croisees). Le volume de ces zones est incertain.',
+    );
+  }
+  if (intersections.within > 0) {
+    limits.push(
+      `Auto-intersections : ${intersections.within.toLocaleString('fr-FR')} paires de faces d une meme piece se ` +
+        'traversent. Elles ne se reparent pas sans refaire la surface : le volume de ces zones est ' +
+        'compte deux fois, et la decoupe par un plan y est bloquee si elle les croise.',
+    );
+  }
+  if (intersections.between > 0) {
+    const small = components.filter((part) => part.role === 'part').reduce((sum, part) => sum + Math.abs(part.volume), 0);
+    limits.push(
+      `Pieces qui se chevauchent : ${intersections.between.toLocaleString('fr-FR')} paires de faces se croisent ` +
+        'entre pieces distinctes (yeux, nageoires rapportees, coques). Leur recouvrement est compte deux fois ' +
+        `dans le volume, ecart au plus ${small.toFixed(2)} cm3 ; la peau retraduite, elle, suit leur union.`,
+    );
+  }
+  const ignored = components.filter((part) => part.role === 'ignored');
+  if (ignored.length > 0) {
+    limits.push(
+      `${ignored.length} piece(s) a l ecart du corps (${ignored.reduce((sum, part) => sum + part.triangles, 0).toLocaleString('fr-FR')} facettes), ` +
+        'posee(s) a cote : ignoree(s) pour le corps, le banc et l industrialisation.',
     );
   }
   if (diagnosis.triangles > 400000) {
@@ -1117,7 +1744,18 @@ export function importMesh(name: string, data: ArrayBuffer | string, options: Im
     orientation,
     unitToMm,
     limits,
+    format: file.format,
+    warnings: file.warnings,
+    halfShell,
+    intersections,
   };
+}
+
+/** Volume signe d'un maillage indexe. */
+function signedVolumeOf(mesh: Indexed): number {
+  let volume = 0;
+  for (let t = 0; t < mesh.tris.length; t += 3) volume += triVolume(mesh.points, mesh.tris[t], mesh.tris[t + 1], mesh.tris[t + 2]);
+  return volume;
 }
 
 /** Geometrie Three.js prete a afficher : la version allegee si elle existe. */
@@ -1126,4 +1764,14 @@ export function toGeometry(mesh: ImportedMesh): THREE.BufferGeometry {
   geometry.setAttribute('position', new THREE.BufferAttribute(mesh.display ?? mesh.positions, 3));
   geometry.computeVertexNormals();
   return geometry;
+}
+
+/**
+ * Zone ou la peau peut legitimement se creuser : sous la bavette detachee du
+ * fichier, sa fente. Elle ne bloque pas l'industrialisation, qui creuse la
+ * sienne.
+ */
+export function bibAllowance(mesh: ImportedMesh): GapAllowance | null {
+  const bib = mesh.components.find((part) => part.role === 'bib');
+  return bib ? { x0: bib.min[0], x1: bib.max[0] } : null;
 }

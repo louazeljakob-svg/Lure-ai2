@@ -85,34 +85,30 @@ const INLAY_SHAPES: InlayShape[] = ['custom', 'oval', 'teardrop', 'band', 'flank
 const FINISH_STYLES: FinishStyle[] = ['smooth', 'faceted'];
 const PREVIEWS: PreviewQuality[] = ['low', 'medium', 'high'];
 
-const SHAPES: ShapeId[] = [
-  'minnow',
-  'crankbait',
-  'deepdiver',
-  'popper',
-  'stickbait',
-  'lipless',
-  'swimbait',
-  'spoon',
-];
+const SHAPES: ShapeId[] = ['minnow', 'lipless', 'spoon'];
 
 /**
  * Identifiants des bibliotheques precedentes.
  *
- * Les anciens modeles ont quitte la bibliotheque (module AA), pas les
- * projets : un projet enregistre sur l'un d'eux garde toutes ses cotes et
- * son profil historique — il n'a pas d'anatomie — et ne change que
- * d'etiquette de famille.
+ * Les anciens modeles ont quitte la bibliotheque (modules AA et AH), pas les
+ * projets : un projet enregistre sur l'un d'eux garde toutes ses cotes, son
+ * anatomie et sa bavette, et ne change que d'etiquette de famille — celle
+ * dont il partage l'attache et la bavette.
  */
 const LEGACY_SHAPES: Record<string, ShapeId> = {
-  stickbait165: 'stickbait',
+  crankbait: 'minnow',
+  deepdiver: 'minnow',
+  popper: 'minnow',
+  stickbait: 'minnow',
+  swimbait: 'minnow',
+  stickbait165: 'minnow',
   ryoshi: 'minnow',
   model25: 'minnow',
   jerkbait: 'minnow',
-  topwater: 'stickbait',
+  topwater: 'minnow',
   vibetraine: 'lipless',
-  minnowtraine: 'deepdiver',
-  chugger: 'popper',
+  minnowtraine: 'minnow',
+  chugger: 'minnow',
   minnownervure: 'minnow',
 };
 const TAILS: TailShape[] = ['round', 'forked', 'paddle', 'fan'];
@@ -140,7 +136,9 @@ const EXITS: PinExit[] = ['nose', 'belly', 'tail', 'back'];
 const num = (value: unknown, range: Range, fallback: number): number => {
   const n = typeof value === 'number' ? value : Number(value);
   if (!Number.isFinite(n)) return fallback;
-  return Math.min(Math.max(n, range.min), range.max);
+  // Les bornes physiques, pas la plage du curseur : une cote saisie au-dela
+  // du curseur (module AJ.3) survit a l'enregistrement et au rechargement.
+  return Math.min(Math.max(n, range.hardMin ?? range.min), range.hardMax ?? range.max);
 };
 
 const pick = <T extends string>(value: unknown, allowed: T[], fallback: T): T =>

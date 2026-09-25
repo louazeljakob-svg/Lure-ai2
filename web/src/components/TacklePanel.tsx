@@ -20,7 +20,7 @@ import {
   tackleToCsv,
   type CsvPreview,
 } from '../lib/tackle';
-import { Fieldset, Slider, Switch } from './ui';
+import { Fieldset, NumberField, Slider, Switch } from './ui';
 
 interface Props {
   params: LureParams;
@@ -326,48 +326,48 @@ export function TacklePanel({ params, physics, onChange }: Props) {
                   </th>
                   <td>{item.size}</td>
                   <td>
-                    <input
-                      type="number"
+                    <NumberField
                       step={0.01}
+                      unit="mm"
+                      hardMin={0.05}
+                      hardMax={10}
                       value={item.wireMm}
-                      aria-label={`Calibre de fil de ${item.size}`}
-                      onChange={(event) =>
-                        editItem(item.id, { wireMm: Number(event.target.value) })
-                      }
+                      label={`Calibre de fil de ${item.size}`}
+                      onChange={(value) => editItem(item.id, { wireMm: value })}
                     />
                   </td>
                   <td>
-                    <input
-                      type="number"
+                    <NumberField
                       step={0.01}
+                      unit="g"
+                      hardMin={0}
+                      hardMax={500}
                       value={item.massG}
-                      aria-label={`Masse de ${item.size}`}
-                      onChange={(event) =>
-                        editItem(item.id, { massG: Number(event.target.value) })
-                      }
+                      label={`Masse de ${item.size}`}
+                      onChange={(value) => editItem(item.id, { massG: value })}
                     />
                   </td>
                   <td>
-                    <input
-                      type="number"
+                    <NumberField
                       step={0.5}
+                      unit="kg"
+                      hardMin={0}
+                      hardMax={1000}
                       value={item.strengthKg}
-                      aria-label={`Resistance de ${item.size}`}
-                      onChange={(event) =>
-                        editItem(item.id, { strengthKg: Number(event.target.value) })
-                      }
+                      label={`Resistance de ${item.size}`}
+                      onChange={(value) => editItem(item.id, { strengthKg: value })}
                     />
                   </td>
                   <td>{n(kgToLb(item.strengthKg), 0)}</td>
                   <td>
-                    <input
-                      type="number"
+                    <NumberField
                       step={0.5}
+                      unit="mm"
+                      hardMin={0.5}
+                      hardMax={200}
                       value={item.spanMm}
-                      aria-label={`Encombrement de ${item.size}`}
-                      onChange={(event) =>
-                        editItem(item.id, { spanMm: Number(event.target.value) })
-                      }
+                      label={`Encombrement de ${item.size}`}
+                      onChange={(value) => editItem(item.id, { spanMm: value })}
                     />
                   </td>
                   <td>

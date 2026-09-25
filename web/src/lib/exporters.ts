@@ -291,6 +291,57 @@ export function printableParts(parts: THREE.BufferGeometry[]): THREE.BufferGeome
   return clones;
 }
 
+/**
+ * Geometrie d'export : toujours a la resolution pleine, ecailles cuites,
+ * quelle que soit la qualite d'apercu choisie dans l'editeur. `built` est a
+ * liberer par l'appelant quand elle a ete construite pour l'occasion.
+ */
+function exportSource(params: LureParams, geo: LureGeometry): { source: LureGeometry; built: LureGeometry | null } {
+  const bake = params.scales.enabled && !params.scales.baked;
+  if (!bake && params.print.preview === 'medium') return { source: geo, built: null };
+  const profile = createProfile(params);
+  const plan = assemblyActive(params) ? billPlanFor(profile, params) : null;
+  const built = buildLure(params, DISPLAY_RESOLUTION, plan?.root ?? null, params.scales.enabled);
+  return { source: built, built };
+}
+
+/**
+ * Pieces du fichier STL, posees pour l'impression. C'est la meme fonction
+ * qui ecrit le fichier et qui compte ses triangles : le compteur affiche ne
+ * peut pas diverger de ce qui sort (module AI).
+ */
+function stlParts(params: LureParams, geo: LureGeometry, kind: ExportKind): THREE.BufferGeometry[] {
+  const { source, built } = exportSource(params, geo);
+  const { parts, owned } = collectParts(params, source, kind, false);
+  const placed = printableParts(parts);
+  for (const part of owned) part.dispose();
+  built?.dispose();
+  return placed;
+}
+
+const triangleCount = (geometry: THREE.BufferGeometry) =>
+  (geometry.getIndex() ? geometry.getIndex()!.count : geometry.getAttribute('position').count) / 3;
+
+/** Nombre de triangles du fichier STL exporte pour cette piece. */
+export function countExportTriangles(params: LureParams, geo: LureGeometry, kind: ExportKind = 'assembly'): number {
+  const placed = stlParts(params, geo, kind);
+  const total = placed.reduce((sum, part) => sum + triangleCount(part), 0);
+  for (const part of placed) part.dispose();
+  return total;
+}
+
+/** Fichier STL binaire de la piece, en memoire. */
+export function stlBytes(params: LureParams, geo: LureGeometry, kind: ExportKind = 'assembly'): DataView<ArrayBuffer> {
+  const placed = stlParts(params, geo, kind);
+  const group = new THREE.Group();
+  for (const part of placed) group.add(new THREE.Mesh(part));
+  group.updateMatrixWorld(true);
+  const data = new STLExporter().parse(group, { binary: true }) as DataView<ArrayBuffer>;
+  group.clear();
+  for (const part of placed) part.dispose();
+  return data;
+}
+
 export async function exportSTL(
   params: LureParams,
   geo: LureGeometry,
@@ -298,25 +349,9 @@ export async function exportSTL(
   kind: ExportKind = 'assembly',
 ): Promise<SaveOutcome> {
   // Le relief des ecailles est CUIT a l'export, meme si l'editeur montre une
-  // normal map : ce qui part a l'impression doit porter la matiere pour de
-  // bon. Le maillage est alors regenere assez dense pour la tenir.
-  const baked =
-    params.scales.enabled && !params.scales.baked
-      ? buildLure(params, DISPLAY_RESOLUTION, null, true)
-      : null;
-  const source = baked ?? geo;
-  const { parts, owned } = collectParts(params, source, kind, false);
-  if (baked) owned.push(baked.body);
-  const placed = printableParts(parts);
-  const group = new THREE.Group();
-  for (const part of placed) group.add(new THREE.Mesh(part));
-  group.updateMatrixWorld(true);
-
-  const data = new STLExporter().parse(group, { binary: true });
-  group.clear();
-  for (const part of placed) part.dispose();
-  for (const part of owned) part.dispose();
-
+  // normal map, et la resolution est toujours la pleine : ce qui part a
+  // l'impression ne depend pas du confort d'apercu.
+  const data = stlBytes(params, geo, kind);
   const suffix = kind === 'assembly' ? '' : `-${EXPORT_LABEL[kind]}`;
   const base = `${slugify(name)}${suffix}`;
   return offerFile(`${base}.stl`, data, 'model/stl', `${base}.stl.txt`);

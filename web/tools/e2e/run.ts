@@ -12,20 +12,22 @@
 
 import * as THREE from 'three';
 import legacy from './legacy-projects.json';
-import { ARCHETYPES } from '../../src/lib/archetypes';
+import { activeFilters, ARCHETYPES, filterValues, matchesChoice, type LibraryChoice } from '../../src/lib/archetypes';
 import { SHAPE_PRESETS, clonePreset } from '../../src/lib/presets';
 import { sanitizeParams } from '../../src/lib/validation';
 import { createProfile } from '../../src/lib/profile';
-import { buildLure, DISPLAY_RESOLUTION } from '../../src/lib/geometry';
+import { buildLure, buildTailFin, DISPLAY_RESOLUTION } from '../../src/lib/geometry';
 import {
   assemblyActive,
   assemblyExport,
   assemblyPlans,
+  assemblyPreview,
   buildAssembly,
+  disposeAssembly,
 } from '../../src/lib/assembly';
 import { computePhysics } from '../../src/lib/physics';
 import { runPrintChecks } from '../../src/lib/printCheck';
-import { collectParts, type ExportKind } from '../../src/lib/exporters';
+import { collectParts, countExportTriangles, stlBytes, type ExportKind } from '../../src/lib/exporters';
 import { jointTravel } from '../../src/lib/jointCheck';
 import {
   anchorStrength,
@@ -37,7 +39,7 @@ import {
 } from '../../src/lib/swim';
 import type { LureParams } from '../../src/types/lure';
 import { THUMBNAILS } from '../../src/lib/thumbnails';
-import { importMesh } from '../../src/lib/importMesh';
+import { bibAllowance, ImportError, importMesh } from '../../src/lib/importMesh';
 import { createMeshBody, registerMeshBody, restoreMeshBody } from '../../src/lib/meshBody';
 import { industrialise, runBench } from '../../src/lib/industrialise';
 import { buildProjectFile } from '../../src/lib/exporters';
@@ -266,10 +268,10 @@ function familyStl(params: LureParams, rotate: (p: THREE.Vector3) => THREE.Vecto
  * oriente, passe au banc d'essai, industrialise, enregistre en projet JSON
  * avec son maillage, rouvert, puis controle comme une famille.
  */
-function checkImport(id: string, report: Report, turned = false): void {
+function checkImport(id: string, report: Report, turned = false, base: LureParams = clonePreset(id as LureParams['shape'])): void {
   const tag = `import ${id}${turned ? ' (fichier tourne)' : ''}`;
   const fail = (what: string) => report.failures.push(`${tag} : ${what}`);
-  const source = { ...clonePreset(id as LureParams['shape']), billMode: 'printed' as const };
+  const source = { ...base, billMode: 'printed' as const };
   // Fichier tourne : axe long sur Z, dos vers -X — l'orientation doit etre retrouvee.
   const buffer = familyStl(source, turned ? (p) => new THREE.Vector3(-p.y, p.z, p.x) : undefined);
   const started = Date.now();
@@ -280,7 +282,7 @@ function checkImport(id: string, report: Report, turned = false): void {
     fail(`longueur relue ${mesh.bounds.length.toFixed(1)} mm`);
   }
   if (source.hasBib !== (mesh.bib !== null)) fail(`bavette ${mesh.bib ? 'inventee' : 'non reconnue'}`);
-  const body = createMeshBody(`e2e-${id}-${turned ? 't' : 'd'}`, `${id}.stl`, mesh.body);
+  const body = createMeshBody(`e2e-${id}-${turned ? 't' : 'd'}`, `${id}.stl`, mesh.body, null, bibAllowance(mesh));
   registerMeshBody(body);
   // Orientation : le nez doit etre en -X et le dos en +Y — la caudale est a
   // l'arriere et la bavette sous le menton.
@@ -318,14 +320,220 @@ function checkImport(id: string, report: Report, turned = false): void {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Jeu de test de l'import (module AK.6)
+// ---------------------------------------------------------------------------
+
+type Xf = (p: THREE.Vector3) => THREE.Vector3;
+
+/** Soupe de triangles en mm, depuis des geometries en cm. */
+function soupOf(parts: (THREE.BufferGeometry | null)[], xf: Xf): number[] {
+  const soup: number[] = [];
+  const v = new THREE.Vector3();
+  for (const part of parts) {
+    if (!part) continue;
+    const position = part.getAttribute('position');
+    const index = part.getIndex();
+    const count = index ? index.count : position.count;
+    for (let k = 0; k < count; k++) {
+      v.fromBufferAttribute(position, index ? index.getX(k) : k);
+      const r = xf(v.clone().multiplyScalar(10));
+      soup.push(r.x, r.y, r.z);
+    }
+  }
+  return soup;
+}
+
+function binaryStl(soup: number[], header = '', trailing = 0): ArrayBuffer {
+  const count = soup.length / 9;
+  const buffer = new ArrayBuffer(84 + count * 50 + trailing);
+  const view = new DataView(buffer);
+  for (let i = 0; i < Math.min(header.length, 80); i++) view.setUint8(i, header.charCodeAt(i));
+  view.setUint32(80, count, true);
+  let offset = 84;
+  for (let t = 0; t < count; t++) {
+    offset += 12;
+    for (let k = 0; k < 9; k++) {
+      view.setFloat32(offset, soup[t * 9 + k], true);
+      offset += 4;
+    }
+    offset += 2;
+  }
+  return buffer;
+}
+
+function asciiStl(soup: number[], name: string): string {
+  const lines = [`solid ${name}`];
+  for (let t = 0; t < soup.length / 9; t++) {
+    lines.push('  facet normal 0 0 0', '    outer loop');
+    for (let k = 0; k < 3; k++) {
+      const o = t * 9 + k * 3;
+      lines.push(`      vertex ${soup[o].toExponential(6)} ${soup[o + 1].toExponential(6)} ${soup[o + 2].toExponential(6)}`);
+    }
+    lines.push('    endloop', '  endfacet');
+  }
+  lines.push(`endsolid ${name}`);
+  return lines.join('\r\n');
+}
+
+const scaled = (shape: LureParams['shape'], length: number): LureParams => {
+  const params = clonePreset(shape);
+  const k = length / params.length;
+  return { ...params, length, maxWidth: params.maxWidth * k, thickness: params.thickness * k };
+};
+
+/**
+ * Les quatre fichiers du jeu de test AK.6, fabriques comme les exporterait un
+ * autre logiciel : demi-coques posees sur leur face de joint, en-tete binaire
+ * menteur, octets de bourrage, Z vers le haut, faces retournees, doublons,
+ * petits trous.
+ */
+function testFiles(): { name: string; data: ArrayBuffer | string; lengthMm: number; halfShell: boolean }[] {
+  const files: { name: string; data: ArrayBuffer | string; lengthMm: number; halfShell: boolean }[] = [];
+  {
+    const p = scaled('minnow', 95);
+    const a = buildAssembly(createProfile(p), p, { stations: 70, arcSamples: 14 });
+    const soup = soupOf([a.male], (v) => new THREE.Vector3(-v.y + 40, v.x + 60, v.z + 5));
+    files.push({ name: 'demi-coque-legere.stl', data: asciiStl(soup, 'demi_coque_male'), lengthMm: 95, halfShell: true });
+    disposeAssembly(a);
+  }
+  {
+    const p = scaled('lipless', 135);
+    const a = buildAssembly(createProfile(p), p, { stations: 100, arcSamples: 20 });
+    const soup = soupOf([a.female], (v) => new THREE.Vector3(v.x, v.y, -v.z));
+    files.push({ name: 'demi-coque-moyenne.stl', data: binaryStl(soup, 'solid lipless femelle exported', 4), lengthMm: 135, halfShell: true });
+    disposeAssembly(a);
+  }
+  {
+    const p = { ...scaled('minnow', 65), billMode: 'printed' as const };
+    const profile = createProfile(p);
+    const a = buildAssembly(profile, p, { stations: 57, arcSamples: 13 });
+    const geo = buildLure(p, DISPLAY_RESOLUTION, a.billPlan?.root ?? null);
+    const parts = [a.male, a.female, a.tenons, buildTailFin(profile, p, 'male'), buildTailFin(profile, p, 'female'), geo.bib];
+    files.push({ name: 'assemblage-dense.stl', data: binaryStl(soupOf(parts, (v) => new THREE.Vector3(v.x, -v.z, v.y)), 'assemblage minnow 65'), lengthMm: 65, halfShell: false });
+    geo.dispose();
+    disposeAssembly(a);
+  }
+  {
+    const p = { ...scaled('minnow', 95), billMode: 'printed' as const };
+    const geo = buildLure(p, DISPLAY_RESOLUTION);
+    const profile = createProfile(p);
+    const eye = (side: number) => {
+      const section = profile.section(0.085);
+      const g = new THREE.SphereGeometry(0.22, 24, 16);
+      g.translate(profile.xAt(0.085) + 0.05, (section.top + section.bottom) / 2 + section.top * 0.25, side * section.halfWidth * 0.8);
+      return g;
+    };
+    let soup = soupOf([geo.body, geo.tail, geo.bib, eye(1), eye(-1)], (v) => new THREE.Vector3(-v.x, v.z, v.y));
+    const count = soup.length / 9;
+    let seed = 7;
+    const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    for (let i = 0; i < 300; i++) {
+      const t = Math.floor(rnd() * count) * 9;
+      for (let c = 0; c < 3; c++) [soup[t + 3 + c], soup[t + 6 + c]] = [soup[t + 6 + c], soup[t + 3 + c]];
+    }
+    for (let i = 0; i < 50; i++) {
+      const t = Math.floor(rnd() * count) * 9;
+      soup.push(...soup.slice(t, t + 9));
+    }
+    const drop = new Set<number>();
+    for (let i = 0; i < 6; i++) drop.add(Math.floor(rnd() * count));
+    soup = soup.filter((_, i) => !drop.has(Math.floor(i / 9)));
+    files.push({ name: 'assemblage-tres-dense.stl', data: binaryStl(soup, 'solid tres dense'), lengthMm: 95, halfShell: false });
+    geo.dispose();
+  }
+  return files;
+}
+
+/** Limites nommees, attendues sur un corps trop petit pour la visserie du catalogue. */
+const NAMED_LIMITS = /^Visserie non posee/;
+
+function checkTestFile(file: ReturnType<typeof testFiles>[number], report: Report): void {
+  const tag = `jeu AK.6 ${file.name}`;
+  const fail = (what: string) => report.failures.push(`${tag} : ${what}`);
+  const started = Date.now();
+  let mesh;
+  try {
+    mesh = importMesh(file.name, file.data);
+  } catch (error) {
+    fail(`import en echec : ${error instanceof Error ? error.message : error}`);
+    return;
+  }
+  const body = createMeshBody(`e2e-${file.name}`, file.name, mesh.body, null, bibAllowance(mesh));
+  registerMeshBody(body);
+  const importMs = Date.now() - started;
+  if (file.halfShell !== (mesh.halfShell !== null)) fail(`demi-coque ${mesh.halfShell ? 'inventee' : 'non reconnue'}`);
+  if (mesh.halfShell && !mesh.halfShell.completed) fail('demi-coque non reconstituee');
+  if (!(mesh.volume > 0)) fail('volume nul');
+  const bench = runBench(mesh, body, clonePreset('minnow'), 'fresh');
+  if (!Number.isFinite(bench.physics.ratio)) fail('banc : flottabilite non calculee');
+  if (!Number.isFinite(bench.swim.critical.value)) fail('banc : nage non calculee');
+  if (bench.anchors.length === 0 || bench.anchors.some((anchor) => !(anchor.kgf.value > 0))) fail('banc : charge de rupture non calculee');
+  const { params, report: made } = industrialise(mesh, body, clonePreset('minnow'), { hollow: true, wall: 1.6 });
+  if (!params) {
+    fail(`industrialisation refusee : ${made.blocked.join(' / ')}`);
+    return;
+  }
+  for (const problem of made.problems) if (!NAMED_LIMITS.test(problem)) fail(`industrialisation : ${problem}`);
+  const assembly = buildAssembly(createProfile(params), params, assemblyExport(params));
+  if (audit(assembly.male).open || audit(assembly.female).open) fail('demi-coques ouvertes');
+  const screws = assembly.screws.filter((screw) => screw.valid).length;
+  const sockets = assembly.sockets.filter((socket) => socket.valid).length;
+  const limited = made.problems.some((problem) => NAMED_LIMITS.test(problem));
+  if (!limited && screws === 0) fail('aucune vis posee');
+  if (sockets === 0) fail('aucune portee de goupille');
+  disposeAssembly(assembly);
+  report.lines.push(
+    `${tag.padEnd(40)} ${mesh.diagnosis.triangles} tri · ${mesh.bounds.length.toFixed(1)} mm · ${mesh.volume.toFixed(2)} cm3 · ` +
+      `import ${importMs} ms · banc ${bench.physics.buoyancy} · ${screws} vis, ${sockets} portees${limited ? ' (visserie impossible, nommee)' : ''}`,
+  );
+}
+
+/** Un import qui echoue le dit, et nomme la cause (AK.2). */
+function checkImportErrors(report: Report): void {
+  const cases: { name: string; data: ArrayBuffer | string; cause: RegExp }[] = [
+    { name: 'vide.stl', data: new ArrayBuffer(0), cause: /vide|0 octet/i },
+    { name: 'texte.stl', data: 'bonjour, ceci n est pas un maillage', cause: /facette|triangle|STL/i },
+    { name: 'tronque.stl', data: binaryStl([0, 0, 0, 1, 0, 0, 0, 1, 0], '', 0).slice(0, 60), cause: /octets|tronque|en-tete|84/i },
+    { name: 'plat.stl', data: binaryStl([0, 0, 0, 0, 0, 0, 0, 0, 0]), cause: /confondues|aire nulle|point/i },
+  ];
+  for (const item of cases) {
+    try {
+      importMesh(item.name, item.data);
+      report.failures.push(`import ${item.name} : aurait du echouer`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!(error instanceof ImportError) || !item.cause.test(message)) {
+        report.failures.push(`import ${item.name} : cause mal nommee (« ${message} »)`);
+      } else {
+        report.lines.push(`echec nomme ${item.name.padEnd(12)} ${message.slice(0, 90)}`);
+      }
+    }
+  }
+}
+
 export function run(): Report {
   const report: Report = { failures: [], lines: [] };
 
-  // Critere 1 : la bibliotheque ne contient que les sept familles.
+  // Critere AH.1 : la bibliotheque ne contient que les deux familles.
   const ids = SHAPE_PRESETS.map((preset) => preset.id);
-  const expected = ['minnow', 'crankbait', 'deepdiver', 'popper', 'stickbait', 'lipless', 'swimbait'];
+  const expected = ['minnow', 'lipless'];
   if (ids.join() !== expected.join()) report.failures.push(`bibliotheque : ${ids.join(', ')}`);
+  if (ARCHETYPES.map((item) => item.shape).join() !== expected.join()) report.failures.push('fiches de famille en trop');
 
+  // Aucun filtre, seul ou combine, ne renvoie de liste vide.
+  const walk = (chosen: LibraryChoice, depth: number) => {
+    if (ARCHETYPES.filter((item) => matchesChoice(item, chosen)).length === 0) {
+      report.failures.push(`filtres ${JSON.stringify(chosen)} : liste vide`);
+    }
+    if (depth >= activeFilters().length) return;
+    const filter = activeFilters()[depth];
+    walk(chosen, depth + 1);
+    for (const value of filterValues(filter.key, chosen)) walk({ ...chosen, [filter.key]: value }, depth + 1);
+  };
+  walk({}, 0);
+
+  const counted: Record<string, number> = {};
   for (const preset of SHAPE_PRESETS) {
     // Vignette pre-calculee et stockee : affichage instantane (AB.5).
     const thumb = THUMBNAILS[preset.id];
@@ -346,30 +554,83 @@ export function run(): Report {
         report.failures.push(`${preset.id} : la fente differe entre bavette imprimee et polycarbonate`);
       }
     }
-    // Critere 3 : a 100 mm, plus de 15 000 triangles.
-    const scaled = { ...params, length: 100 };
-    const small = buildLure(scaled, DISPLAY_RESOLUTION);
-    const tri = audit(small.body).triangles;
-    if (tri <= 15000) report.failures.push(`${preset.id} : ${tri} triangles a 100 mm`);
-    small.dispose();
-  }
 
-  // Import STL et industrialisation (module AD). Le popper creuse n'est pas
-  // decoupable en tranches : son refus nomme doit etre la.
-  for (const id of ['minnow', 'crankbait', 'deepdiver', 'stickbait', 'lipless']) checkImport(id, report);
+    // Module AI : la carte affiche ce que l'editeur calcule et ce que le
+    // fichier STL contient vraiment, a la taille par defaut.
+    {
+      const fresh = clonePreset(preset.id);
+      const profile = createProfile(fresh);
+      const preview = assemblyPreview(profile, fresh);
+      const plans = assemblyPlans(profile, fresh, preview);
+      const geo = buildLure(fresh, DISPLAY_RESOLUTION, plans.billPlan?.root ?? null);
+      const physics = computePhysics(fresh, geo, 'fresh', preview);
+      const triangles = countExportTriangles(fresh, geo, 'assembly');
+      const bytes = stlBytes(fresh, geo, 'assembly').byteLength;
+      if ((bytes - 84) / 50 !== triangles) report.failures.push(`${preset.id} : ${triangles} triangles comptes, ${(bytes - 84) / 50} dans le STL`);
+      if (thumb && thumb.exportTriangles !== triangles) {
+        report.failures.push(`${preset.id} : la carte affiche ${thumb.exportTriangles} triangles, l export en contient ${triangles}`);
+      }
+      if (thumb && Math.abs(thumb.massG - physics.totalMass) > 0.051) {
+        report.failures.push(`${preset.id} : la carte affiche ${thumb.massG} g, le modele pese ${physics.totalMass.toFixed(2)} g`);
+      }
+      if (thumb && Math.abs(thumb.volumeCm3 - physics.volumeCm3) > 0.0051) {
+        report.failures.push(`${preset.id} : la carte affiche ${thumb.volumeCm3} cm3, le modele en mesure ${physics.volumeCm3.toFixed(3)}`);
+      }
+      counted[preset.id] = triangles;
+      report.lines.push(`${`${preset.id} (carte)`.padEnd(28)} ${triangles} triangles exportes · ${physics.totalMass.toFixed(1)} g · ${physics.volumeCm3.toFixed(2)} cm3`);
+      geo.dispose();
+      if (preview) disposeAssembly(preview);
+    }
+
+    // Densite suivant la taille : a 100 mm plus de 15 000 triangles, et un
+    // corps plus long en porte davantage.
+    const at = (length: number) => {
+      const g = buildLure({ ...params, length }, DISPLAY_RESOLUTION);
+      const n = audit(g.body).triangles;
+      g.dispose();
+      return n;
+    };
+    const t100 = at(100);
+    if (t100 <= 15000) report.failures.push(`${preset.id} : ${t100} triangles a 100 mm`);
+    const t70 = at(70);
+    const t160 = at(160);
+    if (!(t160 > t100 && t100 > t70)) report.failures.push(`${preset.id} : densite independante de la taille (${t70} / ${t100} / ${t160})`);
+  }
+  if (counted.minnow === counted.lipless) report.failures.push('les deux cartes affichent le meme nombre de triangles');
+
+  // Import STL et industrialisation (module AD), dont des corps que seuls
+  // les curseurs atteignent desormais : trapu a bavette, fusele sans bavette.
+  checkImport('minnow', report);
+  checkImport('lipless', report);
   checkImport('minnow', report, true);
   {
-    const popper = clonePreset('popper');
-    const mesh = importMesh('popper.stl', familyStl(popper));
-    const body = createMeshBody('e2e-popper', 'popper.stl', mesh.body);
+    const base = clonePreset('minnow');
+    checkImport('minnow trapu (curseurs)', report, false, { ...base, length: 70, thickness: 24, maxWidth: 19 });
+    checkImport('minnow sans bavette (curseurs)', report, false, { ...base, hasBib: false, length: 130, maxWidth: 17, thickness: 20 });
+  }
+  {
+    // Face avant creusee : non decoupable en tranches, refus nomme.
+    const base = clonePreset('minnow');
+    const cupped: LureParams = {
+      ...base,
+      hasBib: false,
+      popperFace: { ...base.popperFace, enabled: true, diameter: 0.62, depth: 5, angle: 0, lipRadius: 0.8, offset: 0 },
+      anatomy: base.anatomy ? { ...base.anatomy, noseCap: 0 } : null,
+    };
+    const mesh = importMesh('face-creusee.stl', familyStl(cupped));
+    const body = createMeshBody('e2e-face-creusee', 'face-creusee.stl', mesh.body);
     registerMeshBody(body);
-    const { params, report: made } = industrialise(mesh, body, popper, { hollow: true, wall: 1.6 });
+    const { params, report: made } = industrialise(mesh, body, cupped, { hollow: true, wall: 1.6 });
     if (params || !made.blocked.some((line) => /cuvette/.test(line))) {
-      report.failures.push('import popper : la face creusee devait etre refusee et nommee');
+      report.failures.push('import face creusee : la face creusee devait etre refusee et nommee');
     } else {
-      report.lines.push('import popper                 refus nomme : face avant creusee');
+      report.lines.push('import face creusee           refus nomme : face avant creusee');
     }
   }
+
+  // Jeu de test AK.6 et echecs nommes.
+  for (const file of testFiles()) checkTestFile(file, report);
+  checkImportErrors(report);
 
   // Projets des versions precedentes : ils s'ouvrent et restent fermes.
   for (const item of legacy as { id: string; params: unknown }[]) {

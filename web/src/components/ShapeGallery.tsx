@@ -3,12 +3,13 @@
 import { useState } from 'react';
 import type { Project, ShapeId } from '../types/lure';
 import {
-  ACTION_LABEL,
+  activeFilters,
   ARCHETYPES,
   FLOAT_LABEL,
+  filterValues,
+  matchesChoice,
   slendernessOf,
-  type ActionTag,
-  type FloatTag,
+  type LibraryChoice,
 } from '../lib/archetypes';
 import { ArchetypePreview } from './ArchetypePreview';
 import { getPreset } from '../lib/presets';
@@ -38,18 +39,8 @@ export function ShapeGallery({
   onExport,
   onImportClick,
 }: Props) {
-  const [fAction, setFAction] = useState('');
-  const [fBib, setFBib] = useState('');
-  const [fArt, setFArt] = useState('');
-  const [fFloat, setFFloat] = useState('');
-
-  const shown = ARCHETYPES.filter(
-    (item) =>
-      (!fAction || item.actionTag === fAction) &&
-      (!fBib || (fBib === 'oui') === item.hasBib) &&
-      (!fArt || (fArt === 'oui') === item.articulated) &&
-      (!fFloat || item.buoyancy === fFloat),
-  );
+  const [chosen, setChosen] = useState<LibraryChoice>({});
+  const shown = ARCHETYPES.filter((item) => matchesChoice(item, chosen));
 
   return (
     <main className="gallery" id="contenu">
@@ -69,7 +60,7 @@ export function ShapeGallery({
           <div className="hero__step">
             <span>1</span>
             <p>
-              <strong>Partir d une famille</strong> — sept leurres complets et regles,
+              <strong>Partir d une famille</strong> — deux leurres complets et regles,
               anatomie comprise. Chaque cote reste modifiable au curseur.
             </p>
           </div>
@@ -99,51 +90,33 @@ export function ShapeGallery({
       </div>
 
       <p className="gallery__lead">
-        Sept familles, une entree chacune — les variantes sont des reglages. Chaque modele
+        Deux familles, une entree chacune — les variantes sont des reglages, et les corps trapus,
+        fuseles ou a face creusee s obtiennent aux curseurs de forme. Chaque modele
         arrive fonctionnel : armature anatomique (pedoncule, opercule en relief, orbites
         creusees, nageoires), deux demi-coques vissees avec ergots et gorge de colle,
         goupilles aux attaches, lest place, verdict de flottabilite valide.
       </p>
 
       <div className="filters" role="group" aria-label="Filtres de la bibliotheque">
-        <label>
-          Action
-          <select value={fAction} onChange={(e) => setFAction(e.target.value)}>
-            <option value="">Toutes</option>
-            {(Object.keys(ACTION_LABEL) as ActionTag[]).map((id) => (
-              <option key={id} value={id}>
-                {ACTION_LABEL[id]}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Bavette
-          <select value={fBib} onChange={(e) => setFBib(e.target.value)}>
-            <option value="">Indifferent</option>
-            <option value="oui">Avec bavette</option>
-            <option value="non">Sans bavette</option>
-          </select>
-        </label>
-        <label>
-          Articulation
-          <select value={fArt} onChange={(e) => setFArt(e.target.value)}>
-            <option value="">Indifferent</option>
-            <option value="oui">Articule</option>
-            <option value="non">Monobloc</option>
-          </select>
-        </label>
-        <label>
-          Flottaison
-          <select value={fFloat} onChange={(e) => setFFloat(e.target.value)}>
-            <option value="">Toutes</option>
-            {(Object.keys(FLOAT_LABEL) as FloatTag[]).map((id) => (
-              <option key={id} value={id}>
-                {FLOAT_LABEL[id]}
-              </option>
-            ))}
-          </select>
-        </label>
+        {activeFilters().map((filter) => {
+          const values = filterValues(filter.key, chosen);
+          return (
+            <label key={filter.key}>
+              {filter.label}
+              <select
+                value={chosen[filter.key] ?? ''}
+                onChange={(event) => setChosen({ ...chosen, [filter.key]: event.target.value || undefined })}
+              >
+                <option value="">{filter.all}</option>
+                {values.map((value) => (
+                  <option key={value} value={value}>
+                    {filter.name(value)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          );
+        })}
       </div>
 
       {shown.length === 0 ? (
@@ -154,6 +127,7 @@ export function ShapeGallery({
         {shown.map((item) => {
           const preset = getPreset(item.shape);
           const ratio = slendernessOf(preset.params);
+          const sheet = THUMBNAILS[item.shape];
           return (
             <button
               type="button"
@@ -176,16 +150,18 @@ export function ShapeGallery({
                   </span>
                   <span className="tag">elancement {ratio.toFixed(1)}</span>
                   <span className="tag">{FLOAT_LABEL[item.buoyancy]}</span>
-                  {THUMBNAILS[item.shape] ? (
-                    <span className="tag" title="Mesure sur le modele livre, quincaillerie comprise">
-                      {THUMBNAILS[item.shape].massG.toFixed(1).replace('.', ',')} g
-                    </span>
-                  ) : null}
-                  {THUMBNAILS[item.shape] ? (
-                    <span className="tag" title="Triangles du corps a la resolution d export">
-                      {Math.round(THUMBNAILS[item.shape].bodyTriangles / 1000)} k triangles
-                    </span>
-                  ) : null}
+                  <span className="tag" title="Masse en service du modele livre, quincaillerie et lest compris">
+                    {sheet ? `${sheet.massG.toFixed(1).replace('.', ',')} g` : 'masse non calculee'}
+                  </span>
+                  <span className="tag" title="Volume du corps exporte, a la taille par defaut">
+                    {sheet ? `${sheet.volumeCm3.toFixed(2).replace('.', ',')} cm3` : 'volume non calcule'}
+                  </span>
+                  <span
+                    className="tag"
+                    title="Triangles du fichier STL exporte (piece assemblee), a la taille par defaut et a la resolution d export"
+                  >
+                    {sheet ? `${sheet.exportTriangles.toLocaleString('fr-FR')} triangles` : 'triangles non calcules'}
+                  </span>
                   <span className="tag">{item.hasBib ? 'Bavette' : 'Sans bavette'}</span>
                   {item.articulated ? <span className="tag">Articule</span> : null}
                 </div>

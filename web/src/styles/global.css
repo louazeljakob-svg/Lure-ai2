@@ -627,6 +627,162 @@ textarea {
   white-space: nowrap;
 }
 
+/* --- Saisie numerique (module AJ) -------------------------------------- */
+
+.control__row {
+  align-items: center;
+}
+
+.control__entry {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+
+.control__field {
+  width: 74px;
+  padding: 3px 6px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+.control__field:hover:not(:disabled) {
+  border-color: var(--ink-3);
+}
+
+.control__field:focus-visible {
+  outline: 2px solid var(--red);
+  outline-offset: 1px;
+  border-color: var(--red);
+}
+
+.control__field[aria-invalid='true'] {
+  border-color: var(--amber);
+}
+
+.control__field:disabled {
+  color: var(--ink-3);
+  background: var(--surface-2);
+}
+
+.control__unit {
+  min-width: 22px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink-3);
+  user-select: none;
+}
+
+.control__note {
+  font-size: 11px;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.control__note--below {
+  display: block;
+  margin: -2px 0 4px;
+  text-align: right;
+}
+
+.control__refusal {
+  margin: 4px 0 0;
+  padding: 5px 7px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--ink);
+  background: var(--amber-soft);
+  border-left: 2px solid var(--amber);
+}
+
+/* Valeur calculee : lecture seule, jamais confondue avec un champ. */
+.control--derived .control__row {
+  padding: 4px 8px;
+  border: 1px dashed var(--line);
+  border-radius: 4px;
+  background: var(--surface-2);
+}
+
+.derived__value {
+  font-size: 12px;
+  font-weight: 700;
+  font-style: italic;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+}
+
+.derived__badge {
+  display: inline-block;
+  margin-right: 4px;
+  padding: 0 5px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+/* --- Import : progression et echec (module AK) --------------------------- */
+
+.import-progress {
+  width: 100%;
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.import-progress__row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.import-progress__bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.import-progress__bar span {
+  display: block;
+  height: 100%;
+  background: var(--red);
+  border-radius: 3px;
+  transition: width 0.2s ease-out;
+}
+
+.import-site {
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+.import-failure {
+  margin: 8px 0 12px;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ink);
+  background: var(--red-soft);
+  border-left: 3px solid var(--red);
+}
+
+.checks__info span[aria-hidden='true'] {
+  opacity: 0.8;
+}
+
 .control__hint {
   margin: 4px 0 0;
   font-size: 11px;
@@ -1846,9 +2002,15 @@ select:hover {
   flex: 1;
 }
 
-.contour__slider input {
+.contour__slider input[type='range'] {
   flex: 1;
   min-width: 70px;
+}
+
+.contour__slider .control__field {
+  flex: none;
+  width: 58px;
+  text-transform: none;
 }
 
 .toolbtn--file {
@@ -3126,4 +3288,20 @@ select:hover {
 
 .import-limits li::marker {
   color: var(--amber);
+}
+
+.control__refusal--inline {
+  display: block;
+  margin-top: 4px;
+  white-space: normal;
+}
+
+.contour__coords {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.contour__coords .control__field {
+  width: 58px;
 }

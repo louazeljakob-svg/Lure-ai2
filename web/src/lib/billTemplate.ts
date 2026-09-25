@@ -223,6 +223,8 @@ export interface BillPlacement {
   plan: BillSlotPlan | null;
   /** Refus motive, ou null. */
   problem: string | null;
+  /** Enfoncement maximal admissible a cet ancrage, en cm, quand il est connu. */
+  maxInsertion?: number;
 }
 
 /** Enfoncement automatique : la plaque entre jusqu'a buter, comme sur un leurre du commerce. */
@@ -382,6 +384,7 @@ export function billSlotPlan(
   if (insertion > maxInsertion + 1e-6) {
     return {
       plan: null,
+      maxInsertion,
       problem:
         `Enfoncement de ${(insertion / MM_TO_CM).toFixed(1)} mm refuse : au-dela de ` +
         `${(maxInsertion / MM_TO_CM).toFixed(1)} mm, la fente percerait la peau de la tete ou en ` +
