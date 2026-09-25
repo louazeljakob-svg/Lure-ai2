@@ -443,13 +443,72 @@ function fitProject(
     const section = shape.section(p);
     return (section.top - section.bottom) / 0.1;
   };
+  params.screws = { ...params.screws, enabled: false, screws: [] };
+
+  const profile = createProfile(params);
+  const build = (candidate: LureParams) => buildAssembly(profile, candidate, ASSEMBLY_PREVIEW);
+  // Verification des implantations : sans creusage, gorge ni ergots — ils
+  // viennent apres et s'ecartent d'eux-memes des logements. Trois fois plus
+  // rapide, et le verdict sur les portees et la visserie est le meme.
+  const check = (candidate: LureParams) =>
+    build({
+      ...candidate,
+      assembly: {
+        ...candidate.assembly,
+        hollow: { ...candidate.assembly.hollow, enabled: false },
+        glueGroove: { ...candidate.assembly.glueGroove, enabled: false },
+        pegs: { ...candidate.assembly.pegs, enabled: false },
+      },
+    });
+
+  // --- Fente de bavette ------------------------------------------------------
+  // L'enfoncement propose d'apres la plaque du fichier est ramene au maximum
+  // admissible a cet ancrage quand la tete est trop mince pour le recevoir.
+  if (params.hasBib) {
+    const assembly = check(params);
+    const max = assembly.billPlan ? null : assembly.billMaxInsertionMm;
+    disposeAssembly(assembly);
+    if (max !== null && max >= 2) {
+      const insertion = Math.floor(max * 10) / 10;
+      report.placements.push({
+        label: 'Enfoncement de bavette ramene',
+        detail:
+          `${params.billInsertion.toFixed(1)} mm proposes d apres la plaque du fichier, ${insertion.toFixed(1)} mm ` +
+          'admissibles a cet ancrage : au-dela, la fente percerait la peau de la tete.',
+      });
+      params.billInsertion = insertion;
+    }
+  }
+
+  // --- Visserie : emplacements ----------------------------------------------
+  const pocket: [number, number][] = [];
+  if (params.hasBib) {
+    const assembly = check(params);
+    const plan = assembly.billPlan;
+    if (plan) {
+      const bottom = plan.depthU(plan.insertion);
+      const xs = [plan.mouth.x, plan.root.x, plan.along(bottom, -plan.halfPlate).x, plan.along(bottom, plan.halfPlate).x];
+      const toP = (x: number) => (x - profile.xAt(0)) / profile.lengthCm;
+      pocket.push([toP(Math.min(...xs)) - 0.01, toP(Math.max(...xs)) + 0.01]);
+    }
+    disposeAssembly(assembly);
+  }
+  /** Demi-emprise d'une portee d'ecrou M2, en fraction de longueur. */
+  const halfScrew = 3 / body.lengthMm;
   const MIN_HEIGHT = minBodyHeightMm('M2', 'countersunk', SCREW_LENGTHS[0]);
   const tall: number[] = [];
+  // Hors de la poche de bavette et a 5 mm au moins de chaque portee de
+  // goupille : ce sont les deux voisins qu'une vis ne peut pas traverser.
+  // Pareil pour une nageoire couchee sous le ventre : la tete y entrerait.
+  const free = (p: number) =>
+    !pocket.some(([lo, hi]) => p + halfScrew >= lo && p - halfScrew <= hi) &&
+    !body.skin.fins.some((fin) => fin.rail === 'lo' && p + halfScrew >= fin.p0 - 0.01 && p - halfScrew <= fin.p1 + 0.01) &&
+    params.assembly.anchors.every((anchor) => Math.abs(anchor.position - p) * body.lengthMm >= 5);
   let tallest = 0;
   for (let p = 0.08; p <= marks.bodyEnd - 0.08 + 1e-9; p += 0.005) {
     const h = heightAt(p);
     tallest = Math.max(tallest, h);
-    if (h >= MIN_HEIGHT) tall.push(p);
+    if (h >= MIN_HEIGHT && free(p)) tall.push(p);
   }
   const nearestTall = (target: number, lo: number, hi: number) => {
     let best: number | null = null;
@@ -489,41 +548,6 @@ function fitProject(
       length: 15,
     })),
   };
-
-  const profile = createProfile(params);
-  const build = (candidate: LureParams) => buildAssembly(profile, candidate, ASSEMBLY_PREVIEW);
-  // Verification des implantations : sans creusage, gorge ni ergots — ils
-  // viennent apres et s'ecartent d'eux-memes des logements. Trois fois plus
-  // rapide, et le verdict sur les portees et la visserie est le meme.
-  const check = (candidate: LureParams) =>
-    build({
-      ...candidate,
-      assembly: {
-        ...candidate.assembly,
-        hollow: { ...candidate.assembly.hollow, enabled: false },
-        glueGroove: { ...candidate.assembly.glueGroove, enabled: false },
-        pegs: { ...candidate.assembly.pegs, enabled: false },
-      },
-    });
-
-  // --- Fente de bavette ------------------------------------------------------
-  // L'enfoncement propose d'apres la plaque du fichier est ramene au maximum
-  // admissible a cet ancrage quand la tete est trop mince pour le recevoir.
-  if (params.hasBib) {
-    const assembly = check(params);
-    const max = assembly.billPlan ? null : assembly.billMaxInsertionMm;
-    disposeAssembly(assembly);
-    if (max !== null && max >= 2) {
-      const insertion = Math.floor(max * 10) / 10;
-      report.placements.push({
-        label: 'Enfoncement de bavette ramene',
-        detail:
-          `${params.billInsertion.toFixed(1)} mm proposes d apres la plaque du fichier, ${insertion.toFixed(1)} mm ` +
-          'admissibles a cet ancrage : au-dela, la fente percerait la peau de la tete.',
-      });
-      params.billInsertion = insertion;
-    }
-  }
 
   // --- Longueur de vis : la plus longue qui tienne ------------------------
   // La plus longue du catalogue que la hauteur autorise, puis on descend
@@ -603,20 +627,25 @@ function fitProject(
       }
       if (!fixed && original.exit === 'nose') {
         // Attache de nez impossible (fente de bavette, pointe trop fine) :
-        // sortie par le dos, comme sur un vibe.
-        const anchors = params.assembly.anchors.map((anchor, i) =>
-          i === index ? { ...anchor, exit: 'back' as const, position: 0.12, height: 0.6 } : anchor,
-        );
-        const trial = { ...params, assembly: { ...params.assembly, anchors } };
-        const probe = check(trial);
-        const ok = probe.sockets.find((item) => item.anchorId === original.id)?.valid === true;
-        disposeAssembly(probe);
-        if (ok) {
-          params.assembly = trial.assembly;
-          report.placements.push({
-            label: 'Attache de ligne passee au dos',
-            detail: `L attache de nez ne tient pas (${socket.problem ?? 'collision'}) : elle sort par le dos a 12 %.`,
-          });
+        // sortie par le dos, comme sur un vibe — en arriere de la fente de
+        // bavette, dont la bouche ne peut pas partager ses stations.
+        for (const position of [0.12, 0.15, 0.18, 0.21, 0.25, 0.3, 0.35]) {
+          const anchors = params.assembly.anchors.map((anchor, i) =>
+            i === index ? { ...anchor, exit: 'back' as const, position, height: 0.6 } : anchor,
+          );
+          const trial = { ...params, assembly: { ...params.assembly, anchors } };
+          const probe = check(trial);
+          const ok =
+            probe.sockets.find((item) => item.anchorId === original.id)?.valid === true && (!params.hasBib || probe.billPlan !== null);
+          disposeAssembly(probe);
+          if (ok) {
+            params.assembly = trial.assembly;
+            report.placements.push({
+              label: 'Attache de ligne passee au dos',
+              detail: `L attache de nez ne tient pas (${socket.problem ?? 'collision'}) : elle sort par le dos a ${Math.round(position * 100)} %.`,
+            });
+            break;
+          }
         }
       }
     }
@@ -631,9 +660,9 @@ function fitProject(
         .map((p) => Math.round(clamp(p, 0.08, marks.bodyEnd - 0.08) * 1000) / 1000)
         .filter((p) => Math.abs(p - original.position) > 1e-6)
         .filter((p) => !params.screws.screws.some((other, i) => i !== index && Math.abs(other.position - p) < spacing))
-        .filter((p) => params.assembly.anchors.every((anchor) => Math.abs(anchor.position - p) * body.lengthMm >= 5))
+        .filter(free)
         .sort((a, b) => Math.abs(a - original.position) - Math.abs(b - original.position))
-        .slice(0, 12);
+        .slice(0, 16);
       for (const position of candidates) {
         const screws = params.screws.screws.map((screw, i) => (i === index ? { ...screw, position } : screw));
         const trial = { ...params, screws: { ...params.screws, screws } };
@@ -660,9 +689,19 @@ function fitProject(
     disposeAssembly(assembly);
     for (const plan of bad) {
       params.screws = { ...params.screws, screws: params.screws.screws.filter((screw) => screw.id !== plan.id) };
-      report.problems.push(`Vis retiree — ${plan.problem ?? 'aucun emplacement valide'}`);
     }
-    if (params.screws.screws.length === 0) params.screws = { ...params.screws, enabled: false };
+    if (bad.length && params.screws.screws.length > 0) {
+      // Une vis reste : l'assemblage tient, on dit simplement ce qui a ete retire.
+      for (const plan of bad) {
+        report.placements.push({ label: 'Vis retiree', detail: `${plan.problem ?? 'aucun emplacement valide'} Une seule vis tient ce corps.` });
+      }
+    } else if (bad.length) {
+      params.screws = { ...params.screws, enabled: false };
+      report.problems.push(
+        `Visserie non posee : aucun emplacement ne tient — ${bad.map((plan) => plan.problem ?? 'refus').join(' ')} ` +
+          'Les demi-coques sont tenues par les ergots et la gorge de colle.',
+      );
+    }
   }
 
   return { params, profile, build, marks };

@@ -2371,13 +2371,15 @@ export function buildAssembly(
   // Un corps anatomique porte des details de quelques dixiemes de
   // millimetre : ses coques s'echantillonnent plus finement que la goutte
   // historique, qui garde exactement sa resolution d'avant.
-  // Le facteur suit la taille (module AI) : pas constant en millimetres,
-  // calibre sur le minnow de 110 mm (sections de 53 mm de tour).
+  // Au-dela du minnow de 110 mm (sections de 53 mm de tour), le facteur suit
+  // la taille (module AI) : le pas reste le meme en millimetres. En dessous,
+  // il ne descend pas — les logements d'un petit corps demandent autant de
+  // finesse que ceux d'un grand.
   const resolution: AssemblyResolution = profile.anatomy
     ? {
         ...requested,
-        stations: Math.round(requested.stations * 2.2 * Math.min(Math.max(profile.lengthCm / 11, 0.5), 3)),
-        arcSamples: Math.round(requested.arcSamples * 2.4 * Math.min(Math.max(girthOf(profile) / 5.3, 0.5), 3)),
+        stations: Math.round(requested.stations * 2.2 * Math.min(Math.max(profile.lengthCm / 11, 1), 3)),
+        arcSamples: Math.round(requested.arcSamples * 2.4 * Math.min(Math.max(girthOf(profile) / 5.3, 1), 3)),
       }
     : requested;
   const skin = createSurfaceSampler(profile, params, resolution.bakeScales === true);
@@ -2871,15 +2873,14 @@ export function buildAssembly(
     return null;
   };
 
-  // Deux bouches du meme rail ne peuvent pas se chevaucher : elles partagent
-  // les memes stations et les faces de coupe se recouperaient. Une bouche de
-  // dos et une bouche de ventre rognent chacune leur bord de l'arc : elles
-  // peuvent se trouver au droit l'une de l'autre.
-  const taken: [number, number, 'lo' | 'hi'][] = [];
-  const reserve = (iStart: number, iEnd: number, rail: 'lo' | 'hi'): boolean => {
+  // Deux bouches ne peuvent pas se chevaucher, meme sur des rails opposes :
+  // elles partagent les memes stations, et les faces de coupe du plan de
+  // joint se recouperaient — la coque ne se refermerait plus.
+  const taken: [number, number][] = [];
+  const reserve = (iStart: number, iEnd: number): boolean => {
     if (vJoint && iStart < split && iEnd >= split - 1) return false;
-    for (const [a, b, side] of taken) if (side === rail && iStart <= b + 1 && a - 1 <= iEnd) return false;
-    taken.push([iStart, iEnd, rail]);
+    for (const [a, b] of taken) if (iStart <= b + 1 && a - 1 <= iEnd) return false;
+    taken.push([iStart, iEnd]);
     return true;
   };
   /** Encoches deja placees dans une face de coupe, pour eviter qu'elles se touchent. */
@@ -2968,7 +2969,7 @@ export function buildAssembly(
       // Le contour du puits doit passer au large des rails, sinon le percage
       // profond mordrait sur la paroi de la rainure.
       const outer = Math.hypot(R, Math.max(aLo, aHi)) + LEDGE;
-      if (iStart < 1 || iEnd > stations.length - 2 || !reserve(iStart, iEnd, rail)) {
+      if (iStart < 1 || iEnd > stations.length - 2 || !reserve(iStart, iEnd)) {
         plan.valid = false;
         plan.problem = 'Le passage de sortie ne tient pas ici : deplacez l ancrage.';
         continue;
@@ -3102,7 +3103,7 @@ export function buildAssembly(
         iEnd - iStart >= 1 &&
         baseT >= tMin + WALL &&
         topT <= tMax - SKIN &&
-        reserve(iStart, iEnd, 'lo')
+        reserve(iStart, iEnd)
       ) {
         chinSlots.push({ iStart, iEnd, topT: topT_, baseT, depth: bill.depth, back });
         billResult = {
@@ -3113,7 +3114,7 @@ export function buildAssembly(
       } else if (iEnd - iStart >= 1 && baseT >= tMin + WALL && topT <= tMax - SKIN) {
         refuse(
           `La bouche de la fente de bavette (${((bill.mouth.x - profile.xAt(0)) / MM_TO_CM).toFixed(1)} mm ` +
-            'du nez) croise un autre passage ouvert dans le ventre. Deplacez l un des deux.',
+            'du nez) partage ses stations avec un autre passage ouvert dans le plan de joint (ventre ou dos). Deplacez l un des deux.',
         );
       } else {
         refuse(
@@ -3265,7 +3266,28 @@ export function buildAssembly(
         `le ventre au droit de ${clash}. Deplacez la vis le long du corps.`;
       continue;
     }
-    if (iStart < 1 || iEnd > stations.length - 2 || !reserve(iStart, iEnd, 'lo')) {
+    // La poche de bavette court de la bouche au fond ferme : une vis montee
+    // du ventre la traverserait, et la face de joint n'aurait plus de sens.
+    if (billResult) {
+      const bottom = billResult.depthU(billResult.insertion);
+      const xs = [
+        billResult.mouth.x,
+        billResult.root.x,
+        billResult.along(bottom, -billResult.halfPlate).x,
+        billResult.along(bottom, billResult.halfPlate).x,
+      ];
+      const lo = Math.min(...xs) - SKIN;
+      const hi = Math.max(...xs) + SKIN;
+      if (screw.x + halfX > lo && screw.x - halfX < hi) {
+        screw.valid = false;
+        screw.problem =
+          `Vis a ${((screw.x - profile.xAt(0)) / MM_TO_CM).toFixed(0)} mm : le passage traverserait la poche de ` +
+          `bavette (de ${((lo - profile.xAt(0)) / MM_TO_CM).toFixed(1)} a ${((hi - profile.xAt(0)) / MM_TO_CM).toFixed(1)} mm du nez). ` +
+          'Deplacez la vis vers l arriere.';
+        continue;
+      }
+    }
+    if (iStart < 1 || iEnd > stations.length - 2 || !reserve(iStart, iEnd)) {
       screw.valid = false;
       screw.problem =
         `Vis a ${((screw.x - profile.xAt(0)) / MM_TO_CM).toFixed(0)} mm : un autre passage ` +

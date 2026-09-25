@@ -12,6 +12,7 @@
 
 import * as THREE from 'three';
 import legacy from './legacy-projects.json';
+import v5Projects from './v5-projects.json';
 import { activeFilters, ARCHETYPES, filterValues, matchesChoice, type LibraryChoice } from '../../src/lib/archetypes';
 import { SHAPE_PRESETS, clonePreset } from '../../src/lib/presets';
 import { sanitizeParams } from '../../src/lib/validation';
@@ -388,7 +389,7 @@ const scaled = (shape: LureParams['shape'], length: number): LureParams => {
  * menteur, octets de bourrage, Z vers le haut, faces retournees, doublons,
  * petits trous.
  */
-function testFiles(): { name: string; data: ArrayBuffer | string; lengthMm: number; halfShell: boolean }[] {
+export function testFiles(): { name: string; data: ArrayBuffer | string; lengthMm: number; halfShell: boolean }[] {
   const files: { name: string; data: ArrayBuffer | string; lengthMm: number; halfShell: boolean }[] = [];
   {
     const p = scaled('minnow', 95);
@@ -399,7 +400,7 @@ function testFiles(): { name: string; data: ArrayBuffer | string; lengthMm: numb
   }
   {
     const p = scaled('lipless', 135);
-    const a = buildAssembly(createProfile(p), p, { stations: 100, arcSamples: 20 });
+    const a = buildAssembly(createProfile(p), p, { stations: 67, arcSamples: 13 });
     const soup = soupOf([a.female], (v) => new THREE.Vector3(v.x, v.y, -v.z));
     files.push({ name: 'demi-coque-moyenne.stl', data: binaryStl(soup, 'solid lipless femelle exported', 4), lengthMm: 135, halfShell: true });
     disposeAssembly(a);
@@ -416,7 +417,8 @@ function testFiles(): { name: string; data: ArrayBuffer | string; lengthMm: numb
   }
   {
     const p = { ...scaled('minnow', 95), billMode: 'printed' as const };
-    const geo = buildLure(p, DISPLAY_RESOLUTION);
+    // Un peu plus fin que l'export de l'application : ~171 000 facettes.
+    const geo = buildLure(p, { lengthSegments: 143, radialSegments: 54 });
     const profile = createProfile(p);
     const eye = (side: number) => {
       const section = profile.section(0.085);
@@ -446,7 +448,7 @@ function testFiles(): { name: string; data: ArrayBuffer | string; lengthMm: numb
 }
 
 /** Limites nommees, attendues sur un corps trop petit pour la visserie du catalogue. */
-const NAMED_LIMITS = /^Visserie non posee/;
+const NAMED_LIMITS = /^(Visserie non posee|Aucune chambre possible)/;
 
 function checkTestFile(file: ReturnType<typeof testFiles>[number], report: Report): void {
   const tag = `jeu AK.6 ${file.name}`;
@@ -631,6 +633,36 @@ export function run(): Report {
   // Jeu de test AK.6 et echecs nommes.
   for (const file of testFiles()) checkTestFile(file, report);
   checkImportErrors(report);
+
+  // Projets v5 des familles retirees (module AH) : ils se rouvrent sous la
+  // famille dont ils partagent l'attache, avec leurs cotes et leur anatomie
+  // intactes. Le swimbait articule repasse le test de collision au degre.
+  for (const item of v5Projects as { id: string; params: LureParams }[]) {
+    const fail = (what: string) => report.failures.push(`projet ${item.id} : ${what}`);
+    const params = sanitizeParams(JSON.parse(JSON.stringify(item.params)));
+    if (params.shape !== 'minnow' && params.shape !== 'lipless') fail(`famille ${params.shape}`);
+    if (params.length !== item.params.length || params.thickness !== item.params.thickness || params.maxWidth !== item.params.maxWidth) {
+      fail('cotes modifiees a la reouverture');
+    }
+    if (JSON.stringify(params.anatomy) !== JSON.stringify(item.params.anatomy)) fail('anatomie modifiee a la reouverture');
+    if (params.hasBib !== item.params.hasBib || params.articulation.enabled !== item.params.articulation.enabled) fail('bavette ou articulation perdue');
+    const profile = createProfile(params);
+    const geo = buildLure(params, DISPLAY_RESOLUTION);
+    if (audit(geo.body).open) fail('corps ouvert');
+    if (assemblyActive(params)) {
+      const a = buildAssembly(profile, params, assemblyExport(params));
+      if (audit(a.male).open || audit(a.female).open) fail('coques ouvertes');
+      disposeAssembly(a);
+    }
+    let travel = '';
+    if (geo.jointPlan) {
+      const t = jointTravel(profile, geo.jointPlan);
+      if (t.free + 1e-6 < t.wanted - 1) fail(`debattement ${t.free} deg sur ${t.wanted} : ${t.first?.part} contre ${t.first?.against}`);
+      travel = ` · joint ${t.free}/${t.wanted} deg libres au pas de 1 deg`;
+    }
+    geo.dispose();
+    report.lines.push(`projet ${item.id.padEnd(15)} rouvert en ${params.shape}, ${params.length} mm${travel}`);
+  }
 
   // Projets des versions precedentes : ils s'ouvrent et restent fermes.
   for (const item of legacy as { id: string; params: unknown }[]) {

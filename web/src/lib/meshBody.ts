@@ -200,6 +200,7 @@ export function sampleSkin(positions: Float32Array, allowance: GapAllowance | nu
   let railGap = 0;
   const dTheta = (Math.PI * 2) / nT;
   const railRays = Math.round(RAIL_BAND / dTheta);
+  let frontOpen = true;
   const notch = new Uint8Array(railRays * 2 + 1);
   const cosT = new Float64Array(nT);
   const sinT = new Float64Array(nT);
@@ -283,6 +284,12 @@ export function sampleSkin(positions: Float32Array, allowance: GapAllowance | nu
       }
       loopSign.push(closed ? Math.sign(area) : 0);
     }
+    // Une boucle creuse presente des la premiere tranche du nez est une
+    // cuvette ouverte vers l'avant (face de popper), pas un vide interne :
+    // en 3D elle debouche. On la traite comme un creux de la forme.
+    const hasHole = loopSign.some((sign) => sign < 0);
+    const frontCup = frontOpen && hasHole;
+    if (!hasHole) frontOpen = false;
     const allowed =
       allowance !== null &&
       xmin + i * dx >= allowance.x0 - 0.1 &&
@@ -331,7 +338,7 @@ export function sampleSkin(positions: Float32Array, allowance: GapAllowance | nu
         const span = hits[k + 1].t - hits[k].t;
         // Sortie dans un vide interne : il sera comble puis recreuse par
         // l'industrialisation, ce n'est pas un creux de la forme.
-        if (loopSign[loopOf[hits[k].s]] < 0) {
+        if (loopSign[loopOf[hits[k].s]] < 0 && !frontCup) {
           internalVoids = Math.max(internalVoids, span);
           continue;
         }
