@@ -187,6 +187,22 @@ class Builder {
   tri(a: number, b: number, c: number) {
     this.indices.push(a, b, c);
   }
+  /**
+   * Retire les triangles presents deux fois (memes sommets, sens opposes) :
+   * aux coins du saumon, trois sommets du contour sont partages et les deux
+   * faces y engendrent le meme triangle. La paire ne borne aucun volume.
+   */
+  dropCoincident() {
+    const key = (i: number) => [this.indices[i], this.indices[i + 1], this.indices[i + 2]].sort((x, y) => x - y).join(',');
+    const count = new Map<string, number>();
+    for (let i = 0; i < this.indices.length; i += 3) count.set(key(i), (count.get(key(i)) ?? 0) + 1);
+    const kept: number[] = [];
+    for (let i = 0; i < this.indices.length; i += 3) {
+      if ((count.get(key(i)) ?? 0) > 1) continue;
+      kept.push(this.indices[i], this.indices[i + 1], this.indices[i + 2]);
+    }
+    this.indices = kept;
+  }
   build(): THREE.BufferGeometry {
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(this.positions, 3));
@@ -332,6 +348,7 @@ export function buildPropeller(plan: PropellerPlan): THREE.BufferGeometry {
   for (let k = 0; k < blades; k++) {
     const blade = new Builder();
     buildBlade(blade, plan, (k * 2 * Math.PI) / blades, NS, NR);
+    blade.dropCoincident();
     solids.push(blade.build());
   }
   // Chaque solide est oriente seul : un signe global laisserait une pale a

@@ -175,16 +175,21 @@ function CameraRig({
   radius,
   view,
   fitSignal,
+  centerX = 0,
 }: {
   radius: number;
   view: ViewId;
   fitSignal: number;
+  /** Abscisse du centre de l'encombrement (helice de queue comprise), en cm. */
+  centerX?: number;
 }) {
   const camera = useThree((state) => state.camera);
   const controls = useThree((state) => state.controls) as unknown as ControlsLike | null;
   const size = useThree((state) => state.size);
   const radiusRef = useRef(radius);
   radiusRef.current = radius;
+  const centerRef = useRef(centerX);
+  centerRef.current = centerX;
 
   useEffect(() => {
     const perspective = camera as THREE.PerspectiveCamera;
@@ -198,13 +203,14 @@ function CameraRig({
 
     const [dx, dy, dz] = VIEW_DIRECTIONS[view];
     const direction = new THREE.Vector3(dx, dy, dz).normalize();
-    camera.position.copy(direction.multiplyScalar(distance));
+    const target = new THREE.Vector3(centerRef.current, 0, 0);
+    camera.position.copy(direction.multiplyScalar(distance).add(target));
     camera.near = Math.max(distance / 200, 0.01);
     camera.far = distance * 40;
-    camera.lookAt(0, 0, 0);
+    camera.lookAt(target);
     camera.updateProjectionMatrix();
     if (controls) {
-      controls.target.set(0, 0, 0);
+      controls.target.copy(target);
       controls.update();
     }
   }, [camera, controls, view, fitSignal, size.width, size.height]);
@@ -934,7 +940,12 @@ export function Viewport3D({
         >
           <color attach="background" args={[scenery.background]} />
           {scenery.fog ? <fog attach="fog" args={scenery.fog} /> : null}
-          <CameraRig radius={radius} view={view} fitSignal={fitSignal + fitKey} />
+          <CameraRig
+            radius={radius}
+            view={view}
+            fitSignal={fitSignal + fitKey}
+            centerX={geo.propeller ? (geo.propeller.plan.loop.x + geo.propeller.plan.loop.outer - params.length / 20) / 2 : 0}
+          />
 
           <ambientLight intensity={scenery.ambient} />
           <hemisphereLight args={scenery.hemisphere} />

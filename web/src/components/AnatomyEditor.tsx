@@ -15,6 +15,8 @@ import { Fieldset, Slider, Switch } from './ui';
 interface Props {
   anatomy: Anatomy;
   onChange: (anatomy: Anatomy) => void;
+  /** Corps de revolution (Pencil, Whopper_Plopper) : ses profils sont lies. */
+  revolution?: boolean;
 }
 
 const pct = (value: number) => `${Math.round(value * 100)} %`;
@@ -69,7 +71,7 @@ function ProfilePreview({ anatomy }: { anatomy: Anatomy }) {
   );
 }
 
-export function AnatomyEditor({ anatomy, onChange }: Props) {
+export function AnatomyEditor({ anatomy, onChange, revolution = false }: Props) {
   const set = (patch: Partial<Anatomy>) => onChange({ ...anatomy, ...patch });
   const setKnot = (key: CurveKey, index: number, v: number) => {
     const knots: ProfileKnot[] = anatomy[key].map((knot, i) => (i === index ? { ...knot, v } : knot));
@@ -123,6 +125,12 @@ export function AnatomyEditor({ anatomy, onChange }: Props) {
         legend="Profils et sections"
         hint="Trois courbes independantes — dos, ventre, largeur — et la forme de section au-dessus et au-dessous de l axe. Chaque point de controle se regle a part ; la courbe passe exactement par lui, sans depassement."
       >
+        {revolution ? (
+          <p className="control__hint" style={{ color: 'var(--amber)' }}>
+            Corps de revolution : dos, ventre et largeur sont lies pour garder une section circulaire, et
+            regeneres par les reglages de famille. Deplacer un point ici rompt cette circularite.
+          </p>
+        ) : null}
         {CURVES.map((curve) => (
           <details key={curve.key} className="advanced">
             <summary>{curve.label}</summary>

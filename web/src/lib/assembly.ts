@@ -1165,6 +1165,8 @@ function buildShell(
   }
   const chinCuts: ChinCut[] = [];
   const chinStrip = new Set<number>();
+  // Encoches de nez, fermees le long de la face de coupe.
+  const frontNotches = input.endExits.filter((exit) => exit.end === 'front').map((exit) => exit.path);
   for (const slot of input.chinSlots) {
     if (slot.iStart < 1 || slot.iEnd <= slot.iStart || slot.iEnd >= stations.length) continue;
     // Un fond qui deborde devant la bouche donnerait une poche croisee.
@@ -1177,6 +1179,22 @@ function buildShell(
       const found = rankAtT(ring, slot.topT[k], arcSamples);
       if (found === null || ring.t[found] <= ring.t[0] + 1e-4) ok = false;
       else rank.push(Math.max(found, rank[k - 1] ?? 1));
+    }
+    // La bouche est arrondie a l'echantillon d'anneau SUPERIEUR : sur une
+    // grille grossiere, ce pas peut la faire entrer dans l'encoche de la
+    // goupille de nez, et le contour du plan de joint se recoupe — la face
+    // entiere disparaissait alors. On redescend la bouche d'un echantillon
+    // tant qu'elle mord dans une encoche de nez, puis on la rend monotone.
+    if (ok && frontNotches.length > 0) {
+      const at = (k: number) => new THREE.Vector2(stations[slot.iStart + k].x, rings[slot.iStart + k].t[rank[k]]);
+      const bites = (point: THREE.Vector2) => frontNotches.some((notch) => insidePolygon(notch, point));
+      for (let k = 0; k < rank.length; k++) {
+        while (rank[k] > 1 && (bites(at(k)) || (k > 0 && bites(at(k).add(at(k - 1)).multiplyScalar(0.5))))) {
+          rank[k] -= 1;
+        }
+      }
+      for (let k = rank.length - 2; k >= 0; k--) rank[k] = Math.min(rank[k], rank[k + 1]);
+      if (rank.some((r, k) => rings[slot.iStart + k].t[r] <= rings[slot.iStart + k].t[0] + 1e-4)) ok = false;
     }
     if (ok) {
       const ring = rings[slot.iEnd];
@@ -2299,6 +2317,19 @@ function clipEndPath(
 /**
  * Distance d'un point a un polygone ferme, en cm : zero s'il est dedans.
  */
+/** Point strictement a l'interieur d'un polygone ferme (regle du rayon). */
+function insidePolygon(polygon: THREE.Vector2[], point: THREE.Vector2): boolean {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const a = polygon[i];
+    const b = polygon[j];
+    if (a.y > point.y !== b.y > point.y && point.x < ((b.x - a.x) * (point.y - a.y)) / (b.y - a.y) + a.x) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
 function polygonDistance(polygon: THREE.Vector2[], point: THREE.Vector2): number {
   if (polygon.length < 2) return Infinity;
   let inside = false;

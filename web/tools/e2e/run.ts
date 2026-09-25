@@ -44,6 +44,9 @@ import { bibAllowance, ImportError, importMesh } from '../../src/lib/importMesh'
 import { createMeshBody, registerMeshBody, restoreMeshBody } from '../../src/lib/meshBody';
 import { industrialise, runBench } from '../../src/lib/industrialise';
 import { buildProjectFile } from '../../src/lib/exporters';
+import { montageSheet } from '../../src/lib/montage';
+import { EYE_THETA } from '../../src/lib/anatomy';
+import { PENCIL_BODY, roundRadius } from '../../src/lib/presets';
 
 export interface Report {
   failures: string[];
@@ -150,20 +153,67 @@ function checkFamily(id: string, variant: string, params: LureParams, report: Re
     else if (assembly.billProblem) fail(`fente de bavette : ${assembly.billProblem}`);
   }
 
+  // Quatre livrables (module AM) : assemble, male, femelle, bavette si la
+  // famille en porte une — dans les deux modes. Plus l'helice et sa perle.
   const kinds: ExportKind[] = ['assembly', 'male', 'female'];
-  if (params.hasBib && params.billMode === 'printed') kinds.push('bib');
+  if (params.hasBib) kinds.push('bib');
   if (params.softTail.enabled) kinds.push('softTail');
+  if (geo.propeller) kinds.push('propeller');
+  if (geo.propeller && params.propeller.beadPrinted) kinds.push('bead');
   let exported = 0;
+  const perKind: Partial<Record<ExportKind, number>> = {};
   for (const kind of kinds) {
     const { parts, owned } = collectParts(params, geo, kind, false);
     if (parts.length === 0) fail(`export ${kind} vide`);
+    let n = 0;
     for (const part of parts) {
       const a = audit(part);
-      exported += a.triangles;
+      n += a.triangles;
       if (a.open) fail(`export ${kind} : piece ouverte (${a.open} aretes)`);
     }
+    exported += n;
+    perKind[kind] = n;
     for (const part of owned) part.dispose();
   }
+
+  // --- Standard Minnow 100 mesure sur les STL exportes (modules AM, AQ) -----
+  const zExtent = (kind: ExportKind): number => {
+    const dv = stlBytes(params, geo, kind);
+    const count = dv.getUint32(80, true);
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (let t = 0; t < count; t++) {
+      for (let k = 0; k < 3; k++) {
+        const z = dv.getFloat32(84 + t * 50 + 12 + k * 12 + 8, true);
+        if (z < lo) lo = z;
+        if (z > hi) hi = z;
+      }
+    }
+    return hi - lo;
+  };
+  const gap = zExtent('male') - zExtent('female');
+  // Standard des familles de la bibliotheque. Un corps importe peut etre
+  // dissymetrique : son ecart se lit, il ne se verifie pas a 2,0 mm pres.
+  const library = !params.meshBody;
+  if (library && Math.abs(gap - 2) > 0.005) fail(`ecart male / femelle ${gap.toFixed(3)} mm au lieu de 2,0 mm`);
+  for (const kind of ['male', 'female'] as const) {
+    const density = (perKind[kind] ?? 0) / params.length;
+    if (library && (density < 150 || density > 200)) fail(`coque ${kind} : ${density.toFixed(0)} triangles par mm (attendu 150 a 200)`);
+  }
+  if (params.hasBib && ((perKind.bib ?? 0) < 100 || (perKind.bib ?? 0) > 999)) {
+    fail(`bavette : ${perKind.bib} triangles (quelques centaines attendues)`);
+  }
+  for (const kind of ['propeller', 'bead'] as const) {
+    const n = perKind[kind];
+    if (n !== undefined && (n < 700 || n > 1500)) fail(`${kind} : ${n} triangles (700 a 1 500 attendus)`);
+  }
+  report.lines.push(
+    `${tag.padEnd(28)} male ${perKind.male} tri (${((perKind.male ?? 0) / params.length).toFixed(0)}/mm) · femelle ${perKind.female} tri ` +
+      `(${((perKind.female ?? 0) / params.length).toFixed(0)}/mm) · ecart ${gap.toFixed(3)} mm` +
+      (perKind.bib !== undefined ? ` · bavette ${perKind.bib} tri` : '') +
+      (perKind.propeller !== undefined ? ` · helice ${perKind.propeller} tri` : '') +
+      (perKind.bead !== undefined ? ` · perle ${perKind.bead} tri` : ''),
+  );
 
   // --- Physique ----------------------------------------------------------------
   const physics = computePhysics(params, geo, 'fresh');
@@ -210,6 +260,80 @@ function checkFamily(id: string, variant: string, params: LureParams, report: Re
     if (!Number.isFinite(strength.kgf.value) || strength.kgf.value <= 0 || !strength.modeLabel) {
       fail(`charge de rupture non calculable pour ${socket.anchorId}`);
     }
+  }
+
+  // --- Helice : un tour complet au pas de 5 degres (module AP.1) -------------
+  if (params.propeller.enabled) {
+    if (!physics.propeller) fail('helice demandee mais non montee');
+    else {
+      const sweep = physics.propeller.sweep;
+      if (sweep.steps !== 72 || sweep.stepDeg !== 5) fail(`balayage d helice : ${sweep.steps} positions au pas de ${sweep.stepDeg} deg`);
+      for (const hit of sweep.hits) fail(`helice : a ${hit.angleDeg} deg, ${hit.depthMm.toFixed(2)} mm dans ${hit.against}`);
+      const labels = Object.keys(sweep.minGapMm);
+      for (const needed of ['corps', 'perle', 'axe']) {
+        if (!labels.some((label) => label.includes(needed))) fail(`balayage d helice sans obstacle « ${needed} »`);
+      }
+      if (!labels.some((label) => /Triple|Simple|hamecon/i.test(label))) fail('balayage d helice sans hamecon');
+      if (!(physics.propeller.massG > 0) || !(physics.propeller.axialInertia > 0)) fail('masse ou inertie d helice nulle');
+      if (!physics.massBreakdown.some((line) => line.key === 'propeller')) fail('helice absente du bilan de masse');
+    }
+  }
+
+  // --- Chambre de billes (module AP.2) --------------------------------------
+  if (params.chamber.enabled) {
+    if (!assembly.chamber || !assembly.chamber.valid) fail(`chambre de billes refusee : ${assembly.chamberProblem}`);
+    else {
+      // Fendue : chaque coque perd la moitie du tube.
+      const without = buildAssembly(profile, { ...params, chamber: { ...params.chamber, enabled: false } }, assemblyExport(params));
+      const tube =
+        Math.PI * assembly.chamber.radius ** 2 * assembly.chamber.a.distanceTo(assembly.chamber.b) +
+        (4 / 3) * Math.PI * assembly.chamber.radius ** 3;
+      const dMale = audit(without.male).volume - male.volume;
+      const dFemale = audit(without.female).volume - female.volume;
+      disposeAssembly(without);
+      for (const [name, dv] of [['male', dMale], ['femelle', dFemale]] as const) {
+        if (Math.abs(dv - tube / 2) > tube * 0.15) fail(`chambre : la coque ${name} perd ${dv.toFixed(3)} cm3 au lieu de ${(tube / 2).toFixed(3)}`);
+      }
+      const sheet = montageSheet(params, geo, assembly);
+      const balls = sheet.hardware.find((line) => line.item.startsWith('Bille'));
+      if (!balls || balls.qty !== assembly.chamber.count) fail('billes absentes de la fiche de montage');
+      if (sheet.printed.some((line) => /bille/i.test(line.item))) fail('billes listees comme piece imprimee');
+      if (!physics.rattleShift || !(physics.rattleShift.deltaMm > 0)) fail('ecart de CG billes avant / arriere non calcule');
+      else {
+        report.lines.push(
+          `${tag.padEnd(28)} chambre ${assembly.chamber.count} x ${(assembly.chamber.ballRadius * 20).toFixed(1)} mm, course ` +
+            `${assembly.chamber.travelMm.toFixed(1)} mm · CG ${physics.rattleShift.frontPct.toFixed(1)} % billes avant / ` +
+            `${physics.rattleShift.rearPct.toFixed(1)} % billes arriere (${physics.rattleShift.deltaMm.toFixed(1)} mm)`,
+        );
+      }
+    }
+  }
+
+  // --- Anatomie obligatoire (module AQ) -------------------------------------
+  if (params.anatomy && profile.anatomy) {
+    const anatomy = params.anatomy;
+    if (!(anatomy.opercleRelief > 0)) fail('opercule sans relief');
+    if (!(anatomy.orbitDepth > 0) || !params.eyes.enabled) fail('orbites non creusees');
+    // Orbite : creux sous la peau lisse au centre de l'oeil ; opercule : relief.
+    const eyeP = params.eyes.position;
+    const section = profile.section(eyeP);
+    const orbit = profile.anatomy.relief(eyeP, EYE_THETA, section);
+    if (!(orbit < 0 || params.eyes.relief > 0)) fail('orbite sans creux dans la peau');
+    let opercle = 0;
+    for (let k = 0; k <= 40; k++) {
+      const p = params.gills.position - 0.04 + (0.08 * k) / 40;
+      opercle = Math.max(opercle, profile.anatomy.relief(p, 1.6, profile.section(p)));
+    }
+    if (!(opercle > 0.005)) fail(`opercule sans relief mesurable (${(opercle * 10).toFixed(3)} mm)`);
+    // Pedoncule : l'epaisseur passe par un minimum avant la queue.
+    const height = (p: number) => {
+      const s2 = profile.section(p);
+      return s2.top - s2.bottom;
+    };
+    const ped = anatomy.peduncle;
+    const at = height(ped);
+    const before = height(Math.max(ped - 0.25, 0.3));
+    if (!(at < before * 0.8)) fail(`pedoncule non marque (${(at * 10).toFixed(1)} mm contre ${(before * 10).toFixed(1)} mm)`);
   }
 
   // --- Joint articule : course au degre pres ---------------------------------
@@ -517,9 +641,9 @@ function checkImportErrors(report: Report): void {
 export function run(): Report {
   const report: Report = { failures: [], lines: [] };
 
-  // Critere AH.1 : la bibliotheque ne contient que les deux familles.
+  // Critere AR : la bibliotheque compte les six familles, dans cet ordre.
   const ids = SHAPE_PRESETS.map((preset) => preset.id);
-  const expected = ['minnow', 'lipless'];
+  const expected = ['minnow', 'lipless', 'plopper', 'pencil', 'nageur', 'souple'];
   if (ids.join() !== expected.join()) report.failures.push(`bibliotheque : ${ids.join(', ')}`);
   if (ARCHETYPES.map((item) => item.shape).join() !== expected.join()) report.failures.push('fiches de famille en trop');
 
@@ -598,7 +722,69 @@ export function run(): Report {
     const t160 = at(160);
     if (!(t160 > t100 && t100 > t70)) report.failures.push(`${preset.id} : densite independante de la taille (${t70} / ${t100} / ${t160})`);
   }
-  if (counted.minnow === counted.lipless) report.failures.push('les deux cartes affichent le meme nombre de triangles');
+  // Six familles, six compteurs differents (module AR).
+  const values = Object.values(counted);
+  if (values.length !== 6) report.failures.push(`${values.length} familles au lieu de six`);
+  if (new Set(values).size !== values.length) report.failures.push(`des cartes affichent le meme nombre de triangles : ${values.join(', ')}`);
+  // Aucun STL fourni ne figure dans la bibliotheque (module AN) : chaque
+  // famille est un corps parametrique, sans maillage importe.
+  for (const preset of SHAPE_PRESETS) {
+    if (preset.params.meshBody) report.failures.push(`${preset.id} : la bibliotheque embarque un maillage`);
+  }
+
+  // Pencil : section circulaire sans ondulation (module AO.2).
+  {
+    const params = clonePreset('pencil');
+    const profile = createProfile(params);
+    let worst = 0;
+    for (let i = 1; i < 1000; i++) {
+      const sec = profile.section(i / 1000);
+      if (sec.halfWidth < 1e-4) continue;
+      worst = Math.max(worst, Math.abs(sec.top - sec.halfWidth), Math.abs(-sec.bottom - sec.halfWidth));
+    }
+    if (worst * 10 > 1e-4) report.failures.push(`pencil : section de base non circulaire (${(worst * 10).toFixed(4)} mm)`);
+    const r = roundRadius({ maxAt: params.bellyPosition, ...PENCIL_BODY });
+    let dev = 0;
+    const radii: number[] = [];
+    for (let i = 0; i <= 3000; i++) {
+      const u = i / 3000;
+      const half = profile.section(u).halfWidth * 10;
+      radii.push(half);
+      if (u >= 0.06 && u <= 0.93) dev = Math.max(dev, Math.abs(half - r(u) * (params.thickness / 2)));
+    }
+    let extrema = 0;
+    for (let i = 1; i < radii.length - 1; i++) if ((radii[i] - radii[i - 1]) * (radii[i + 1] - radii[i]) < 0) extrema++;
+    if (dev > 0.01) report.failures.push(`pencil : le profil s ecarte de ${dev.toFixed(4)} mm de sa loi (ondulation)`);
+    if (extrema !== 3) report.failures.push(`pencil : ${extrema} extremums du rayon au lieu de 3 (maximum, pedoncule, calotte)`);
+    report.lines.push(`pencil (section)              ronde a ${(worst * 10).toFixed(6)} mm pres · ecart a la loi ${dev.toFixed(4)} mm · ${extrema} extremums du rayon`);
+  }
+
+  // Helice : matrice de reglages, un tour complet au pas de 5 degres.
+  {
+    const base = clonePreset('plopper');
+    let combos = 0;
+    for (const blades of [1, 2] as const) {
+      for (const bladeAngle of [15, 35, 60]) {
+        for (const diameter of [20, 30, 50]) {
+          const params: LureParams = { ...base, propeller: { ...base.propeller, blades, bladeAngle, diameter } };
+          const geo = buildLure(params, DISPLAY_RESOLUTION);
+          const physics = computePhysics(params, geo, 'fresh');
+          const hits = physics.propeller?.sweep.hits ?? [];
+          if (!physics.propeller) report.failures.push(`helice ${blades} pale(s) ${bladeAngle} deg ${diameter} mm : non montee`);
+          for (const hit of hits) {
+            report.failures.push(`helice ${blades} pale(s) ${bladeAngle} deg ${diameter} mm : a ${hit.angleDeg} deg, ${hit.depthMm.toFixed(2)} mm dans ${hit.against}`);
+          }
+          const tri = geo.propeller ? audit(geo.propeller.propeller) : null;
+          if (tri && (tri.open || tri.triangles < 700 || tri.triangles > 1500)) {
+            report.failures.push(`helice ${blades} pale(s) ${bladeAngle} deg ${diameter} mm : ${tri.triangles} triangles, ${tri.open} aretes ouvertes`);
+          }
+          combos++;
+          geo.dispose();
+        }
+      }
+    }
+    report.lines.push(`helice (matrice)              ${combos} reglages x 72 positions au pas de 5 deg`);
+  }
 
   // Import STL et industrialisation (module AD), dont des corps que seuls
   // les curseurs atteignent desormais : trapu a bavette, fusele sans bavette.

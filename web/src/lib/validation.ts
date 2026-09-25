@@ -257,7 +257,9 @@ const EXPONENT: Range = { min: 1.15, max: 5, step: 0.01 };
 
 function sanitizeKnots(value: unknown, fallback: ProfileKnot[], range: Range): ProfileKnot[] {
   if (!Array.isArray(value) || value.length < 2) return fallback.map((k) => ({ ...k }));
-  return value.slice(0, 32).map((raw, index) => {
+  // Un corps de revolution porte une cinquantaine de points par courbe :
+  // les tronquer detruirait sa forme au rechargement.
+  return value.slice(0, 128).map((raw, index) => {
     const item = (raw ?? {}) as Partial<ProfileKnot>;
     const guess = fallback[Math.min(index, fallback.length - 1)] ?? { u: 0, v: 0 };
     return { u: num(item.u, UNIT, guess.u), v: num(item.v, range, guess.v) };

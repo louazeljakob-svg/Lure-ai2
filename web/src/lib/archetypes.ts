@@ -100,7 +100,7 @@ export const ARCHETYPES: Archetype[] = [
     slenderness: [4.5, 5.5],
     tie: 'Attache de nez, fil traversant jusqu a l helice',
     caveat:
-      'Les vis montent du ventre mais s arretent sous l axe : l ecrou se loge sous le canal du fil traversant, d ou des vis courtes.',
+      'Visserie de la methode Minnow 100 inapplicable : le fil traversant, axe de l helice, occupe l axe du plan de joint, et la plus courte vis du catalogue (15 mm) monterait son ecrou dans ce canal. Coques assemblees par ergots, goujons et gorge de colle, sans vis.',
   },
   {
     shape: 'pencil',

@@ -33,7 +33,7 @@ import { DISPLAY_RESOLUTION, buildLure } from '${root}src/lib/geometry';
 import { assemblyExport, assemblyPlans, assemblyPreview, buildAssembly, disposeAssembly } from '${root}src/lib/assembly';
 import { computePhysics } from '${root}src/lib/physics';
 import { createProfile } from '${root}src/lib/profile';
-import { countExportTriangles } from '${root}src/lib/exporters';
+import { countExportTriangles, shellAssembly } from '${root}src/lib/exporters';
 
 const count = (g) => (g.getIndex() ? g.getIndex().count : g.getAttribute('position').count) / 3;
 
@@ -47,7 +47,7 @@ window.generate = () =>
     const plans = assemblyPlans(profile, params, preview);
     const geo = buildLure(params, DISPLAY_RESOLUTION, plans.billPlan?.root ?? null);
     const physics = computePhysics(params, geo, 'fresh', preview);
-    const shells = buildAssembly(profile, params, assemblyExport(params));
+    const shells = shellAssembly(profile, params);
     const record = {
       id: preset.id,
       image: renderThumb(params, DISPLAY_RESOLUTION, 'image/webp', plans.billPlan?.root ?? null),

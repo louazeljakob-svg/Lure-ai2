@@ -316,7 +316,11 @@ export function ShapeEditor({
       )}
 
       {params.anatomy ? (
-        <AnatomyEditor anatomy={params.anatomy} onChange={(anatomy) => onChange({ anatomy })} />
+        <AnatomyEditor
+          anatomy={params.anatomy}
+          revolution={params.shape === 'pencil' || params.shape === 'plopper'}
+          onChange={(anatomy) => onChange({ anatomy })}
+        />
       ) : null}
 
       {params.shape === 'spoon' || params.meshBody ? null : (

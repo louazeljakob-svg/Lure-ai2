@@ -822,12 +822,18 @@ const FAMILY_PRESETS: ShapePreset[] = [
         // Fil traversant = axe d'helice ; une sortie ventrale pour le triple.
         throughWire: { ...defaultThroughWire(), enabled: true, wireMm: 1.2, loopMm: 6, bellyExits: 1, bellyPositions: [0.45] },
         propeller: { ...defaultPropeller(), enabled: true },
+        // Visserie INAPPLICABLE : le fil traversant, axe de l'helice, court sur
+        // l'axe dans le plan de joint. La plus courte vis du catalogue (15 mm)
+        // monte du ventre jusqu'au-dessus de l'axe dans ce corps de 26 mm :
+        // son ecrou couperait le canal a toutes les positions (3,8 mm de trop
+        // au mieux). Plutot qu'une variante inventee, les coques sont
+        // assemblees par ergots, goujons et gorge de colle, sans vis.
         screws: {
-          enabled: true,
+          enabled: false,
           nutFit: 0.1,
           screws: [
-            { id: 'vis-avant', position: 0.26, size: 'auto', head: 'countersunk', length: 8 },
-            { id: 'vis-arriere', position: 0.62, size: 'auto', head: 'countersunk', length: 6 },
+            { id: 'vis-avant', position: 0.26, size: 'auto', head: 'countersunk', length: 15 },
+            { id: 'vis-arriere', position: 0.62, size: 'auto', head: 'countersunk', length: 15 },
           ],
         },
         infill: 15,
@@ -887,8 +893,8 @@ const FAMILY_PRESETS: ShapePreset[] = [
           enabled: true,
           nutFit: 0.1,
           screws: [
-            { id: 'vis-avant', position: 0.26, size: 'auto', head: 'countersunk', length: 12 },
-            { id: 'vis-arriere', position: 0.58, size: 'auto', head: 'countersunk', length: 12 },
+            { id: 'vis-avant', position: 0.26, size: 'auto', head: 'countersunk', length: 15 },
+            { id: 'vis-arriere', position: 0.58, size: 'auto', head: 'countersunk', length: 15 },
           ],
         },
         infill: 15,
@@ -925,7 +931,7 @@ const FAMILY_PRESETS: ShapePreset[] = [
         dorsalFin: fin(0.42, 0.6, 0.13, 12),
         analFin: fin(0.76, 0.83, 0.08, 9),
         pectoralFin: fin(0.22, 0.3, 0.26, 10),
-        pelvicFin: fin(0.52, 0.575, 0.18, 7),
+        pelvicFin: fin(0.59, 0.64, 0.18, 7),
       },
       billThickness: 1.5,
       billOffset: 8,
@@ -940,7 +946,7 @@ const FAMILY_PRESETS: ShapePreset[] = [
       assembly: assembly({
         anchors: [
           anchor('nez', 0.08, 0, 'nose'),
-          anchor('ventre', 0.3, -0.5, 'belly'),
+          anchor('ventre', 0.2, -0.5, 'belly'),
           anchor('arriere', 0.71, -0.5, 'belly'),
         ],
       }),
@@ -948,14 +954,15 @@ const FAMILY_PRESETS: ShapePreset[] = [
         enabled: true,
         nutFit: 0.1,
         screws: [
-          { id: 'vis-avant', position: 0.13, size: 'auto', head: 'countersunk', length: 12 },
-          // Vis courte : son ecrou reste sous la chambre de billes.
-          { id: 'vis-arriere', position: 0.62, size: 'auto', head: 'countersunk', length: 8 },
+          // Vis de 15 mm, la plus courte du catalogue : une devant la chambre
+          // de billes, une derriere — aucune ne la traverse.
+          { id: 'vis-avant', position: 0.14, size: 'auto', head: 'countersunk', length: 15 },
+          { id: 'vis-arriere', position: 0.54, size: 'auto', head: 'countersunk', length: 15 },
         ],
       },
       infill: 15,
-      // Suspension neutre : lest avant et lest sous la chambre, billes comprises.
-      ballasts: [ballast(0.21, -0.55, 1.8, 'nag', 'sphere'), ballast(0.47, -0.75, 2.1, 'nag', 'sphere')],
+      // Suspension neutre : deux lests sous la chambre, billes comprises.
+      ballasts: [ballast(0.28, -0.7, 1.5, 'nag', 'sphere'), ballast(0.43, -0.75, 2.2, 'nag', 'sphere')],
       // Trois billes inox de 6 mm, tube de 6,6 mm : 0,6 mm de jeu, de quoi
       // rouler et claquer. Le tube court dans le plan de joint, au-dessus de
       // l'axe : les portees ventrales, le lest et la vis passent dessous. Il
@@ -963,15 +970,15 @@ const FAMILY_PRESETS: ShapePreset[] = [
       chamber: {
         enabled: true,
         diameter: 6.6,
-        fromPosition: 0.3,
+        fromPosition: 0.24,
         fromHeight: 0.38,
-        toPosition: 0.55,
+        toPosition: 0.48,
         toHeight: 0.32,
         ball: 6,
         balls: 3,
       },
       mounts: [
-        mount('mount-ventre', 'Support ventral', 'ventre', 0.3, -1, treble('#6'), ring('#3')),
+        mount('mount-ventre', 'Support ventral', 'ventre', 0.2, -1, treble('#6'), ring('#3')),
         mount('mount-arriere', 'Support arriere', 'arriere', 0.71, -1, treble('#6'), ring('#3')),
       ],
       paint: paint('#3a4a2c', '#dfe3cf', { pattern: 'scales' }),
@@ -1023,9 +1030,9 @@ const FAMILY_PRESETS: ShapePreset[] = [
         nutFit: 0.1,
         screws: [
           // Le lest ventral occupe le premier tiers : une vis devant lui, une
-          // derriere.
-          { id: 'vis-avant', position: 0.1, size: 'auto', head: 'countersunk', length: 10 },
-          { id: 'vis-arriere', position: 0.57, size: 'auto', head: 'countersunk', length: 12 },
+          // derriere. 15 mm, la plus courte du catalogue.
+          { id: 'vis-avant', position: 0.13, size: 'auto', head: 'countersunk', length: 15 },
+          { id: 'vis-arriere', position: 0.55, size: 'auto', head: 'countersunk', length: 15 },
         ],
       },
       material: 'tpu',

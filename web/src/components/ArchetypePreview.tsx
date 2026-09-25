@@ -95,6 +95,11 @@ export function renderThumb(
       ),
     );
   }
+  if (geo.propeller) {
+    // Helice et perle sur leur axe : c'est la signature de la famille.
+    group.add(new THREE.Mesh(geo.propeller.propeller, finMat));
+    group.add(new THREE.Mesh(geo.propeller.bead, new THREE.MeshStandardMaterial({ color: new THREE.Color(params.paint.belly), roughness: 0.35 })));
+  }
   scene.add(group);
 
   scene.add(new THREE.AmbientLight(0xffffff, 1));
