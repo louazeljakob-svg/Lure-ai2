@@ -58,16 +58,44 @@ s'affichent correctement sans dependre d'une declaration de charset de l'hote.
 
 ### 1. Galerie de formes
 
-Neuf gabarits **entierement parametriques** : trois profils releves sur des
-references reelles — Stickbait 165, Ryoshi, Modele 1 (2.5 po) — et six
-generiques — Popper, Crankbait, Jerkbait, Spoon, Swimbait, Topwater.
+Deux familles, une entree chacune : **Minnow / jerkbait** (bavette, attache de
+nez, flottant) et **Lipless / vibe** (sans bavette, attache dorsale, coulant).
+Les variantes — nervure, suspendu, vibe de traine — sont des reglages. Les
+corps trapus, fuseles ou a face creusee des anciennes familles restent
+atteignables par les curseurs de forme, et un projet enregistre sur l'une
+d'elles se rouvre avec ses cotes et son anatomie.
 
-Chaque forme est un **point de depart, jamais une contrainte** : corps, bavette,
-details de tete, quincaillerie, plan d'assemblage et livree se reglent
-independamment et se melangent librement d'une forme a l'autre.
+Les filtres de la bibliotheque ne proposent que des valeurs qui renvoient au
+moins une famille, compte tenu des autres : aucune combinaison ne vide la liste.
 
-Chaque vignette est une silhouette SVG generee par le meme code de profil que le
-modele 3D : la miniature correspond donc toujours a la piece qui sera imprimee.
+Chaque carte affiche des valeurs **mesurees** sur le modele livre, a sa taille
+par defaut : masse en service, volume, et nombre de triangles du fichier STL
+reellement exporte (piece assemblee, resolution d'export). La densite du
+maillage suit la taille — un pas de 0,34 mm le long du corps et de 0,22 mm
+autour — si bien qu'un corps plus long porte plus de facettes.
+
+### Saisie numerique (module AJ)
+
+Chaque reglage numerique porte un champ a cote de son curseur. Clic ou
+tabulation selectionnent tout ; rien ne se recalcule pendant la frappe ;
+Entree ou la perte de focus valident ; Echap restaure ; fleches haut / bas
+pour 0,1 mm ou 0,1 deg, Maj pour 1 ; virgule ou point ; deux decimales au
+plus. Une valeur au-dela de la plage du curseur est acceptee si elle reste
+physiquement possible (le curseur s'etend), refusee sinon avec la borne
+admissible. Une saisie validee est un seul pas d'annulation. Un verrou de
+proportions lie longueur, largeur et epaisseur.
+
+### Import STL (module AK)
+
+Lecture STL binaire ou ASCII reconnue au contenu du fichier (pas a son
+extension ni a son en-tete), glisser-deposer ou selecteur, dans un fil de calcul
+separe avec barre de progression : l'interface reste utilisable pendant la
+lecture d'un fichier de 170 000 facettes. Une demi-coque est reconnue a sa face
+de joint et reconstituee par symetrie. Fiche immediate (facettes, cotes, volume,
+orientation), orientation corrigeable par quarts de tour, echelle par facteur ou
+longueur cible, diagnostic et reparations sures, puis banc d'essai et
+industrialisation en deux demi-coques vissees. Tout echec d'import nomme sa
+cause.
 
 ### 2. Editeur en trois panneaux
 
@@ -549,32 +577,20 @@ web/tools/
 
 ## Reperes de conception
 
-Les neuf gabarits sont calibres pour tomber sur des valeurs realistes :
+Les deux familles, a leur taille par defaut (valeurs mesurees, regenerees par
+`node tools/thumbnails.mjs` et verifiees par `npm test`) :
 
-| Gabarit | Cotes (mm) | Volume | Masse | Etat | Action |
-| --- | --- | --- | --- | --- | --- |
-| Stickbait 165 | 159 x 34 x 21 | 54,5 cm3 | 33,3 g | Flotte (0,61) | serree |
-| Ryoshi | 96 x 25 x 18 | 14,1 cm3 | 11,5 g | Flotte (0,81) | serree |
-| Modele 1 (2.5 po) | 90 x 31 x 20 | 18,4 cm3 | 10,8 g | Flotte (0,59) | large |
-| Popper | 82 x 27 x 20 | 21,0 cm3 | 14,0 g | Flotte (0,67) | large |
-| Crankbait | 73 x 46 x 17 | 18,0 cm3 | 14,4 g | Flotte (0,80) | large |
-| Jerkbait | 133 x 25 x 13 | 14,9 cm3 | 14,8 g | Suspend (1,00) | serree |
-| Spoon | 72 x 8 x 26 | 6,6 cm3 | 10,1 g | Coule (1,52) | roulante |
-| Swimbait | 135 x 46 x 24 | 58,8 cm3 | 59,5 g | Suspend (1,01) | large |
-| Topwater | 104 x 21 x 18 | 19,7 cm3 | 16,5 g | Flotte (0,84) | large |
+| Famille | Masse | Volume | Triangles du STL assemble |
+| --- | --- | --- | --- |
+| Minnow / jerkbait | 10,5 g | 12,14 cm3 | 176 808 |
+| Lipless / vibe | 14,4 g | 10,17 cm3 | 139 596 |
 
-Les neuf gabarits sortent sans erreur ni avertissement de coherence, et leurs
-deux coques sont fermees : **zero arete non appariee** sur chacune, a
-l'affichage comme a la resolution d'export STEP. La bavette polycarbonate y
-laisse une vraie fente sur les neuf (52 a 852 mm3 de matiere retiree), et la
-plaque reelle y entre sans toucher la matiere — verifie par lancer de rayon sur
-cent cinquante points par gabarit.
-
-Decals, ecailles cuites et segments articules passent le meme controle : les
-deux coques restent fermees sur les neuf gabarits avec trois decals et la
-trame d'ecailles cuite (43 000 a 150 000 triangles par coque), et les deux
-segments d'un corps articule sont des solides fermes sur trente-six
-combinaisons de debattement et d'angle de face.
+Le test de bout en bout (`npm test`) reconstruit chaque famille, ses coques et
+ses exports, verifie qu'aucune piece n'a d'arete non appariee, rejoue le
+debattement des configurations articulees au pas de 1 deg, importe et
+industrialise le jeu de test de l'import (demi-coques legere et moyenne,
+assemblages dense et tres dense) et rouvre les projets des versions
+precedentes.
 
 Un leurre imprime est tres flottant : c'est le lest de plomb interne qui fait le
 reglage, exactement comme en fabrication artisanale.

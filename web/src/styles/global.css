@@ -1518,6 +1518,19 @@ select:hover {
   color: rgba(255, 255, 255, 0.55);
 }
 
+.export-summary__how {
+  grid-column: 1 / -1;
+  margin: 2px 0 0;
+  font-size: 10px;
+  line-height: 1.4;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.export-summary__how .derived__badge {
+  color: rgba(255, 255, 255, 0.75);
+  border-color: rgba(255, 255, 255, 0.35);
+}
+
 .export-dock__name {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

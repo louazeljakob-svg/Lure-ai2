@@ -86,7 +86,7 @@ function formatNumber(shown: number, stepDecimals: number): string {
 
 /** Saisie : virgule ou point, unite tapee par habitude toleree. */
 export function parseEntry(text: string): number | null {
-  const cleaned = text.trim().replace(/\s+/g, '').replace(',', '.').replace(/(mm|deg|°|%|g\/cm3|km\/h|kg|g|m|x)$/i, '');
+  const cleaned = text.trim().replace(/\s+/g, '').replace(',', '.').replace(/(mm|deg|\u00b0|%|g\/cm3|km\/h|kg|g|m|x)$/i, '');
   if (!/^[-+]?(\d+\.?\d*|\.\d+)$/.test(cleaned)) return null;
   const value = Number(cleaned);
   return Number.isFinite(value) ? value : null;
@@ -142,7 +142,7 @@ export function NumberField({
   const gesture = useContext(EditGesture);
   const [draft, setDraft] = useState<string | null>(null);
   const [refusal, setRefusalState] = useState<string | null>(null);
-  const selectOnUp = useRef(false);
+  const fresh = useRef(false);
   const angular = unit === 'deg';
   const metric = unit === 'mm' || angular;
   const stepShown = step * scale;
@@ -192,15 +192,35 @@ export function NumberField({
 
   const onKey = (event: KeyboardEvent<HTMLInputElement>) => {
     const field = event.currentTarget;
+    // Champ « pret a etre remplace » : la premiere touche remplace tout le
+    // nombre, meme si la page, occupee a recalculer, n'a pas encore repeint
+    // la selection.
+    if (fresh.current && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      if (event.key.length === 1) {
+        event.preventDefault();
+        fresh.current = false;
+        setDraft(event.key);
+        return;
+      }
+      if (event.key === 'Backspace' || event.key === 'Delete') {
+        event.preventDefault();
+        fresh.current = false;
+        setDraft('');
+        return;
+      }
+      if (/^(ArrowLeft|ArrowRight|Home|End)$/.test(event.key)) fresh.current = false;
+    }
     if (event.key === 'Enter') {
       event.preventDefault();
       commit(field.value, true);
+      fresh.current = true;
       window.requestAnimationFrame(() => field.select());
     } else if (event.key === 'Escape') {
       event.preventDefault();
       event.stopPropagation();
       setDraft(null);
       setRefusal(null);
+      fresh.current = true;
       window.requestAnimationFrame(() => field.select());
     } else if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
       event.preventDefault();
@@ -209,6 +229,7 @@ export function NumberField({
       const target = Math.min(Math.max(base + delta, hardMin * scale), hardMax * scale);
       // Pressions rapprochees : fusionnees dans l'annulation, comme un glisser.
       commit(String(Math.round(target * 100) / 100), false);
+      fresh.current = true;
       window.requestAnimationFrame(() => field.select());
     }
   };
@@ -227,13 +248,35 @@ export function NumberField({
         aria-label={label}
         aria-describedby={[refusal && !onRefusal ? `${ownId}-refusal` : null, describedBy].filter(Boolean).join(' ') || undefined}
         aria-invalid={refusal ? true : undefined}
-        onPointerDown={(event) => {
-          selectOnUp.current = document.activeElement !== event.currentTarget;
+        onFocus={(event) => {
+          fresh.current = true;
+          event.currentTarget.select();
         }}
-        onFocus={(event) => event.currentTarget.select()}
-        onMouseUp={(event) => {
-          if (selectOnUp.current) event.preventDefault();
-          selectOnUp.current = false;
+        onMouseDown={(event) => {
+          // Champ deja actif : le clic resselectionne tout, tout de suite, au
+          // lieu de poser le curseur au milieu du nombre.
+          const field = event.currentTarget;
+          if (document.activeElement === field && event.detail === 1) {
+            event.preventDefault();
+            fresh.current = true;
+            field.select();
+          }
+        }}
+        onSelect={(event) => {
+          // Une portion choisie a la souris : la frappe ne remplace qu'elle.
+          const field = event.currentTarget;
+          const partial = field.selectionStart !== field.selectionEnd && (field.selectionStart !== 0 || field.selectionEnd !== field.value.length);
+          if (partial) fresh.current = false;
+        }}
+        onClick={(event) => {
+          // Un clic selectionne tout, pret a etre remplace ; un glisser
+          // garde la portion choisie a la souris.
+          // Apres le traitement du clic : un clic dans une selection ne la
+          // replie qu'une fois l'evenement passe.
+          const field = event.currentTarget;
+          window.setTimeout(() => {
+            if (document.activeElement === field && field.selectionStart === field.selectionEnd) field.select();
+          }, 0);
         }}
         onChange={(event) => setDraft(event.target.value)}
         onBlur={(event) => {

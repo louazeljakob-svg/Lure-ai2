@@ -4,9 +4,9 @@
  * Aucun serveur, aucun compte, aucune donnee ne quitte la machine.
  */
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { LureParams } from '../types/lure';
-import type { ExportKind } from '../lib/exporters';
+import { countExportTriangles, type ExportKind } from '../lib/exporters';
 import { assemblyActive } from '../lib/assembly';
 import { Segmented } from './ui';
 import type { LureGeometry } from '../lib/geometry';
@@ -46,6 +46,20 @@ export function ExportManager({
   const fileRef = useRef<HTMLInputElement>(null);
   const material = getMaterial(params.material);
   const [kind, setKind] = useState<ExportKind>('assembly');
+  // Triangles du fichier STL assemble, comptes sur ce qui sortirait
+  // reellement (module AI) — une fois la saisie posee, pas a chaque pas.
+  const [triangles, setTriangles] = useState<number | null>(null);
+  useEffect(() => {
+    setTriangles(null);
+    const timer = window.setTimeout(() => {
+      try {
+        setTriangles(countExportTriangles(params, geo, 'assembly'));
+      } catch {
+        setTriangles(null);
+      }
+    }, 600);
+    return () => window.clearTimeout(timer);
+  }, [params, geo]);
   const split = assemblyActive(params);
   // Pieces rapportees : elles s'ajoutent a la liste des choix des qu'elles
   // existent, que le corps soit en une ou en deux parties.
@@ -84,10 +98,14 @@ export function ExportManager({
           <em>g de {material.label}</em>
         </div>
         <div className="export-summary__cell">
-          <span>Remplissage</span>
-          <b>{params.infill} %</b>
-          <em>matiere deposee</em>
+          <span>Triangles</span>
+          <b>{triangles === null ? 'calcul…' : triangles.toLocaleString('fr-FR')}</b>
+          <em>STL assemble</em>
         </div>
+        <p className="export-summary__how">
+          <span className="derived__badge">calcule</span> sur le maillage exporte, a la resolution d export : boite
+          englobante, masse = volume x densite x remplissage + quincaillerie, triangles du fichier STL.
+        </p>
       </div>
 
       {split || extras.length > 0 ? (

@@ -99,6 +99,10 @@ export function PhysicsSimulator({ params, physics, water, onWaterChange, socket
         onChange={onWaterChange}
       />
 
+      <p className="control__hint derived__how">
+        <span className="derived__badge">calcule</span> lecture seule : volume integre sur le maillage, masse = volume x
+        densite x remplissage + quincaillerie et lest, poussee = volume x masse volumique de l eau.
+      </p>
       <div className="stat-grid">
         <div className="stat">
           <span className="stat__label">Volume deplace</span>
