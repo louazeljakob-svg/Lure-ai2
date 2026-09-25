@@ -60,7 +60,7 @@ export function ShapeGallery({
           <div className="hero__step">
             <span>1</span>
             <p>
-              <strong>Partir d une famille</strong> — deux leurres complets et regles,
+              <strong>Partir d une famille</strong> — six leurres complets et regles,
               anatomie comprise. Chaque cote reste modifiable au curseur.
             </p>
           </div>

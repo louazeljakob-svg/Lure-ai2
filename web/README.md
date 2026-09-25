@@ -58,12 +58,73 @@ s'affichent correctement sans dependre d'une declaration de charset de l'hote.
 
 ### 1. Galerie de formes
 
-Deux familles, une entree chacune : **Minnow / jerkbait** (bavette, attache de
-nez, flottant) et **Lipless / vibe** (sans bavette, attache dorsale, coulant).
-Les variantes — nervure, suspendu, vibe de traine — sont des reglages. Les
-corps trapus, fuseles ou a face creusee des anciennes familles restent
-atteignables par les curseurs de forme, et un projet enregistre sur l'une
-d'elles se rouvre avec ses cotes et son anatomie.
+Six familles, une entree chacune, chacune pour une geometrie qui lui est
+propre :
+
+| Famille | Ce qui la distingue | Verdict |
+| --- | --- | --- |
+| **Minnow / jerkbait** | bavette courte, attache de nez | flottant |
+| **Lipless / vibe** | corps haut, attache dorsale | coulant |
+| **Whopper_Plopper** | corps rond, **helice rotative** de queue sur perle | flottant |
+| **Pencil** | **section circulaire** pleine, lest arriere | flottant |
+| **Poisson nageur** | grande bavette, **chambre de billes** | suspendu |
+| **Souple** | corps TPU, **lest ventral integre** a l'avant | coulant |
+
+Les variantes — nervure, suspendu, vibe de traine — sont des reglages. Chaque
+nouvelle famille se pilote d'abord par ses « Reglages de famille » (panneau
+Forme), sur la plage de sa fiche : pales, diametre, angle et perle de
+l'helice ; diametre, position du diametre max et du lest du Pencil ; bavette
+et billes du Poisson nageur ; masse, position du lest et attache du Souple.
+Les corps des anciennes familles restent atteignables par les curseurs de
+forme, et un projet enregistre sur l'une d'elles se rouvre avec ses cotes et
+son anatomie.
+
+#### Standard d'assemblage Minnow 100 (module AM)
+
+Toutes les familles reprennent la methode sans adaptation : plan de joint
+median, coque male **exactement 2,0 mm** plus epaisse que la femelle (ergots
+et goujons au-dela du plan de joint, mesure sur les STL exportes), ecrous
+captifs a 0,10 mm, tetes noyees par le ventre, portees de goupille en 8
+fendues avec cylindres de retention imprimes, gorge de colle, ergots coniques,
+fente de bavette identique dans les deux modes. Quatre livrables : **male,
+femelle, bavette** (piece distincte, si la famille en porte une) et
+**assemble** (vue de verification, jamais pour l'impression), plus **helice**
+et **perle** pour le Whopper_Plopper.
+
+Une exception, signalee plutot que contournee : le **Whopper_Plopper n'a pas
+de vis**. Son fil traversant, axe de l'helice, occupe l'axe du plan de joint ;
+la plus courte vis du catalogue (15 mm) monte du ventre au-dela de l'axe dans
+ce corps de 26 mm et son ecrou couperait le canal a toutes les positions
+(3,8 mm de trop au mieux). Les coques y sont tenues par ergots, goujons et
+gorge de colle.
+
+#### Helice rotative (module AP.1)
+
+Piece imprimee a part, alesee, enfilee sur le fil traversant ; perle
+d'espacement imprimee ou achetee. Les jeux (alesage / axe, helice / perle,
+perle / corps) sont ceux des cylindres de retention : une seule table de
+tolerances. Le tour complet est rejoue **au pas de 5 degres** contre le corps,
+la perle, l'axe, la boucle de queue et les hamecons, avec la machinerie du
+test de collision du joint articule ; le jeu minimal par obstacle est affiche.
+Masse, inertie axiale et contribution au tangage entrent dans le bilan et le
+centre de gravite.
+
+#### Chambre de billes (module AP.2)
+
+Tube creuse dans le plan de joint, moitie dans chaque coque ; diametre de
+bille, nombre, course, diametre de chambre et jeu se reglent. La chambre est
+refusee, avec sa raison, si elle perce la paroi, coupe un passage de vis ou
+traverse une portee de goupille. Les billes ne sont jamais imprimees : elles
+pesent, figurent dans la **fiche de montage** (onglet Quincaillerie), et le
+panneau donne le centre de gravite billes tassees a l'avant puis a l'arriere.
+
+#### Densite de maillage (module AQ)
+
+Une demi-coque exporte **150 a 200 triangles par millimetre** de longueur,
+mesures sur le fichier ; hors de cette plage, le nombre de stations est recale
+(identique pour la male et la femelle). Helice et perle : 700 a 1 500
+triangles ; bavette : quelques centaines. Les STL de reference fournis ne sont
+jamais importes ni copies dans la bibliotheque : chaque corps est parametrique.
 
 Les filtres de la bibliotheque ne proposent que des valeurs qui renvoient au
 moins une famille, compte tenu des autres : aucune combinaison ne vide la liste.
