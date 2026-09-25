@@ -17,6 +17,7 @@ import { clamp, createProfile, MM_TO_CM, type ProfileSampler } from './profile';
 import { bibShape, clipHalfPlane } from './billTemplate';
 import { createSurfaceDetail } from './surfaceDetail';
 import { buildCaudalFin, sectionPoint } from './anatomy';
+import { meshGeometry, releaseGeometry } from './meshBody';
 import {
   articulationPlan,
   buildJointHardware,
@@ -132,6 +133,11 @@ export interface LureGeometry {
    * `segments` qui s'impriment.
    */
   body: THREE.BufferGeometry;
+  /**
+   * Version allegee du corps, pour l'affichage seul (maillage importe tres
+   * dense). La mesure et l'export restent sur `body`.
+   */
+  displayBody?: THREE.BufferGeometry | null;
   /** Segments articules, ou null si le corps est d'une seule piece. */
   segments: { front: THREE.BufferGeometry; rear: THREE.BufferGeometry } | null;
   /** Barreaux de retention du joint, imprimes a part. */
@@ -261,7 +267,7 @@ export function createSkin(
   // que l'appelant compare deux points, ce qui donne des bugs silencieux.
   return (p: number, theta: number): THREE.Vector3 => {
     const section = profile.section(p);
-    const base = sectionPoint(section, theta, fallbackN);
+    const base = profile.shape ? profile.shape(p, theta) : sectionPoint(section, theta, fallbackN);
     let y = base.y;
     let z = base.z;
     const centerY = (section.top + section.bottom) / 2;
@@ -497,6 +503,14 @@ export function buildTailFin(
   params: LureParams,
   part: ShellPart = 'full',
 ): THREE.BufferGeometry {
+  // Corps maille : la caudale d'origine, decoupee au pedoncule et refermee.
+  // Une copie, que l'appelant peut liberer sans toucher au cache.
+  if (profile.mesh) {
+    const source = meshGeometry(profile.mesh, part === 'full' ? 'tail' : part);
+    const copy = source ? source.clone() : new THREE.BufferGeometry();
+    copy.userData = {};
+    return copy;
+  }
   // Corps anatomique : une vraie caudale, epaisse a la racine, fine au bord,
   // rayonnee — et non une plaque extrudee d'epaisseur constante.
   if (profile.anatomy) return buildCaudalFin(profile, params, part);
@@ -690,7 +704,12 @@ export function buildLure(
 ): LureGeometry {
   const profile = createProfile(params);
   const fine = detailResolution(params, anatomicalResolution(profile, resolution), bakeScales);
-  const body = buildBody(profile, params, fine, bakeScales);
+  // Corps maille (module AD.3) : le maillage d'origine lui-meme, jamais sa
+  // retraduction — c'est lui que l'on mesure, que l'on affiche et que l'on
+  // exporte d'un seul tenant. Seules les coques passent par la peau (p, theta).
+  const meshBody = profile.mesh ? meshGeometry(profile.mesh, 'body') : null;
+  const body = meshBody ?? buildBody(profile, params, fine, bakeScales);
+  const displayBody = profile.mesh ? meshGeometry(profile.mesh, 'display') : null;
   // L'articulation coupe le corps d'un seul tenant. Elle ne se cumule pas
   // avec l'impression en deux coques, qui coupe deja dans l'autre sens : la
   // simulation le signale plutot que de produire quatre pieces bancales.
@@ -722,6 +741,7 @@ export function buildLure(
 
   return {
     body,
+    displayBody,
     segments,
     retentionPins,
     joint,
@@ -737,7 +757,8 @@ export function buildLure(
       height: size.y * 10,
     },
     dispose: () => {
-      body.dispose();
+      // Le corps d'un maillage importe est partage par le cache : il survit.
+      releaseGeometry(body);
       segments?.front.dispose();
       segments?.rear.dispose();
       retentionPins?.dispose();

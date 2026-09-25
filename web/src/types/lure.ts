@@ -577,6 +577,17 @@ export interface FinConfig {
  * largeur), jamais derives l'un de l'autre. La forme de section varie elle
  * aussi le long du corps : ronde a la tete, carenee au pedoncule.
  */
+/** Reference au maillage importe qui porte le corps d'un projet. */
+export interface MeshBodyRef {
+  id: string;
+  /** Nom du fichier d'origine. */
+  name: string;
+  /** Cotes du corps d'origine, en mm : l'echelle du projet se lit contre elles. */
+  lengthMm: number;
+  widthMm: number;
+  heightMm: number;
+}
+
 export interface Anatomy {
   /** Commissure de la machoire, en fraction de longueur. */
   jaw: number;
@@ -941,6 +952,12 @@ export interface LureParams {
    * historique. Un ancien projet n'en porte pas et s'ouvre donc a l'identique.
    */
   anatomy: Anatomy | null;
+  /**
+   * Corps tire d'un maillage importe (module AD.3), ou `null`. Quand il est
+   * present, il remplace le profil parametrique et l'anatomie ; longueur,
+   * hauteur et largeur reglent alors l'echelle du maillage.
+   */
+  meshBody: MeshBodyRef | null;
   /** Creux de bouche : 0 = nez plein, 1 = bouche fortement creusee (popper). */
   mouthCup: number;
 

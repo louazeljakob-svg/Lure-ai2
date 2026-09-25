@@ -310,7 +310,7 @@ function LureModel({
         </>
       ) : (
         <mesh
-          geometry={geo.body}
+          geometry={geo.displayBody ?? geo.body}
           castShadow={false}
           onPointerDown={interactive ? onPointerDown : undefined}
           onPointerMove={interactive ? onPointerMove : undefined}

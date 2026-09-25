@@ -187,7 +187,7 @@ export const warpArc = (t: number, c = THETA_WARP): number =>
   t - (c * Math.sin(2 * Math.PI * t)) / (2 * Math.PI);
 
 /** Table de repartition : densite -> abscisse cumulee, inversible. */
-function distribution(
+export function distribution(
   density: (p: number) => number,
   end: number,
 ): { at: (t: number) => number; of: (p: number) => number } {

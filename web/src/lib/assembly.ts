@@ -23,8 +23,8 @@
  */
 
 import * as THREE from 'three';
-import type { LureParams, PinAnchor, PinExit, SocketMethod } from '../types/lure';
-import { createSurfaceSampler, type SurfaceSampler } from './geometry';
+import type { BallastWeight, LureParams, PinAnchor, PinExit, SocketMethod } from '../types/lure';
+import { ballastMarkers, createSurfaceSampler, type SurfaceSampler } from './geometry';
 import { warpArc } from './anatomy';
 import { articulationPlan, type ArticulationPlan } from './articulation';
 import { PINS, autoPin, buildPin, getPin, type PinPart, type PinSpec } from './hardware';
@@ -55,6 +55,13 @@ const WALL = 0.06;
  * logement : un demi-millimetre, quelle que soit la largeur locale du corps.
  */
 const SKIN = 0.05;
+
+/**
+ * Jeu radial d'une chambre de lest, en cm : 0,05 mm, soit 0,10 mm au
+ * diametre — le jeu des portees d'ecrou. Absolu, comme tous les jeux : il ne
+ * grandit pas avec le lest.
+ */
+const BALLAST_PLAY = 0.005;
 
 /** Marge du contour de poche au-dela du puits, pour degager les rails. */
 const LEDGE = 0.02;
@@ -409,6 +416,15 @@ interface Pocket {
   island?: THREE.Vector2[];
   /** Percage plus profond dans le fond : logement du goujon male. */
   bore?: { outline: THREE.Vector2[]; depth: number };
+  /**
+   * Chambre de creusage : fond a profondeur variable, qui suit la peau a la
+   * distance de la paroi. `depthOf` donne la profondeur de chaque sommet du
+   * contour ; `triangles` pave le fond, sommets (x, t) et cote n.
+   */
+  field?: {
+    depthOf: Map<THREE.Vector2, number>;
+    triangles: { p: THREE.Vector2; n: number }[][];
+  };
 }
 
 /**
@@ -525,7 +541,38 @@ export interface SocketPlan {
   downsized: boolean;
 }
 
+/** Chambre de lest : ou elle est, et pourquoi elle a pu etre refusee. */
+export interface BallastSeatReport {
+  id: string;
+  fromNoseMm: number;
+  /** Diametre de la chambre, jeu compris, en mm. */
+  diameterMm: number;
+  valid: boolean;
+  problem: string | null;
+}
+
+/** Creusage en coque : chambres obtenues et matiere retiree. */
+export interface HollowReport {
+  chambers: number;
+  /** Volume retire par coque, en cm3. */
+  volumeCm3: number;
+  /** Surface des chambres d'une coque, fond et parois, en cm2. */
+  surfaceCm2: number;
+  /** Paroi conservee, en mm. */
+  wallMm: number;
+  notes: string[];
+}
+
 export interface AssemblyResult {
+  /** Chambres de lest, une par lest. */
+  ballastSeats: BallastSeatReport[];
+  /**
+   * Controle d'une chambre de lest hypothetique contre les logements deja
+   * poses : `null` si elle tient, sinon le motif. Sert au placement propose.
+   */
+  ballastProbe: (ballast: BallastWeight) => string | null;
+  /** Creusage en coque, s'il est demande. */
+  hollow: HollowReport | null;
   male: THREE.BufferGeometry;
   female: THREE.BufferGeometry;
   /** Goujons : solides distincts poses sur la coque male, un par ancrage. */
@@ -1272,6 +1319,10 @@ function buildShell(
       emitDome(mesh, pocket, lift);
       continue;
     }
+    if (pocket.field) {
+      emitField(mesh, outline, pocket.field, lift);
+      continue;
+    }
     const island = pocket.island ? contourOf(pocket.island) : null;
     const bore = pocket.bore ? contourOf(pocket.bore.outline) : null;
     pocketWall(mesh, outline, 0, pocket.depth, lift);
@@ -1529,6 +1580,376 @@ function emitDome(mesh: MeshBuilder, pocket: Pocket, lift: Raise): void {
       );
     }
   }
+}
+
+/**
+ * Chambre de creusage : paroi verticale a profondeur variable le long du
+ * contour, puis fond pave cellule par cellule. Contour et fond partagent les
+ * memes points et les memes cotes : la chambre se referme sans soudure.
+ */
+function emitField(
+  mesh: MeshBuilder,
+  outline: THREE.Vector2[],
+  field: NonNullable<Pocket['field']>,
+  lift: Raise,
+): void {
+  for (let i = 0; i < outline.length; i++) {
+    const a = outline[i];
+    const b = outline[(i + 1) % outline.length];
+    const da = field.depthOf.get(a) ?? 0;
+    const db = field.depthOf.get(b) ?? 0;
+    mesh.quad(lift(a.y, 0, a.x), lift(a.y, da, a.x), lift(b.y, db, b.x), lift(b.y, 0, b.x));
+  }
+  // Triangles ranges en sens trigonometrique dans (x, t) ; le fond regarde
+  // vers le vide de la chambre, comme le fond d'une poche.
+  for (const [a, b, c] of field.triangles) {
+    mesh.triangle(lift(a.p.y, a.n, a.p.x), lift(c.p.y, c.n, c.p.x), lift(b.p.y, b.n, b.p.x));
+  }
+}
+
+interface HollowInput {
+  stations: Station[];
+  thicknessAt: (station: Station, t: number) => number;
+  rangeAt: (station: Station) => [number, number];
+  /** Paroi conservee tout autour de la chambre, en cm. */
+  wall: number;
+  /** Retrait minimal du contour de chambre depuis le bord du plan de joint. */
+  land: number;
+  /** Bandes d'abscisses interdites : cloisons au droit des logements. */
+  bands: [number, number][];
+  /** Polygones a tenir a distance `wall` : la gorge de colle. */
+  keepOut: THREE.Vector2[][];
+  /** Profondeur minimale d'une chambre a son bord, en cm. */
+  minDepth: number;
+}
+
+/**
+ * Chambres de creusage d'une demi-coque.
+ *
+ * La demi-coque est un champ de hauteur au-dessus du plan de joint : en
+ * chaque point (x, t), l'epaisseur h jusqu'a la peau. La chambre est le
+ * champ ERODE par une boule du rayon de la paroi — g(x, t) = min sur le
+ * disque de h - racine(w2 - d2) —, ce qui laisse exactement la paroi
+ * voulue, y compris sur un flanc incline ou sous une crete ou la peau
+ * plonge. Au droit de chaque logement (vis, portee, ergot, lest, bavette),
+ * une cloison pleine coupe la chambre : les logements restent noyes dans la
+ * matiere, et les coques gagnent des appuis de collage.
+ */
+function hollowChambers(input: HollowInput): { pockets: Pocket[]; volume: number; surface: number; dropped: number } {
+  const live = input.stations.filter((station) => !station.degenerate);
+  if (live.length < 3) return { pockets: [], volume: 0, surface: 0, dropped: 0 };
+  const xa = live[0].x;
+  const xb = live[live.length - 1].x;
+  let tMin = Infinity;
+  let tMax = -Infinity;
+  for (const station of live) {
+    const [lo, hi] = input.rangeAt(station);
+    tMin = Math.min(tMin, lo);
+    tMax = Math.max(tMax, hi);
+  }
+  const h = Math.min(Math.max((xb - xa) / 360, 0.022), 0.05);
+  const nx = Math.max(Math.ceil((xb - xa) / h) + 1, 3);
+  const nt = Math.max(Math.ceil((tMax - tMin) / h) + 1, 3);
+  const X = (i: number) => xa + i * h;
+  const T = (j: number) => tMin + j * h;
+  const at = (i: number, j: number) => i * nt + j;
+
+  // --- Champ de hauteur et distance au bord ---------------------------------
+  const H = new Float32Array(nx * nt);
+  const rim = new Float32Array(nx * nt);
+  let k = 0;
+  for (let i = 0; i < nx; i++) {
+    const x = X(i);
+    while (k + 1 < live.length - 1 && live[k + 1].x < x) k++;
+    const sa = live[k];
+    const sb = live[Math.min(k + 1, live.length - 1)];
+    const f = sb.x > sa.x ? Math.min(Math.max((x - sa.x) / (sb.x - sa.x), 0), 1) : 0;
+    const [loA, hiA] = input.rangeAt(sa);
+    const [loB, hiB] = input.rangeAt(sb);
+    const lo = loA + (loB - loA) * f;
+    const hi = hiA + (hiB - hiA) * f;
+    for (let j = 0; j < nt; j++) {
+      const t = T(j);
+      const ha = input.thicknessAt(sa, t);
+      const hb = input.thicknessAt(sb, t);
+      H[at(i, j)] = t > lo && t < hi ? Math.max(ha + (hb - ha) * f, 0) : 0;
+      rim[at(i, j)] = Math.min(t - lo, hi - t);
+    }
+  }
+
+  // --- Erosion par la boule de paroi ----------------------------------------
+  const w = input.wall;
+  const reach = Math.ceil(w / h);
+  const disc: { di: number; dj: number; drop: number }[] = [];
+  for (let di = -reach; di <= reach; di++) {
+    for (let dj = -reach; dj <= reach; dj++) {
+      const d2 = (di * h) ** 2 + (dj * h) ** 2;
+      if (d2 <= w * w) disc.push({ di, dj, drop: Math.sqrt(w * w - d2) });
+    }
+  }
+  const G = new Float32Array(nx * nt);
+  const F = new Float32Array(nx * nt);
+  for (let i = 0; i < nx; i++) {
+    const x = X(i);
+    const banned = input.bands.some(([a, b]) => x >= a && x <= b);
+    for (let j = 0; j < nt; j++) {
+      let g = Infinity;
+      for (const { di, dj, drop } of disc) {
+        const ii = i + di;
+        const jj = j + dj;
+        const value = ii < 0 || jj < 0 || ii >= nx || jj >= nt ? 0 : H[at(ii, jj)];
+        g = Math.min(g, value - drop);
+      }
+      G[at(i, j)] = g;
+      let score = Math.min(g - input.minDepth, rim[at(i, j)] - input.land);
+      if (banned) score = -1;
+      if (score > 0 && rim[at(i, j)] < input.land + 0.6) {
+        const point = new THREE.Vector2(x, T(j));
+        for (const polygon of input.keepOut) {
+          score = Math.min(score, polygonDistance(polygon, point) - w);
+          if (score <= 0) break;
+        }
+      }
+      // Jamais exactement nul : le contour passe entre deux noeuds.
+      F[at(i, j)] = score === 0 ? -1e-9 : score;
+    }
+  }
+  // Les bords de la grille sont toujours hors chambre.
+  for (let i = 0; i < nx; i++) {
+    F[at(i, 0)] = -1;
+    F[at(i, nt - 1)] = -1;
+  }
+  for (let j = 0; j < nt; j++) {
+    F[at(0, j)] = -1;
+    F[at(nx - 1, j)] = -1;
+  }
+
+  // --- Composantes : une chambre ne doit rien enfermer -----------------------
+  const label = new Int32Array(nx * nt).fill(-1);
+  const sizes: number[] = [];
+  const stack: number[] = [];
+  for (let n = 0; n < nx * nt; n++) {
+    if (F[n] <= 0 || label[n] >= 0) continue;
+    const id = sizes.length;
+    sizes.push(0);
+    label[n] = id;
+    stack.push(n);
+    while (stack.length) {
+      const m = stack.pop()!;
+      sizes[id]++;
+      const i = Math.floor(m / nt);
+      const j = m - i * nt;
+      for (const [ii, jj] of [[i + 1, j], [i - 1, j], [i, j + 1], [i, j - 1]]) {
+        if (ii < 0 || jj < 0 || ii >= nx || jj >= nt) continue;
+        const q = at(ii, jj);
+        if (F[q] > 0 && label[q] < 0) {
+          label[q] = id;
+          stack.push(q);
+        }
+      }
+    }
+  }
+  // Exterieur : tout ce qu'on atteint depuis le bord sans traverser de
+  // chambre. Un noeud hors chambre non atteint est une ile enfermee.
+  const outside = new Uint8Array(nx * nt);
+  for (let n = 0; n < nx * nt; n++) {
+    const i = Math.floor(n / nt);
+    const j = n - i * nt;
+    if ((i === 0 || j === 0 || i === nx - 1 || j === nt - 1) && F[n] <= 0) {
+      outside[n] = 1;
+      stack.push(n);
+    }
+  }
+  while (stack.length) {
+    const m = stack.pop()!;
+    const i = Math.floor(m / nt);
+    const j = m - i * nt;
+    // Huit voisins : le contour a 4-connexite laisse passer l'exterieur en diagonale.
+    for (let di = -1; di <= 1; di++) {
+      for (let dj = -1; dj <= 1; dj++) {
+        const ii = i + di;
+        const jj = j + dj;
+        if (ii < 0 || jj < 0 || ii >= nx || jj >= nt) continue;
+        const q = at(ii, jj);
+        if (F[q] <= 0 && !outside[q]) {
+          outside[q] = 1;
+          stack.push(q);
+        }
+      }
+    }
+  }
+  const rejected = new Set<number>();
+  for (let n = 0; n < nx * nt; n++) {
+    if (F[n] > 0 || outside[n]) continue;
+    const i = Math.floor(n / nt);
+    const j = n - i * nt;
+    for (const [ii, jj] of [[i + 1, j], [i - 1, j], [i, j + 1], [i, j - 1]]) {
+      if (ii < 0 || jj < 0 || ii >= nx || jj >= nt) continue;
+      const id = label[at(ii, jj)];
+      if (id >= 0) rejected.add(id);
+    }
+  }
+  const MIN_NODES = 24;
+  let dropped = 0;
+  sizes.forEach((size, id) => {
+    if (size < MIN_NODES || rejected.has(id)) {
+      rejected.add(id);
+      dropped++;
+    }
+  });
+  for (let n = 0; n < nx * nt; n++) if (label[n] >= 0 && rejected.has(label[n])) F[n] = -1;
+
+  // --- Marching squares ------------------------------------------------------
+  // Points de coupe partages par arete de grille : deux cellules voisines, le
+  // contour et le fond retrouvent exactement le meme sommet.
+  const crossings = new Map<string, { p: THREE.Vector2; n: number }>();
+  const nodes = new Map<number, { p: THREE.Vector2; n: number }>();
+  const node = (i: number, j: number) => {
+    const key = at(i, j);
+    let found = nodes.get(key);
+    if (!found) {
+      found = { p: new THREE.Vector2(X(i), T(j)), n: Math.max(G[key], input.minDepth) };
+      nodes.set(key, found);
+    }
+    return found;
+  };
+  const crossing = (i0: number, j0: number, i1: number, j1: number) => {
+    const a = at(i0, j0);
+    const b = at(i1, j1);
+    const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+    let found = crossings.get(key);
+    if (!found) {
+      const fa = F[a];
+      const fb = F[b];
+      const u = Math.min(Math.max(fa / (fa - fb), 0.03), 0.97);
+      const x = X(i0) + (X(i1) - X(i0)) * u;
+      const t = T(j0) + (T(j1) - T(j0)) * u;
+      // Au contour, la cote est celle du champ erode, jamais sous le minimum.
+      const n = Math.max(G[a] + (G[b] - G[a]) * u, input.minDepth);
+      found = { p: new THREE.Vector2(x, t), n };
+      crossings.set(key, found);
+    }
+    return found;
+  };
+  const byComponent = new Map<number, { triangles: { p: THREE.Vector2; n: number }[][]; next: Map<object, object> }>();
+  const bucket = (id: number) => {
+    let found = byComponent.get(id);
+    if (!found) {
+      found = { triangles: [], next: new Map() };
+      byComponent.set(id, found);
+    }
+    return found;
+  };
+  let volume = 0;
+  for (let i = 0; i + 1 < nx; i++) {
+    for (let j = 0; j + 1 < nt; j++) {
+      const corners: [number, number][] = [[i, j], [i + 1, j], [i + 1, j + 1], [i, j + 1]];
+      const inside = corners.map(([ci, cj]) => F[at(ci, cj)] > 0);
+      const count = inside.filter(Boolean).length;
+      if (count === 0) continue;
+      const owner = label[at(...corners[inside.indexOf(true)])];
+      const target = bucket(owner);
+      // Deux coins opposes seuls : toujours separes, comme la 4-connexite.
+      const saddle = count === 2 && inside[0] === inside[2];
+      const pieces: number[][] = saddle
+        ? inside[0]
+          ? [[0], [2]]
+          : [[1], [3]]
+        : [[0, 1, 2, 3]];
+      for (const piece of pieces) {
+        const polygon: { p: THREE.Vector2; n: number }[] = [];
+        const boundary: [{ p: THREE.Vector2; n: number }, { p: THREE.Vector2; n: number }][] = [];
+        const order = piece.length === 1 ? [piece[0]] : [0, 1, 2, 3];
+        if (piece.length === 1) {
+          // Coin isole : lui et ses deux coupes.
+          const c = piece[0];
+          const prev = (c + 3) % 4;
+          const next = (c + 1) % 4;
+          const [ci, cj] = corners[c];
+          const cin = crossing(corners[prev][0], corners[prev][1], ci, cj);
+          const cout = crossing(ci, cj, corners[next][0], corners[next][1]);
+          polygon.push(cin, node(ci, cj), cout);
+          boundary.push([cout, cin]);
+        } else {
+          let lastCut: { p: THREE.Vector2; n: number } | null = null;
+          let firstCut: { p: THREE.Vector2; n: number } | null = null;
+          for (const c of order) {
+            const next = (c + 1) % 4;
+            const [ci, cj] = corners[c];
+            const [ni, nj] = corners[next];
+            if (inside[c]) polygon.push(node(ci, cj));
+            if (inside[c] !== inside[next]) {
+              const cut = crossing(ci, cj, ni, nj);
+              polygon.push(cut);
+              if (inside[c]) lastCut = cut;
+              else if (lastCut) {
+                boundary.push([lastCut, cut]);
+                lastCut = null;
+              } else firstCut = cut;
+            }
+          }
+          if (lastCut && firstCut) boundary.push([lastCut, firstCut]);
+        }
+        // Eventail depuis le premier sommet : la piece est convexe.
+        for (let q = 1; q + 1 < polygon.length; q++) {
+          const tri = [polygon[0], polygon[q], polygon[q + 1]];
+          const area =
+            (tri[1].p.x - tri[0].p.x) * (tri[2].p.y - tri[0].p.y) -
+            (tri[1].p.y - tri[0].p.y) * (tri[2].p.x - tri[0].p.x);
+          if (Math.abs(area) < 1e-14) continue;
+          target.triangles.push(tri);
+          volume += (Math.abs(area) / 2) * ((tri[0].n + tri[1].n + tri[2].n) / 3);
+        }
+        for (const [from, to] of boundary) target.next.set(from, to);
+      }
+    }
+  }
+
+  // --- Contours : une boucle par chambre --------------------------------------
+  const pockets: Pocket[] = [];
+  let surface = 0;
+  for (const { triangles, next } of byComponent.values()) {
+    const start = next.keys().next().value as { p: THREE.Vector2; n: number } | undefined;
+    if (!start) continue;
+    const loop: { p: THREE.Vector2; n: number }[] = [];
+    let current: { p: THREE.Vector2; n: number } | undefined = start;
+    let guard = 0;
+    do {
+      loop.push(current!);
+      current = next.get(current!) as { p: THREE.Vector2; n: number } | undefined;
+    } while (current && current !== start && ++guard <= next.size);
+    // Une boucle qui ne se referme pas, ou qui ne couvre pas tout le bord, est
+    // une chambre ambigue : on la laisse pleine.
+    if (current !== start || loop.length !== next.size || loop.length < 4) {
+      dropped++;
+      continue;
+    }
+    const depthOf = new Map<THREE.Vector2, number>();
+    for (const point of loop) depthOf.set(point.p, point.n);
+    const outline = loop.map((point) => point.p);
+    if (signedArea(outline) <= 0) {
+      dropped++;
+      continue;
+    }
+    pockets.push({
+      outline,
+      depth: Math.max(...loop.map((point) => point.n)),
+      field: { depthOf, triangles },
+    });
+    // Surface de la chambre : fond et paroi. Elle recoit des perimetres a
+    // l'impression, et c'est elle qui fixe la matiere ajoutee par le creusage.
+    for (const [a, b, c] of triangles) {
+      const u = [b.p.x - a.p.x, b.p.y - a.p.y, b.n - a.n];
+      const v = [c.p.x - a.p.x, c.p.y - a.p.y, c.n - a.n];
+      surface += Math.hypot(u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]) / 2;
+    }
+    for (let i = 0; i < loop.length; i++) {
+      const a = loop[i];
+      const b = loop[(i + 1) % loop.length];
+      surface += a.p.distanceTo(b.p) * ((a.n + b.n) / 2);
+    }
+  }
+  return { pockets, volume, surface, dropped };
 }
 
 // ---------------------------------------------------------------------------
@@ -2234,6 +2655,9 @@ export function buildAssembly(
   // Un corps qui commence par une section pleine — le fond d'une cuvette de
   // popper — recoit une face de coupe au nez, meme sans passage de goupille.
   if (profile.openFront && pStart <= 0) cutFront = true;
+  // Corps maille : il s'arrete au pedoncule sur une section pleine, d'ou part
+  // la caudale d'origine. Les coques y recoivent leur face de coupe.
+  if (profile.openRear && pEnd >= profile.bodyEnd - 1e-9) cutRear = true;
   const stations: Station[] = [];
   const warp = profile.anatomy ?? null;
   // Stations supplementaires sur l'emprise de la fente de bavette : la bouche
@@ -2410,7 +2834,12 @@ export function buildAssembly(
     if (vJoint && x1 >= vJoint.xZoneStart - 0.15 && x0 <= vJoint.xZoneEnd + 0.15) {
       return 'la face du joint articule';
     }
-    if (!anatomy || params.assembly.planeAngle > 45) return null;
+    if (params.assembly.planeAngle > 45) return null;
+    // Corps maille : les cretes minces relevees sur le maillage lui-meme.
+    for (const fin of profile.mesh?.fins ?? []) {
+      if (fin.rail === rail && x1 >= fin.x0 - 0.1 && x0 <= fin.x1 + 0.1) return fin.label;
+    }
+    if (!anatomy) return null;
     const fins =
       rail === 'lo'
         ? [
@@ -2852,6 +3281,37 @@ export function buildAssembly(
         'Passez au diametre inferieur, ou deplacez la vis vers une section plus large.';
       continue;
     }
+    // La fente a la profondeur du lamage sur toute sa hauteur : partout ou
+    // elle passe — percage puis portee d'ecrou —, la coque doit garder sa
+    // peau au-dessus. Sous une crete dorsale ou une nageoire, le corps se
+    // pince : la portee y deboucherait. Refus nomme, jamais une coque percee.
+    let pierced: number | null = null;
+    for (let i = iStart; i <= iEnd && pierced === null; i++) {
+      const probe = stations[i];
+      if (probe.degenerate) continue;
+      const nearNut = Math.abs(probe.x - screw.x) <= wNut;
+      const nearBore = Math.abs(probe.x - screw.x) <= screw.boreRadius + LEDGE_X;
+      if (!nearNut && !nearBore) continue;
+      const from = tStart;
+      const to = nearNut ? top : screw.nut.fromY;
+      for (let k = 0; k <= 12; k++) {
+        const t = from + ((to - from) * k) / 12;
+        if (!nearNut && t > screw.nut.fromY) break;
+        if (shellThickness(surface, frame, probe, t) < wHead + SKIN * 0.5) {
+          pierced = t;
+          break;
+        }
+      }
+    }
+    if (pierced !== null) {
+      screw.valid = false;
+      screw.problem =
+        `Vis a ${((screw.x - profile.xAt(0)) / MM_TO_CM).toFixed(0)} mm : ${
+          pierced > screw.nut.fromY - LEDGE_X ? 'la portee d ecrou' : 'le percage'
+        } deboucherait a ${((pierced - screw.bellyY) / MM_TO_CM).toFixed(1)} mm du ventre, la ou le corps ` +
+        `se pince (crete, nageoire). Prenez une vis plus courte que ${screw.lengthMm} mm ou deplacez-la.`;
+      continue;
+    }
     // Les deux extremites du chemin tombent EXACTEMENT sur les stations
     // frontieres : c'est la que la face de coupe verticale de la bouche est
     // emise, et un chemin qui s'arreterait avant laisserait un trou.
@@ -3017,6 +3477,110 @@ export function buildAssembly(
       tailSlotProblem = 'La fente de la queue rapportee croise une sortie de goupille de queue.';
     }
   }
+
+  // --- Chambres de lest (module AD.3) -------------------------------------
+  // Le lest se loge comme toute la quincaillerie : dans une portee fendue au
+  // plan de joint, une demi-bille ou une demi-capsule dans chaque coque. Sa
+  // chambre suit le lest la ou l'utilisateur le place ; si elle perce la
+  // paroi ou croise un autre logement, elle est refusee et le refus dit ou.
+  const ballastSeats: BallastSeatReport[] = [];
+  const seatPockets = new Map<string, Pocket>();
+  /**
+   * Chambre d'un lest : son contour, ou le motif precis de son refus. Les
+   * logements deja creuses a cet instant — y compris les chambres des lests
+   * precedents, sauf la sienne — sont les obstacles.
+   */
+  const seatFor = (
+    marker: ReturnType<typeof ballastMarkers>[number],
+    label: string,
+    pool: Pocket[] = pockets,
+  ): { problem: string | null; pocket: Pocket | null; fromNoseMm: number; diameterMm: number } => {
+    const x = marker.position[0];
+    const t = marker.position[1];
+    const fromNoseMm = (x - profile.xAt(0)) / MM_TO_CM;
+    const radius = marker.radius + BALLAST_PLAY;
+    const diameterMm = (radius * 2) / MM_TO_CM;
+    const at = `a ${fromNoseMm.toFixed(0)} mm du nez`;
+    const refuse = (problem: string) => ({ problem, pocket: null, fromNoseMm, diameterMm });
+    if (params.assembly.planeAngle >= 5) {
+      return refuse(`${label} ${at} : le plan de joint incline ne passe pas par le lest, sa chambre n est pas creusee.`);
+    }
+    const half = marker.length / 2;
+    const a = new THREE.Vector2(x - half, t);
+    const b = new THREE.Vector2(x + half, t);
+    // Paroi : le lest doit rester entoure de matiere, dans le plan de joint
+    // comme au-dessus de son dome.
+    for (let k = 0; k <= 4; k++) {
+      const xs = x - half - radius + ((2 * half + 2 * radius) * k) / 4;
+      const station = stationAt(stations, xs);
+      const reach = Math.sqrt(Math.max(radius * radius - Math.max(Math.abs(xs - x) - half, 0) ** 2, 0));
+      if (!station || station.degenerate) {
+        return refuse(`${label} ${at} : sa chambre deborde du corps. Rapprochez-le du milieu du corps.`);
+      }
+      const [lo, hi] = stationRange(surface, frame, station);
+      if (t - reach < lo + WALL || t + reach > hi - WALL) {
+        return refuse(
+          `${label} ${at} : sa chambre de ${diameterMm.toFixed(1)} mm perce la paroi ` +
+            `${t - reach < lo + WALL ? 'du ventre' : 'du dos'}. Rapprochez-le de l axe ou allegez-le.`,
+        );
+      }
+      if (shellThickness(surface, frame, station, t) < reach + WALL) {
+        return refuse(
+          `${label} ${at} : le corps n a pas l epaisseur de sa chambre (${diameterMm.toFixed(1)} mm ` +
+            `et ${(WALL / MM_TO_CM).toFixed(1)} mm de paroi de chaque cote). Choisissez un lest cylindrique ou deplacez-le.`,
+        );
+      }
+    }
+    const outline = capsuleOutline(a, b, radius);
+    // Croisements : logements deja creuses, passages de vis et de goupille,
+    // fente de bavette.
+    const others: { polygon: THREE.Vector2[]; label: string }[] = [
+      ...pool
+        .filter((pocket) => pocket !== seatPockets.get(marker.id))
+        .map((pocket) => ({
+          polygon: pocket.outline,
+          label: [...seatPockets.values()].includes(pocket) ? 'la chambre d un autre lest' : pocket.dome ? 'la chambre de bruit' : 'un logement de quincaillerie',
+        })),
+      ...maleSides.map((exit) => ({ polygon: exit.path, label: exit.rail === 'lo' ? 'un passage ventral (vis ou goupille)' : 'un passage dorsal' })),
+      ...maleEnds.map((exit) => ({ polygon: exit.path, label: exit.end === 'front' ? 'la sortie de nez' : 'la sortie de queue' })),
+      ...chinSlots.map((slot) => ({ polygon: [slot.back[0], slot.back[1]], label: 'la fente de bavette' })),
+    ];
+    for (const other of others) {
+      const gap = Math.min(
+        ...outline.map((point) => polygonDistance(other.polygon, point)),
+        ...other.polygon.map((point) => polygonDistance(outline, point)),
+      );
+      if (gap < WALL) {
+        return refuse(`${label} ${at} : sa chambre croise ${other.label}. Deplacez le lest le long du corps.`);
+      }
+    }
+    return { problem: null, pocket: { outline, depth: radius, dome: { a, b } }, fromNoseMm, diameterMm };
+  };
+  const seatGeometry = ballastMarkers(profile, params.ballasts, params.ballastDensity);
+  seatGeometry.forEach((marker, index) => {
+    const seat = seatFor(marker, `Lest ${index + 1} (${marker.mass.toFixed(1)} g)`);
+    ballastSeats.push({
+      id: marker.id,
+      fromNoseMm: seat.fromNoseMm,
+      diameterMm: seat.diameterMm,
+      valid: seat.pocket !== null,
+      problem: seat.problem,
+    });
+    if (seat.pocket) {
+      pockets.push(seat.pocket);
+      seatPockets.set(marker.id, seat.pocket);
+    }
+  });
+  /**
+   * Sonde : le meme controle pour un lest hypothetique, sans rien creuser.
+   * Les logements sont figes ICI : la gorge de colle, les ergots et le
+   * creusage, poses ensuite, s'ecartent des lests et ne les bornent pas.
+   */
+  const seatPool = [...pockets];
+  const ballastProbe = (ballast: BallastWeight): string | null => {
+    const marker = ballastMarkers(profile, [ballast], params.ballastDensity)[0];
+    return seatFor(marker, `Lest (${marker.mass.toFixed(1)} g)`, seatPool).problem;
+  };
 
   // --- Obstacles du plan de joint -----------------------------------------
   // Tout ce qui est deja creuse ou ouvert dans la face de joint, sous forme de
@@ -3189,6 +3753,7 @@ export function buildAssembly(
 
   // --- Gorge de colle ---------------------------------------------------------
   let grooveReport: GlueGrooveReport | null = null;
+  const grooveStrips: THREE.Vector2[][] = [];
   if (grooveOn) {
     const interruptions: string[] = [];
     let segments = 0;
@@ -3283,6 +3848,7 @@ export function buildAssembly(
           return;
         }
         pockets.push({ outline: strip, depth: gDepth });
+        grooveStrips.push(strip);
         obstacles.push({ polygon: strip, label: 'la gorge de colle' });
         segments++;
         for (let k = 1; k < run.length; k++) length += outer[k].distanceTo(outer[k - 1]);
@@ -3325,6 +3891,68 @@ export function buildAssembly(
       flush('', stations.length - 1);
     }
     grooveReport = { segments, lengthMm: length / MM_TO_CM, interruptions };
+  }
+
+  // --- Creusage en coque (module AD.3) ----------------------------------------
+  // Chaque demi-coque est videe a paroi constante ; les deux chambres se
+  // font face et se referment l'une sur l'autre au collage. Les logements
+  // restent noyes dans des cloisons pleines.
+  let hollowReport: HollowReport | null = null;
+  const hollowConfig = params.assembly.hollow;
+  if (hollowConfig.enabled) {
+    const wall = hollowConfig.wall * MM_TO_CM;
+    const bands: [number, number][] = [];
+    const band = (points: THREE.Vector2[], margin = wall) => {
+      if (points.length === 0) return;
+      let a = Infinity;
+      let b = -Infinity;
+      for (const point of points) {
+        a = Math.min(a, point.x);
+        b = Math.max(b, point.x);
+      }
+      bands.push([a - margin, b + margin]);
+    };
+    for (const pocket of pockets) if (!grooveStrips.includes(pocket.outline)) band(pocket.outline);
+    for (const exit of maleSides) band(exit.path);
+    for (const exit of maleEnds) band(exit.path);
+    for (const slot of chinSlots) {
+      band([new THREE.Vector2(stations[slot.iStart].x, 0), slot.back[0], slot.back[1]]);
+    }
+    for (const peg of pegSolids) {
+      band([
+        new THREE.Vector2(peg.center.x - peg.base - peg.clearance, 0),
+        new THREE.Vector2(peg.center.x + peg.base + peg.clearance, 0),
+      ]);
+    }
+    if (vJoint) bands.push([vJoint.xZoneStart - 0.1 - wall, vJoint.xZoneEnd + 0.1 + wall]);
+    const result = hollowChambers({
+      stations,
+      thicknessAt,
+      rangeAt,
+      wall,
+      land: grooveOn ? gInset + gWidth : 0,
+      bands,
+      keepOut: grooveStrips,
+      minDepth: 0.02,
+    });
+    pockets.push(...result.pockets);
+    const notes: string[] = [];
+    if (result.pockets.length === 0) {
+      notes.push(
+        `Aucune chambre possible : le corps n a nulle part l epaisseur d une chambre et de ` +
+          `${hollowConfig.wall.toFixed(1)} mm de paroi de chaque cote, entre les logements.`,
+      );
+    }
+    if (result.dropped > 0) {
+      notes.push(`${result.dropped} poche(s) trop petite(s) ou enclavee(s) entre deux logements, laissee(s) pleine(s).`);
+    }
+    hollowReport = {
+      chambers: result.pockets.length,
+      volumeCm3: result.volume,
+      surfaceCm2: result.surface,
+      wallMm: hollowConfig.wall,
+      notes,
+    };
   }
 
   shared.pegs = pegSolids;
@@ -3484,6 +4112,9 @@ export function buildAssembly(
   const normal = frame.toWorld(0, 1);
   const fallback = resolvePin(params);
   return {
+    ballastSeats,
+    ballastProbe,
+    hollow: hollowReport,
     male,
     female,
     tenons,

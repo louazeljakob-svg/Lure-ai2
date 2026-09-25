@@ -297,6 +297,7 @@ export function computePhysics(
     ? shellContent(params, profile, preview)
     : {
         printed: printedBodies(geo).reduce((sum, part) => sum + massProperties(part).volume, 0),
+        chamberSurface: 0,
         mass: 0,
         points: [] as PointMass[],
         bill: null as BillSlotPlan | null,
@@ -351,6 +352,18 @@ export function computePhysics(
   // Les parois de perimetre comptent : a remplissage egal, six parois
   // deposent bien plus de matiere qu'une seule.
   const fill = solidFraction(params.material, params.infill, params.print.perimeters);
+  // Coques creusees (module AD.3) : le volume des chambres a deja quitte le
+  // volume imprime mesure sur les coques. Mais la trancheuse tapisse aussi
+  // les parois des chambres de perimetres pleins : cette matiere-la
+  // s'ajoute, au-dela du remplissage. Hypothese (estimation, a recaler a la
+  // pesee) : fil de 0,42 mm. En FDM peu rempli, creuser peut donc ALOURDIR
+  // la piece — le bilan le montre au lieu de le cacher.
+  const hollowed = assemblyActive(params) && params.assembly.hollow.enabled;
+  const chamberWalls = hollowed
+    ? cavities.chamberSurface *
+      Math.min(params.print.perimeters * 0.042, params.assembly.hollow.wall * MM_TO_CM) *
+      (1 - fill)
+    : 0;
   // Les barreaux d'assemblage sont pleins : ils ne suivent pas le taux de
   // remplissage du corps.
   const wallVolume = params.shell.enabled
@@ -361,6 +374,7 @@ export function computePhysics(
       ? // Une paroi est pleine : elle ne suit pas le taux de remplissage.
         wallVolume * material.density + appendages * material.density * fill
       : (cavities.printed + appendages) * material.density * fill) +
+    chamberWalls * material.density +
     cavities.dowelAdded * material.density +
     jointMass;
   const lengthCm = profile.lengthCm;
@@ -511,7 +525,11 @@ export function computePhysics(
       label: 'Corps imprime',
       massG: bodyMass,
       provenance: 'geometrie',
-      detail: `${material.label}, ${Math.round(fill * 100)} % de matiere deposee`,
+      detail: hollowed
+        ? `${material.label}, ${Math.round(fill * 100)} % de matiere deposee ; coques creusees a ` +
+          `${params.assembly.hollow.wall.toFixed(1)} mm de paroi, dont ${(chamberWalls * material.density).toFixed(1)} g ` +
+          'de perimetres autour des chambres'
+        : `${material.label}, ${Math.round(fill * 100)} % de matiere deposee`,
     },
     {
       key: 'ballast',
@@ -668,6 +686,8 @@ function shellContent(
   preview: AssemblyResult | null,
 ): {
   printed: number;
+  /** Surface des chambres de creusage, deux coques, en cm2. */
+  chamberSurface: number;
   mass: number;
   points: PointMass[];
   bill: BillSlotPlan | null;
@@ -700,10 +720,12 @@ function shellContent(
     });
   }
   const mass = points.reduce((sum, point) => sum + point.mass, 0);
+  const chamberSurface = assembly.hollow ? assembly.hollow.surfaceCm2 * 2 : 0;
   // Un assemblage partage appartient a l'appelant : on ne libere que le sien.
   disposeAssembly(owned);
   return {
     printed,
+    chamberSurface,
     mass,
     points,
     bill: assembly.billPlan,
@@ -721,6 +743,12 @@ function shellContent(
       ...assembly.pegs
         .filter((peg) => !peg.valid && peg.problem)
         .map((peg, i) => ({ id: `peg-${i}`, title: 'Ergot non place', detail: peg.problem! })),
+      ...assembly.ballastSeats
+        .filter((seat) => !seat.valid && seat.problem)
+        .map((seat) => ({ id: `ballast-${seat.id}`, title: 'Chambre de lest refusee', detail: seat.problem! })),
+      ...(assembly.hollow && assembly.hollow.chambers === 0
+        ? [{ id: 'hollow', title: 'Creusage impossible', detail: assembly.hollow.notes.join(' ') }]
+        : []),
     ],
   };
 }

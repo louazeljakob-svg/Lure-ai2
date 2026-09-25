@@ -8,6 +8,7 @@
 
 import { SCREW_LENGTHS } from './screws';
 import type {
+  MeshBodyRef,
   ScrewHead,
   ScrewPlacement,
   ScrewSize,
@@ -273,6 +274,25 @@ function sanitizeFin(value: unknown, fallback: FinConfig): FinConfig {
     to: Math.max(num(raw.to, LIMITS.finPosition, fallback.to), from + 0.005),
     size: num(raw.size, LIMITS.finSize, fallback.size),
     rays: Math.round(num(raw.rays, LIMITS.finRays, fallback.rays)),
+  };
+}
+
+/** Reference de maillage importe : absente, ou complete et plausible. */
+function sanitizeMeshBody(value: unknown): MeshBodyRef | null {
+  if (!value || typeof value !== 'object') return null;
+  const raw = value as Partial<MeshBodyRef>;
+  if (typeof raw.id !== 'string' || raw.id.length === 0) return null;
+  const dim = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v > 1 && v < 2000 ? v : null);
+  const lengthMm = dim(raw.lengthMm);
+  const widthMm = dim(raw.widthMm);
+  const heightMm = dim(raw.heightMm);
+  if (lengthMm === null || widthMm === null || heightMm === null) return null;
+  return {
+    id: raw.id.slice(0, 80),
+    name: typeof raw.name === 'string' ? raw.name.slice(0, 120) : 'maillage importe',
+    lengthMm,
+    widthMm,
+    heightMm,
   };
 }
 
@@ -780,6 +800,7 @@ export function sanitizeParams(input: unknown): LureParams {
     // Un projet sans anatomie est un projet ancien : il garde son profil
     // historique au lieu d'heriter de l'anatomie du modele de sa famille.
     anatomy: sanitizeAnatomy(raw.anatomy, base.anatomy),
+    meshBody: sanitizeMeshBody(raw.meshBody),
     mouthCup: num(raw.mouthCup, LIMITS.mouthCup, base.mouthCup),
     hasBib: bool(raw.hasBib, base.hasBib),
     billMode: pick(raw.billMode, BILL_MODES, base.billMode),

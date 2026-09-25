@@ -13,6 +13,7 @@
 import type { LureParams, Outline } from '../types/lure';
 import { flattenOutline } from './outline';
 import { createAnatomicalProfile, type AnatomyField } from './anatomy';
+import { meshBodyOf, meshProfile, type MeshProfileData } from './meshBody';
 
 export const MM_TO_CM = 0.1;
 
@@ -70,6 +71,18 @@ export interface ProfileSampler {
    * popper creusee : les coques y recoivent une face de coupe.
    */
   openFront?: boolean;
+  /**
+   * Vrai si le corps s'arrete sur une section pleine — le pedoncule d'un
+   * maillage importe, d'ou part la caudale d'origine.
+   */
+  openRear?: boolean;
+  /**
+   * Point de peau dans le repere de la section (avant decalage), quand la
+   * forme n'est pas une superellipse : corps tire d'un maillage importe.
+   */
+  shape?: (p: number, theta: number) => { y: number; z: number };
+  /** Corps maille : le maillage d'origine, son echelle et ses cretes. */
+  mesh?: MeshProfileData;
 }
 
 export const clamp = (v: number, min: number, max: number): number =>
@@ -104,6 +117,12 @@ export function createProfile(params: LureParams): ProfileSampler {
 
   const hasFin = tailHasFin(params);
   const bodyEnd = hasFin ? clamp(1 - 0.16 * params.tailSize, 0.68, 0.94) : 1;
+
+  // Corps tire d'un maillage importe (module AD.3) : il l'emporte sur tout
+  // le reste. Si le maillage n'est plus en memoire, le projet retombe sur
+  // son profil parametrique — l'interface le signale.
+  const mesh = params.meshBody ? meshBodyOf(params) : null;
+  if (mesh) return meshProfile(mesh, params);
 
   // Corps anatomique (module AB) : meme interface, autre moteur. Un projet
   // sans anatomie garde le profil historique au bit pres.

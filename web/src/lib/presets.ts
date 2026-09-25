@@ -540,6 +540,7 @@ const minnowParams = (): LureParams => ({
     pelvicFin: fin(0.53, 0.585, 0.2, 7),
     caudalRays: 16,
   },
+  meshBody: null,
   mouthCup: 0,
   hasBib: true,
   billMode: 'polycarbonate',
@@ -586,8 +587,10 @@ const minnowParams = (): LureParams => ({
   material: 'pla',
   infill: 15,
   hardwareMass: 0,
-  ballastDensity: 7.9,
-  ballasts: [ballast(0.44, -0.7, 2, 'min', 'cylinder'), ballast(0.56, -0.62, 1.5, 'min', 'cylinder')],
+  // Plomb : chaque lest est loge dans sa chambre fendue, a l'abri des
+  // passages de vis et des portees de goupille (module AD.3).
+  ballastDensity: 11.34,
+  ballasts: [ballast(0.49, -0.25, 2, 'min', 'cylinder'), ballast(0.26, -0.5, 1.5, 'min', 'sphere')],
   chamber: chamber(),
   ribs: defaultRibs(),
   popperFace: defaultPopperFace(),
@@ -695,7 +698,7 @@ const FAMILY_PRESETS: ShapePreset[] = [
         screws: [{ id: 'vis-0', position: 0.55, size: 'auto', head: 'countersunk', length: 15 }],
       },
       infill: 12,
-      ballasts: [ballast(0.44, -0.72, 2.5, 'crk', 'sphere')],
+      ballasts: [ballast(0.44, -0.6, 2.5, 'crk', 'sphere')],
       mounts: [
         mount('mount-ventre', 'Support ventral', 'ventre', 0.33, -1, treble('#8'), ring('#2')),
         mount('mount-arriere', 'Support arriere', 'arriere', 0.67, -1, treble('#8'), ring('#2')),
@@ -764,7 +767,7 @@ const FAMILY_PRESETS: ShapePreset[] = [
         ],
       },
       infill: 15,
-      ballasts: [ballast(0.48, -0.7, 6, 'ddv', 'cylinder'), ballast(0.6, -0.62, 5, 'ddv', 'cylinder')],
+      ballasts: [ballast(0.5, -0.45, 8, 'ddv', 'cylinder'), ballast(0.68, 0, 2.5, 'ddv', 'sphere')],
       mounts: [
         mount('mount-ventre', 'Support ventral', 'ventre', 0.36, -1, treble('#2'), ring('#5')),
         mount('mount-arriere', 'Support arriere', 'arriere', 0.62, -1, treble('#2'), ring('#5')),
@@ -829,7 +832,7 @@ const FAMILY_PRESETS: ShapePreset[] = [
         screws: [{ id: 'vis-0', position: 0.56, size: 'auto', head: 'countersunk', length: 20 }],
       },
       infill: 10,
-      ballasts: [ballast(0.56, -0.7, 3, 'pop', 'cylinder')],
+      ballasts: [ballast(0.525, -0.6, 3, 'pop', 'cylinder')],
       mounts: [
         mount('mount-ventre', 'Support ventral', 'ventre', 0.36, -1, treble('#6'), ring('#3')),
         mount('mount-arriere', 'Support arriere', 'arriere', 0.68, -1, treble('#6'), ring('#3')),
@@ -893,7 +896,7 @@ const FAMILY_PRESETS: ShapePreset[] = [
         ],
       },
       infill: 12,
-      ballasts: [ballast(0.62, -0.68, 6, 'stk', 'cylinder'), ballast(0.46, -0.7, 4, 'stk', 'cylinder')],
+      ballasts: [ballast(0.515, -0.45, 6, 'stk', 'cylinder'), ballast(0.215, -0.45, 4, 'stk', 'cylinder')],
       mounts: [
         mount('mount-ventre', 'Support ventral', 'ventre', 0.34, -1, treble('#4'), ring('#4')),
         mount('mount-arriere', 'Support arriere', 'arriere', 0.64, -1, treble('#4'), ring('#4')),
@@ -955,7 +958,7 @@ const FAMILY_PRESETS: ShapePreset[] = [
         screws: [{ id: 'vis-0', position: 0.51, size: 'auto', head: 'countersunk', length: 15 }],
       },
       infill: 40,
-      ballasts: [ballast(0.3, -0.72, 3.5, 'vib', 'cylinder'), ballast(0.42, -0.7, 3, 'vib', 'cylinder')],
+      ballasts: [ballast(0.215, -0.5, 3.5, 'vib', 'sphere'), ballast(0.41, -0.55, 3, 'vib', 'sphere')],
       mounts: [
         mount('mount-ventre', 'Support ventral', 'ventre', 0.31, -1, treble('#8'), ring('#3')),
         mount('mount-arriere', 'Support arriere', 'arriere', 0.62, -1, treble('#8'), ring('#3')),
@@ -1033,9 +1036,9 @@ const FAMILY_PRESETS: ShapePreset[] = [
       },
       infill: 40,
       ballasts: [
-        ballast(0.3, -0.7, 7.5, 'swb', 'cylinder'),
-        ballast(0.42, -0.68, 5.5, 'swb', 'cylinder'),
-        ballast(0.6, -0.64, 5.2, 'swb', 'cylinder'),
+        ballast(0.43, -0.7, 7.5, 'swb', 'cylinder'),
+        ballast(0.42, 0.05, 5.5, 'swb', 'cylinder'),
+        ballast(0.6, -0.65, 5.2, 'swb', 'sphere'),
       ],
       mounts: [
         mount('mount-ventre', 'Support ventral', 'ventre', 0.3, -1, treble('#2'), ring('#5')),
