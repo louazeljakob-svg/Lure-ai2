@@ -629,23 +629,38 @@ function fitProject(
         // Attache de nez impossible (fente de bavette, pointe trop fine) :
         // sortie par le dos, comme sur un vibe — en arriere de la fente de
         // bavette, dont la bouche ne peut pas partager ses stations.
-        for (const position of [0.12, 0.15, 0.18, 0.21, 0.25, 0.3, 0.35]) {
+        // La sortie dorsale ne doit pas prendre la place d'une portee deja
+        // valide (celle du ventre, typiquement, sur un corps court) : le
+        // chevauchement serait impute a l'autre ancrage.
+        // Ni les ergots : sur un corps court, la sortie dorsale peut prendre
+        // la seule place qui leur restait. On retient la premiere position
+        // qui ne retire rien, sinon celle qui retire le moins.
+        const before = check(params);
+        const validBefore = new Set(before.sockets.filter((item) => item.valid).map((item) => item.anchorId));
+        const pegsBefore = before.pegs.filter((peg) => peg.valid).length;
+        disposeAssembly(before);
+        let best: { position: number; anchors: typeof params.assembly.anchors; lost: number } | null = null;
+        for (const position of [0.12, 0.15, 0.18, 0.21, 0.25, 0.3, 0.35, 0.4, 0.45]) {
           const anchors = params.assembly.anchors.map((anchor, i) =>
             i === index ? { ...anchor, exit: 'back' as const, position, height: 0.6 } : anchor,
           );
           const trial = { ...params, assembly: { ...params.assembly, anchors } };
           const probe = check(trial);
           const ok =
-            probe.sockets.find((item) => item.anchorId === original.id)?.valid === true && (!params.hasBib || probe.billPlan !== null);
+            probe.sockets.find((item) => item.anchorId === original.id)?.valid === true &&
+            probe.sockets.every((item) => item.valid || !validBefore.has(item.anchorId)) &&
+            (!params.hasBib || probe.billPlan !== null);
+          const lost = Math.max(pegsBefore - probe.pegs.filter((peg) => peg.valid).length, 0);
           disposeAssembly(probe);
-          if (ok) {
-            params.assembly = trial.assembly;
-            report.placements.push({
-              label: 'Attache de ligne passee au dos',
-              detail: `L attache de nez ne tient pas (${socket.problem ?? 'collision'}) : elle sort par le dos a ${Math.round(position * 100)} %.`,
-            });
-            break;
-          }
+          if (ok && (!best || lost < best.lost)) best = { position, anchors, lost };
+          if (ok && lost === 0) break;
+        }
+        if (best) {
+          params.assembly = { ...params.assembly, anchors: best.anchors };
+          report.placements.push({
+            label: 'Attache de ligne passee au dos',
+            detail: `L attache de nez ne tient pas (${socket.problem ?? 'collision'}) : elle sort par le dos a ${Math.round(best.position * 100)} %.`,
+          });
         }
       }
     }

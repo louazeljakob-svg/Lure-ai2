@@ -572,7 +572,12 @@ export function testFiles(): { name: string; data: ArrayBuffer | string; lengthM
 }
 
 /** Limites nommees, attendues sur un corps trop petit pour la visserie du catalogue. */
-const NAMED_LIMITS = /^(Visserie non posee|Aucune chambre possible)/;
+// Limites nommees d'un corps importe trop petit pour toute la quincaillerie :
+// l'application les refuse en disant pourquoi, c'est le comportement attendu.
+// Le second ergot manque sur le minnow de 65 mm depuis que ses orbites sont
+// creusees des deux cotes : l'attache de nez n'y tient plus, et la sortie
+// dorsale prend la derniere place libre.
+const NAMED_LIMITS = /^(Visserie non posee|Aucune chambre possible|Ergot \d+ sur \d+ : aucune place libre)/;
 
 function checkTestFile(file: ReturnType<typeof testFiles>[number], report: Report): void {
   const tag = `jeu AK.6 ${file.name}`;
