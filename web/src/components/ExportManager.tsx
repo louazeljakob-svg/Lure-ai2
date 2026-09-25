@@ -64,9 +64,9 @@ export function ExportManager({
   // Pieces rapportees : elles s'ajoutent a la liste des choix des qu'elles
   // existent, que le corps soit en une ou en deux parties.
   const extras: { value: ExportKind; label: string }[] = [
-    ...(params.hasBib && params.billMode === 'printed' && split
-      ? [{ value: 'bib' as ExportKind, label: 'Bavette' }]
-      : []),
+    // Quatre livrables (module AM) : male, femelle, bavette, assemble. La
+    // bavette sort en piece distincte dans les deux modes.
+    ...(params.hasBib && split ? [{ value: 'bib' as ExportKind, label: 'Bavette' }] : []),
     ...(params.shell.enabled && params.insert.enabled
       ? [{ value: 'insert' as ExportKind, label: 'Insert' }]
       : []),
@@ -113,7 +113,7 @@ export function ExportManager({
           label="Piece a exporter"
           value={piece}
           options={[
-            { value: 'assembly' as ExportKind, label: 'Assemble' },
+            { value: 'assembly' as ExportKind, label: split ? 'Assemble (vue)' : 'Assemble' },
             ...(split
               ? [
                   { value: 'male' as ExportKind, label: 'Male' },
@@ -126,6 +126,17 @@ export function ExportManager({
         />
       ) : null}
 
+      {split && piece === 'assembly' ? (
+        <p className="control__hint">
+          Assemble : le leurre complet, pour visualisation et verification — jamais pour l impression. Ce sont la
+          coque male, la coque femelle et les pieces rapportees qui partent au trancheur.
+        </p>
+      ) : null}
+      {piece === 'bib' && params.billMode === 'polycarbonate' ? (
+        <p className="control__hint">
+          Bavette polycarbonate : le STL sert au controle ; la plaque se decoupe d apres le gabarit DXF ou SVG.
+        </p>
+      ) : null}
       {extras.length > 0 ? (
         <p className="control__hint">
           Les pieces rapportees sortent SEULES, sous leur propre nom : elles sont d un autre

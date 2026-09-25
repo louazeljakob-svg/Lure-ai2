@@ -265,7 +265,10 @@ export function createSkin(
   const anatomy = profile.anatomy ?? null;
   // Un vecteur neuf a chaque appel : un objet partage se ferait ecraser des
   // que l'appelant compare deux points, ce qui donne des bugs silencieux.
-  return (p: number, theta: number): THREE.Vector3 => {
+  return (p: number, rawTheta: number): THREE.Vector3 => {
+    // Un angle hors de [0, 2 PI) — la coque male parcourt son arc de 2 PI a
+    // 3 PI — designe le meme point de peau : tous les reliefs le lisent replie.
+    const theta = ((rawTheta % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
     const section = profile.section(p);
     const base = profile.shape ? profile.shape(p, theta) : sectionPoint(section, theta, fallbackN);
     let y = base.y;

@@ -415,12 +415,16 @@ export const defaultGlueGroove = (): GlueGrooveConfig => ({
   inset: 0.9,
 });
 
-/** Deux ergots coniques de 3 mm, 8 degres de depouille, 0,15 mm de jeu radial. */
+/**
+ * Deux ergots coniques de 3 mm, 8 degres de depouille, 0,15 mm de jeu radial.
+ * Leur hauteur est le RELIEF MALE du standard Minnow 100 : 2,0 mm, repris par
+ * les goujons des portees de goupille.
+ */
 export const defaultPegs = (): PegConfig => ({
   enabled: true,
   count: 2,
   diameter: 3,
-  height: 2.2,
+  height: 2,
   taper: 8,
   clearance: 0.15,
 });

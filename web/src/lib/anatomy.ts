@@ -573,7 +573,11 @@ function createAnatomyField(
     if (p <= 0 || p >= bodyEnd) return 0;
     if (ctx.cup && p < pc) return 0;
     // Symetrie laterale : tous les reliefs sont definis sur le flanc droit.
-    const th = theta > Math.PI ? Math.PI * 2 - theta : theta;
+    // L'angle est d'abord ramene dans [0, 2 PI) : la coque male parcourt son
+    // arc de 2 PI a 3 PI, et un angle non replie y effacait nageoires
+    // pectorales, orbites et opercule d'un seul cote.
+    const turn = ((theta % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+    const th = turn > Math.PI ? Math.PI * 2 - turn : turn;
     const x = ctx.xAt(p);
     let d = 0;
 
@@ -786,8 +790,11 @@ export function buildCaudalFin(
     return { x: len * (0.9 + 0.1 * Math.cos((av * Math.PI) / 2)), y: v * h };
   };
 
-  const NV = 48 + rays * 5;
-  const NW = 40;
+  // Demi-caudale d'une coque (module AQ) : trois rangs par rayon suffisent
+  // a porter les nervures ; la caudale d'affichage garde sa finesse.
+  const shellPart = part !== 'full';
+  const NV = shellPart ? 24 + rays * 3 : 48 + rays * 5;
+  const NW = shellPart ? 22 : 40;
   // Repartition resserree vers les bords : c'est la que l'epaisseur varie vite.
   const cosSpace = (t: number) => 0.5 - 0.5 * Math.cos(Math.PI * t);
 
@@ -874,10 +881,52 @@ export function buildCaudalFin(
 
   // Face +z : (v croissant, w croissant) donne une normale vers -z ; on
   // retourne donc cette face, et pas l'autre.
-  if (part === 'full' || part === 'male') emit(grid(1), true);
-  if (part === 'full' || part === 'female') emit(grid(-1), false);
-  if (part === 'male') emit(grid(0), false);
-  if (part === 'female') emit(grid(0), true);
+  const upper = part === 'full' || part === 'male' ? grid(1) : null;
+  const lower = part === 'full' || part === 'female' ? grid(-1) : null;
+  if (upper) emit(upper, true);
+  if (lower) emit(lower, false);
+  if (part !== 'full') {
+    // Face de joint d'une demi-caudale : un plan. Son contour est le bord
+    // reel de la face galbee — aretes qui n'apparaissent qu'une fois —, et
+    // l'interieur se triangule sans aucun sommet de plus.
+    const next = new Map<number, number>();
+    const seen = new Map<string, number>();
+    for (let t = 0; t < tris.length; t += 3) {
+      for (const [a, b] of [
+        [tris[t], tris[t + 1]],
+        [tris[t + 1], tris[t + 2]],
+        [tris[t + 2], tris[t]],
+      ]) {
+        const key = a < b ? `${a}_${b}` : `${b}_${a}`;
+        seen.set(key, (seen.get(key) ?? 0) + 1);
+      }
+    }
+    for (let t = 0; t < tris.length; t += 3) {
+      for (const [a, b] of [
+        [tris[t], tris[t + 1]],
+        [tris[t + 1], tris[t + 2]],
+        [tris[t + 2], tris[t]],
+      ]) {
+        const key = a < b ? `${a}_${b}` : `${b}_${a}`;
+        if (seen.get(key) === 1) next.set(b, a);
+      }
+    }
+    const startId = next.keys().next().value as number;
+    const ring: number[] = [startId];
+    for (let guard = 0; guard < next.size; guard++) {
+      const id = next.get(ring[ring.length - 1]);
+      if (id === undefined || id === startId) break;
+      ring.push(id);
+    }
+    const contour = ring.map((id) => new THREE.Vector2(verts[id * 3], verts[id * 3 + 1]));
+    const clockwise = THREE.ShapeUtils.isClockWise(contour);
+    for (const [a, b, c] of THREE.ShapeUtils.triangulateShape(contour, [])) {
+      // Le contour suit deja le sens inverse du bord de la face galbee :
+      // les triangles le reprennent tel quel.
+      if (clockwise) tris.push(ring[a], ring[c], ring[b]);
+      else tris.push(ring[a], ring[b], ring[c]);
+    }
+  }
 
   for (let i = 0; i < tris.length; i++) positions.push(tris[i]);
   const geometry = new THREE.BufferGeometry();

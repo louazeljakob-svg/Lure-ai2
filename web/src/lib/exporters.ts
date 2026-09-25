@@ -37,7 +37,7 @@ import { encodeMeshBody, meshBodyOf, restoreMeshBody } from './meshBody';
 export type ExportKind = 'assembly' | 'male' | 'female' | 'insert' | 'softTail' | 'bib';
 
 export const EXPORT_LABEL: Record<ExportKind, string> = {
-  assembly: 'assemble',
+  assembly: 'assemble-visualisation',
   bib: 'bavette',
   insert: 'insert',
   softTail: 'queue-souple',
@@ -86,14 +86,16 @@ export function collectParts(
     return { parts, owned };
   }
 
-  // La bavette polycarbonate n'est jamais exportee : c'est une plaque
-  // decoupee a part, son modele 3D n'est qu'une aide au placement.
+  // La bavette polycarbonate ne s'imprime pas : elle ne rejoint jamais les
+  // coques. Elle sort pourtant en piece distincte (module AM) — la meme
+  // plaque, pour controle et visualisation, son gabarit de decoupe restant le
+  // DXF / SVG.
   const printedBib = geo.bib && !geo.bibIsGhost ? geo.bib : null;
 
-  // Bavette imprimee (module AE) : une piece STL a part entiere, la meme
-  // plaque que la polycarbonate, posee a son emplacement dans la fente.
+  // Bavette (modules AE, AM) : une piece a part entiere, la meme plaque dans
+  // les deux modes, posee a son emplacement dans la fente.
   if (kind === 'bib') {
-    if (!printedBib) return { parts, owned };
+    if (!params.hasBib) return { parts, owned };
     const profile = createProfile(params);
     const plan = assemblyActive(params) ? billPlanFor(profile, params) : null;
     const bib = buildBib(profile, params, 'full', plan?.root ?? null);
@@ -107,8 +109,14 @@ export function collectParts(
   if (kind === 'assembly' || !assemblyActive(params)) {
     // Un leurre articule sort en deux segments : ce sont eux les pieces a
     // imprimer, avec leurs logements de quincaillerie deja creuses.
+    // Assemble : le leurre complet, pour visualisation et verification —
+    // bavette comprise dans les deux modes. Il ne s'imprime pas : ce sont les
+    // coques, la bavette et les pieces rapportees qui partent a l'impression.
+    // Corps d'un seul tenant (pas de demi-coques) : cette piece est alors
+    // celle qui s'imprime, et la plaque polycarbonate n'en fait pas partie.
     parts.push(...printedBodies(geo));
-    if (printedBib) parts.push(printedBib);
+    const bib = assemblyActive(params) ? geo.bib : printedBib;
+    if (bib) parts.push(bib);
     if (geo.tail) parts.push(geo.tail);
     return { parts, owned };
   }
@@ -272,10 +280,23 @@ export function downloadBlob(blob: Blob, filename: string): void {
  * Les geometries retournees sont des copies transformees : STL et STEP
  * partagent ainsi exactement la meme mise en position.
  */
-export function printableParts(parts: THREE.BufferGeometry[]): THREE.BufferGeometry[] {
-  const place = new THREE.Matrix4()
-    .makeRotationX(Math.PI / 2)
-    .premultiply(new THREE.Matrix4().makeScale(10, 10, 10));
+export function printableParts(
+  parts: THREE.BufferGeometry[],
+  /**
+   * Demi-coque : posee a plat, l'epaisseur sur Z, comme les fichiers de
+   * reference Minnow 100 — la femelle face de joint sur le plateau, la male
+   * relief (ergots, goujons) vers le haut. L'ecart d'epaisseur entre les deux
+   * se lit alors directement sur la cote Z des deux STL.
+   */
+  shellPlaneAngle: number | null = null,
+): THREE.BufferGeometry[] {
+  const place =
+    shellPlaneAngle === null
+      ? new THREE.Matrix4().makeRotationX(Math.PI / 2).premultiply(new THREE.Matrix4().makeScale(10, 10, 10))
+      : new THREE.Matrix4()
+          .makeRotationX(-THREE.MathUtils.degToRad(shellPlaneAngle))
+          .premultiply(new THREE.Matrix4().makeRotationY(Math.PI))
+          .premultiply(new THREE.Matrix4().makeScale(10, 10, 10));
 
   const clones = parts.map((part) => part.clone().applyMatrix4(place));
 
@@ -290,6 +311,14 @@ export function printableParts(parts: THREE.BufferGeometry[]): THREE.BufferGeome
 
   return clones;
 }
+
+/** Suffixe de nom de fichier : l'assemble d'un leurre en coques est une vue. */
+const fileSuffix = (params: LureParams, kind: ExportKind): string =>
+  kind === 'assembly' ? (assemblyActive(params) ? `-${EXPORT_LABEL.assembly}` : '') : `-${EXPORT_LABEL[kind]}`;
+
+/** Angle du plan de joint si la piece est une demi-coque, sinon null. */
+const shellAngle = (params: LureParams, kind: ExportKind): number | null =>
+  (kind === 'male' || kind === 'female') && assemblyActive(params) ? params.assembly.planeAngle : null;
 
 /**
  * Geometrie d'export : toujours a la resolution pleine, ecailles cuites,
@@ -313,7 +342,7 @@ function exportSource(params: LureParams, geo: LureGeometry): { source: LureGeom
 function stlParts(params: LureParams, geo: LureGeometry, kind: ExportKind): THREE.BufferGeometry[] {
   const { source, built } = exportSource(params, geo);
   const { parts, owned } = collectParts(params, source, kind, false);
-  const placed = printableParts(parts);
+  const placed = printableParts(parts, shellAngle(params, kind));
   for (const part of owned) part.dispose();
   built?.dispose();
   return placed;
@@ -352,7 +381,7 @@ export async function exportSTL(
   // normal map, et la resolution est toujours la pleine : ce qui part a
   // l'impression ne depend pas du confort d'apercu.
   const data = stlBytes(params, geo, kind);
-  const suffix = kind === 'assembly' ? '' : `-${EXPORT_LABEL[kind]}`;
+  const suffix = fileSuffix(params, kind);
   const base = `${slugify(name)}${suffix}`;
   return offerFile(`${base}.stl`, data, 'model/stl', `${base}.stl.txt`);
 }
@@ -369,9 +398,9 @@ export async function exportSTEP(
 ): Promise<SaveOutcome & { faces: number; solid: boolean }> {
   const coarse = buildLure(params, STEP_RESOLUTION, null, false, false);
   const { parts, owned } = collectParts(params, coarse, kind, true);
-  const placed = printableParts(parts);
+  const placed = printableParts(parts, shellAngle(params, kind));
   try {
-    const suffix = kind === 'assembly' ? '' : `-${EXPORT_LABEL[kind]}`;
+    const suffix = fileSuffix(params, kind);
     const base = `${slugify(name)}${suffix}`;
     const step = buildStepFile(placed, base);
     const outcome = await offerFile(

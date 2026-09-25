@@ -80,6 +80,11 @@ export interface AssemblyResolution {
    * l'export, ou le relief doit exister pour de bon.
    */
   bakeScales?: boolean;
+  /**
+   * Resolution deja exprimee en pas reels (module AQ) : elle ne recoit pas
+   * le facteur d'affinage des corps anatomiques.
+   */
+  absolute?: boolean;
 }
 
 export const ASSEMBLY_DISPLAY: AssemblyResolution = {
@@ -95,8 +100,28 @@ export const ASSEMBLY_STEP: AssemblyResolution = { stations: 64, arcSamples: 24 
  * s'epaissit assez pour la porter. La borne haute vaut mieux qu'un fichier
  * que la trancheuse mettra dix minutes a ouvrir.
  */
+/**
+ * Pas d'export des coques (module AQ) : 0,9 mm le long du corps, 0,75 mm
+ * autour de la section — et jamais moins de stations que l'apercu, sur
+ * lequel les logements sont valides. Une demi-coque sort ainsi entre 150 et
+ * 200 triangles par millimetre de longueur, logements compris (15 000 a
+ * 20 000 pour une coque de 100 mm), avec un ecart de corde de l'ordre du
+ * centieme sur les surfaces lisses. Les stations se resserrent d'elles-memes
+ * a la tete et au pedoncule, la ou la forme change vite.
+ */
+export const SHELL_STEP_MM = { along: 0.9, around: 0.75 };
+
 export function assemblyExport(params: LureParams): AssemblyResolution {
-  if (!params.scales.enabled) return { ...ASSEMBLY_DISPLAY, bakeScales: true };
+  if (!params.scales.enabled) {
+    const halfGirthMm = (Math.PI * (params.maxWidth + params.thickness)) / 4;
+    const previewStations = Math.round(ASSEMBLY_PREVIEW_STATIONS * 2.2 * Math.max(params.length / 110, 1));
+    return {
+      stations: Math.min(Math.max(Math.round(params.length / SHELL_STEP_MM.along), previewStations, 60), 700),
+      arcSamples: Math.min(Math.max(Math.round(halfGirthMm / SHELL_STEP_MM.around), 24), 160),
+      bakeScales: true,
+      absolute: true,
+    };
+  }
   const finest = Math.min(params.scales.width, params.scales.height) * MM_TO_CM;
   const lengthCm = params.length * MM_TO_CM;
   const girthCm = Math.PI * ((params.maxWidth + params.thickness) / 2) * MM_TO_CM;
@@ -2375,7 +2400,7 @@ export function buildAssembly(
   // la taille (module AI) : le pas reste le meme en millimetres. En dessous,
   // il ne descend pas — les logements d'un petit corps demandent autant de
   // finesse que ceux d'un grand.
-  const resolution: AssemblyResolution = profile.anatomy
+  const resolution: AssemblyResolution = profile.anatomy && !requested.absolute
     ? {
         ...requested,
         stations: Math.round(requested.stations * 2.2 * Math.min(Math.max(profile.lengthCm / 11, 1), 3)),
@@ -2393,6 +2418,12 @@ export function buildAssembly(
   const surface = vJoint ? vJoint.surface : skin;
   const frame = jointFrame(params.assembly.planeAngle);
   const fabrication = params.fabrication;
+  /**
+   * Relief male : ce qui depasse du plan de joint cote male — ergots et
+   * goujons des portees. Standard Minnow 100 : 2,0 mm, ecart d'epaisseur
+   * mesurable entre les deux coques exportees.
+   */
+  const maleRelief = params.assembly.pegs.height * MM_TO_CM;
 
   // --- Cotes de chaque ancrage --------------------------------------------
   // Troncature d'une pointe : la station la plus avancee ou la section entoure
@@ -3009,12 +3040,15 @@ export function buildAssembly(
       femaleSides.push(common);
     }
 
-    // Goujon : un seul pilier traversant les deux puits, qui enfile la petite
-    // boucle. Il s'arrete a un jeu d'emboitement du fond de la femelle.
+    // Goujon : un pilier porte par la male, qui enfile la petite boucle et
+    // entre dans le puits femelle. Il depasse du plan de joint du RELIEF MALE
+    // — la meme cote que les ergots (standard Minnow 100 : 2,0 mm) —, jamais
+    // plus que le puits femelle moins son jeu d'emboitement. La coque male
+    // est ainsi exactement plus epaisse que la femelle de ce relief.
     posts.push({
       center,
       radius: plan.tenonRadius,
-      from: -(seatDepth - (fabrication.tenonFit * MM_TO_CM)),
+      from: -Math.min(seatDepth - fabrication.tenonFit * MM_TO_CM, maleRelief),
       to: seatDepth,
     });
     previews.push({ center, radius: R, depth: seatDepth });
@@ -4256,7 +4290,10 @@ export function assemblyBlocker(params: LureParams): string | null {
 }
 
 /** Resolution des calculs d'interface : portees, fente, volume des coques. */
-export const ASSEMBLY_PREVIEW: AssemblyResolution = { stations: 40, arcSamples: 10 };
+/** Stations de l'apercu, avant affinage anatomique : la reference des controles. */
+const ASSEMBLY_PREVIEW_STATIONS = 40;
+
+export const ASSEMBLY_PREVIEW: AssemblyResolution = { stations: ASSEMBLY_PREVIEW_STATIONS, arcSamples: 10 };
 
 /**
  * Assemblage leger, calcule UNE fois par reglage et partage : l'interface y

@@ -201,11 +201,13 @@ export function AssemblyPanel({
           onChange={(diameter) => setAssembly({ pegs: { ...assembly.pegs, diameter } })}
         />
         <Slider
-          label="Hauteur"
+          label="Relief male (ergots et goujons)"
           value={assembly.pegs.height}
           {...LIMITS.pegHeight}
           display={mm(assembly.pegs.height)}
-          disabled={!assembly.enabled || !assembly.pegs.enabled}
+          unit="mm"
+          disabled={!assembly.enabled}
+          hint="Ce qui depasse du plan de joint cote male : ergots et goujons des portees de goupille. Standard Minnow 100 : 2,0 mm — c'est exactement l'ecart d'epaisseur entre la coque male et la femelle exportees."
           onChange={(height) => setAssembly({ pegs: { ...assembly.pegs, height } })}
         />
         <Slider
