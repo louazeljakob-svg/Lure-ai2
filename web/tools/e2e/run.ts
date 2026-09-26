@@ -17,7 +17,7 @@ import { activeFilters, ARCHETYPES, filterValues, matchesChoice, type LibraryCho
 import { SHAPE_PRESETS, clonePreset } from '../../src/lib/presets';
 import { sanitizeParams } from '../../src/lib/validation';
 import { createProfile } from '../../src/lib/profile';
-import { buildLure, buildTailFin, DISPLAY_RESOLUTION } from '../../src/lib/geometry';
+import { buildLure, buildTailFin, DISPLAY_RESOLUTION, STEP_RESOLUTION } from '../../src/lib/geometry';
 import {
   assemblyActive,
   assemblyExport,
@@ -28,7 +28,8 @@ import {
 } from '../../src/lib/assembly';
 import { computePhysics } from '../../src/lib/physics';
 import { runPrintChecks } from '../../src/lib/printCheck';
-import { collectParts, countExportTriangles, stlBytes, type ExportKind } from '../../src/lib/exporters';
+import { collectParts, countExportTriangles, printableParts, stlBytes, type ExportKind } from '../../src/lib/exporters';
+import { buildStepFile } from '../../src/lib/step';
 import { jointTravel } from '../../src/lib/jointCheck';
 import {
   anchorStrength,
@@ -735,6 +736,28 @@ export function run(): Report {
   // famille est un corps parametrique, sans maillage importe.
   for (const preset of SHAPE_PRESETS) {
     if (preset.params.meshBody) report.failures.push(`${preset.id} : la bibliotheque embarque un maillage`);
+  }
+
+  // STEP : chaque piece de chaque famille sort en solide ferme.
+  for (const preset of SHAPE_PRESETS) {
+    const params = clonePreset(preset.id);
+    const coarse = buildLure(params, STEP_RESOLUTION, null, false, false);
+    const kinds: ExportKind[] = ['assembly', 'male', 'female'];
+    if (params.hasBib) kinds.push('bib');
+    if (coarse.propeller) kinds.push('propeller', 'bead');
+    let faces = 0;
+    for (const kind of kinds) {
+      const { parts, owned } = collectParts(params, coarse, kind, true);
+      const pose = kind === 'propeller' || kind === 'bead' ? 'axial' : kind === 'male' || kind === 'female' ? params.assembly.planeAngle : null;
+      const placed = printableParts(parts, pose);
+      const step = buildStepFile(placed, `${preset.id}-${kind}`);
+      if (!step.solid) report.failures.push(`${preset.id} : STEP ${kind} non solide`);
+      faces += step.faces;
+      for (const part of placed) part.dispose();
+      for (const part of owned) part.dispose();
+    }
+    coarse.dispose();
+    report.lines.push(`${`${preset.id} (STEP)`.padEnd(28)} ${kinds.length} pieces en solides fermes · ${faces} faces`);
   }
 
   // Pencil : section circulaire sans ondulation (module AO.2).

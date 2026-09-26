@@ -962,18 +962,19 @@ const FAMILY_PRESETS: ShapePreset[] = [
       },
       infill: 15,
       // Suspension neutre : deux lests sous la chambre, billes comprises.
-      ballasts: [ballast(0.28, -0.7, 1.5, 'nag', 'sphere'), ballast(0.43, -0.75, 2.2, 'nag', 'sphere')],
+      ballasts: [ballast(0.28, -0.7, 1.0, 'nag', 'sphere'), ballast(0.43, -0.75, 2.7, 'nag', 'sphere')],
       // Trois billes inox de 6 mm, tube de 6,6 mm : 0,6 mm de jeu, de quoi
       // rouler et claquer. Le tube court dans le plan de joint, au-dessus de
       // l'axe : les portees ventrales, le lest et la vis passent dessous. Il
-      // descend vers l'arriere, ou les billes se tassent au lancer.
+      // descend vers l'arriere : au repos comme au lancer, les billes s'y
+      // tassent, ce qui recule le centre de gravite derriere la poussee.
       chamber: {
         enabled: true,
         diameter: 6.6,
         fromPosition: 0.24,
         fromHeight: 0.38,
         toPosition: 0.48,
-        toHeight: 0.32,
+        toHeight: 0.2,
         ball: 6,
         balls: 3,
       },

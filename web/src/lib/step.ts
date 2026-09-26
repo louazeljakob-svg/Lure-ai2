@@ -87,7 +87,67 @@ function weld(geometry: THREE.BufferGeometry): WeldedMesh {
     triangles.push([a, b, c]);
   }
 
+  repairSlivers(positions, triangles);
   return { positions, triangles };
+}
+
+/**
+ * Triangles plats (trois sommets alignes) : une face STEP plane n'a pas de
+ * normale sur eux, ils sont donc ecartes — mais leurs aretes, elles, bordent
+ * les voisins, et l'enveloppe s'ouvrait. On les supprime proprement : le
+ * voisin qui partage la grande arete est coupe au sommet du milieu, ce qui
+ * rend exactement les deux petites aretes du triangle plat. L'enveloppe reste
+ * fermee et chaque face garde une surface.
+ */
+function repairSlivers(positions: number[], triangles: [number, number, number][]): void {
+  const at = (i: number) => new THREE.Vector3(positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]);
+  const flat = (t: [number, number, number]) => {
+    const [a, b, c] = t.map(at);
+    return b.clone().sub(a).cross(c.clone().sub(a)).length() < 1e-12;
+  };
+  for (let pass = 0; pass < 64; pass++) {
+    const slivers: number[] = [];
+    for (let i = 0; i < triangles.length; i++) if (flat(triangles[i])) slivers.push(i);
+    if (slivers.length === 0) return;
+    const owner = new Map<string, number>();
+    triangles.forEach((t, i) => {
+      for (let k = 0; k < 3; k++) owner.set(`${t[k]}>${t[(k + 1) % 3]}`, i);
+    });
+    const touched = new Set<number>();
+    const removed = new Set<number>();
+    const added: [number, number, number][] = [];
+    for (const s of slivers) {
+      if (touched.has(s)) continue;
+      const t = triangles[s];
+      // Grande arete : celle dont le troisieme sommet est entre ses extremites.
+      let best = -1;
+      let longest = -1;
+      for (let k = 0; k < 3; k++) {
+        const length = at(t[k]).distanceTo(at(t[(k + 1) % 3]));
+        if (length > longest) {
+          longest = length;
+          best = k;
+        }
+      }
+      const x = t[best];
+      const y = t[(best + 1) % 3];
+      const m = t[(best + 2) % 3];
+      const n = owner.get(`${y}>${x}`);
+      if (n === undefined || n === s || touched.has(n) || flat(triangles[n])) continue;
+      const u = triangles[n];
+      const k = u.findIndex((v, i) => v === y && u[(i + 1) % 3] === x);
+      const d = u[(k + 2) % 3];
+      touched.add(s);
+      touched.add(n);
+      removed.add(s);
+      removed.add(n);
+      added.push([y, m, d], [m, x, d]);
+    }
+    if (removed.size === 0) return;
+    const kept = triangles.filter((_, i) => !removed.has(i));
+    triangles.length = 0;
+    triangles.push(...kept, ...added);
+  }
 }
 
 interface ShellResult {
