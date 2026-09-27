@@ -195,6 +195,40 @@ export function refineSoup(
   }
   const before = tskin.length;
 
+  // --- Voisinage des sommets ----------------------------------------------
+  // Sur une paroi quasi verticale (fente d'un souple, bord d'opercule), les
+  // milieux geometriques de deux aretes voisines peuvent tomber au meme
+  // point : deux sommets distincts a quelques dixiemes de micron, que tout
+  // lecteur STL soude, et le maillage n'est plus une variete. On refuse donc
+  // toute coupe dont le milieu tomberait a moins de NEAR d'un sommet existant.
+  const NEAR = Math.max(options.minEdge * 0.25, 1e-6);
+  const cells = new Map<string, number[]>();
+  const cellOf = (x: number, y: number, z: number) =>
+    `${Math.floor(x / NEAR)},${Math.floor(y / NEAR)},${Math.floor(z / NEAR)}`;
+  const addVertex = (id: number) => {
+    const k = cellOf(vx[id * 3], vx[id * 3 + 1], vx[id * 3 + 2]);
+    const list = cells.get(k);
+    if (list) list.push(id);
+    else cells.set(k, [id]);
+  };
+  for (let id = 0; id < vx.length / 3; id++) addVertex(id);
+  const crowdedAt = (p: THREE.Vector3): boolean => {
+    const cx = Math.floor(p.x / NEAR);
+    const cy = Math.floor(p.y / NEAR);
+    const cz = Math.floor(p.z / NEAR);
+    for (let i = -1; i <= 1; i++)
+      for (let j = -1; j <= 1; j++)
+        for (let k = -1; k <= 1; k++) {
+          for (const id of cells.get(`${cx + i},${cy + j},${cz + k}`) ?? []) {
+            const dx = vx[id * 3] - p.x;
+            const dy = vx[id * 3 + 1] - p.y;
+            const dz = vx[id * 3 + 2] - p.z;
+            if (dx * dx + dy * dy + dz * dz < NEAR * NEAR) return true;
+          }
+        }
+    return false;
+  };
+
   // --- Aretes -------------------------------------------------------------
   const SHIFT = 67108864; // 2^26
   const edgeKey = (a: number, b: number) =>
@@ -290,7 +324,7 @@ export function refineSoup(
     if (singular[a] || singular[b]) return null;
     const k = edgeKey(a, b);
     const cached = probes.get(k);
-    if (cached) return cached;
+    if (cached) return crowdedAt(cached.mid) ? null : cached;
     const A = new THREE.Vector3(vx[a * 3], vx[a * 3 + 1], vx[a * 3 + 2]);
     const B = new THREE.Vector3(vx[b * 3], vx[b * 3 + 1], vx[b * 3 + 2]);
     const at = (s: number) => surface(ua + (ub - ua) * s, va + (vb - va) * s);
@@ -334,7 +368,7 @@ export function refineSoup(
       mv: va + (vb - va) * sMid,
     };
     probes.set(k, out);
-    return out;
+    return crowdedAt(out.mid) ? null : out;
   };
 
   const minEdge2 = options.minEdge * options.minEdge;
@@ -366,6 +400,7 @@ export function refineSoup(
     const pr = probe(t, c)!;
     const m = vx.length / 3;
     vx.push(pr.mid.x, pr.mid.y, pr.mid.z);
+    addVertex(m);
     const created: number[] = [];
     const around = [...(edges.get(edgeKey(a, b)) ?? [])];
     for (const n of around) {

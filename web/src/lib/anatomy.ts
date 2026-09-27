@@ -898,7 +898,9 @@ function createAnatomyField(
           (1 - smoothstep(0.75 * opLen, 1.2 * opLen, a));
         const rim = 0.45 * opR * Math.exp(-(((a - 1.2 * opEdge) / opEdge) ** 2));
         const slit = -slitD * Math.exp(-(((a + 2 * opEdge) / (1.1 * opEdge)) ** 2));
-        const pre = -0.3 * opR * Math.exp(-(((a - preA) / (1.2 * opEdge)) ** 2));
+        // Sillon du preopercule : au pied de la marche, du cote du
+        // preopercule, net comme sur les scans (0,15 a 0,2 mm sous son plan).
+        const pre = -0.45 * opR * Math.exp(-(((a - preA - 0.5 * opEdge) / (1.2 * opEdge)) ** 2));
         d += window * (plate + rim + slit + pre);
       }
     }
@@ -1204,11 +1206,12 @@ export function buildCaudalFin(
     return { x: len * (0.9 + 0.1 * Math.cos((av * Math.PI) / 2)) * festoon(v), y: v * h };
   };
 
-  // Demi-caudale d'une coque (module AQ) : trois rangs par rayon suffisent
-  // a porter les nervures ; la caudale d'affichage garde sa finesse.
+  // Demi-caudale d'une coque (modules AQ, AT.2) : quatre rangs par rayon
+  // portent les nervures et le feston ; la caudale reste plus dense que les
+  // flancs raffines. La caudale d'affichage garde sa finesse.
   const shellPart = part !== 'full';
-  const NV = shellPart ? 24 + rays * 3 : 48 + rays * 5;
-  const NW = shellPart ? 22 : 40;
+  const NV = shellPart ? 30 + rays * 4 : 48 + rays * 5;
+  const NW = shellPart ? 26 : 40;
   // Repartition resserree vers les bords : c'est la que l'epaisseur varie vite.
   const cosSpace = (t: number) => 0.5 - 0.5 * Math.cos(Math.PI * t);
 

@@ -205,12 +205,18 @@ export function softRigPlan(profile: ProfileSampler, params: LureParams): SoftRi
 // ---------------------------------------------------------------------------
 
 /** Tube ferme le long d'un chemin, rayon constant, pointe effilee au bout. */
-function tube(path: THREE.Vector3[], radius: number, sharpEnd: boolean): THREE.BufferGeometry {
+function tube(path: THREE.Vector3[], radius: number, sharpEnd: boolean, closed = false): THREE.BufferGeometry {
   const seg = 12;
   const rings: THREE.Vector3[][] = [];
   let normal = new THREE.Vector3(0, 0, 1);
   for (let i = 0; i < path.length; i++) {
-    const t = (i < path.length - 1 ? path[i + 1].clone().sub(path[i]) : path[i].clone().sub(path[i - 1])).normalize();
+    const t = (
+      closed
+        ? path[(i + 1) % path.length].clone().sub(path[(i + path.length - 1) % path.length])
+        : i < path.length - 1
+          ? path[i + 1].clone().sub(path[i])
+          : path[i].clone().sub(path[i - 1])
+    ).normalize();
     normal = normal.clone().addScaledVector(t, -normal.dot(t)).normalize();
     const binormal = t.clone().cross(normal);
     const r = sharpEnd && i >= path.length - 4 ? radius * ((path.length - 1 - i) / 3) : radius;
@@ -223,12 +229,16 @@ function tube(path: THREE.Vector3[], radius: number, sharpEnd: boolean): THREE.B
   }
   const pos: number[] = [];
   const tri = (a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3) => pos.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
-  for (let i = 0; i < rings.length - 1; i++) {
+  // Boucle fermee (oeillet) : le dernier anneau se raccorde au premier, sans
+  // bouchon — deux bouchons au meme endroit feraient des faces doublees.
+  const last = closed ? rings.length : rings.length - 1;
+  for (let i = 0; i < last; i++) {
+    const next = rings[(i + 1) % rings.length];
     for (let k = 0; k < seg; k++) {
       const a = rings[i][k];
       const b = rings[i][(k + 1) % seg];
-      const c = rings[i + 1][(k + 1) % seg];
-      const d = rings[i + 1][k];
+      const c = next[(k + 1) % seg];
+      const d = next[k];
       tri(a, b, c);
       tri(a, c, d);
     }
@@ -239,8 +249,10 @@ function tube(path: THREE.Vector3[], radius: number, sharpEnd: boolean): THREE.B
       else tri(centre, ring[k], ring[(k + 1) % seg]);
     }
   };
-  cap(rings[0], path[0], true);
-  if (!sharpEnd) cap(rings[rings.length - 1], path[path.length - 1], false);
+  if (!closed) {
+    cap(rings[0], path[0], true);
+    if (!sharpEnd) cap(rings[rings.length - 1], path[path.length - 1], false);
+  }
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   g.computeVertexNormals();
@@ -274,11 +286,11 @@ export function buildSoftRig(profile: ProfileSampler, params: LureParams, plan: 
   // Oeillet : un anneau vertical au bout avant de la hampe.
   const eye: THREE.Vector3[] = [];
   const eyeR = Math.max(1.4 * hook.wireMm * MM, 0.08);
-  for (let i = 0; i <= 28; i++) {
+  for (let i = 0; i < 28; i++) {
     const a = Math.PI / 2 + (2 * Math.PI * i) / 28;
     eye.push(new THREE.Vector3(x0 - eyeR + eyeR * Math.cos(a), y + eyeR * Math.sin(a) * 0.9, 0));
   }
-  parts.push(tube(eye, r * 0.9, false));
+  parts.push(tube(eye, r * 0.9, false, true));
   if (plan.jig) {
     const s = new THREE.SphereGeometry(plan.jig.radius, 28, 18).toNonIndexed();
     s.translate(plan.jig.x, plan.jig.y, 0);

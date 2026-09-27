@@ -978,7 +978,7 @@ const FAMILY_PRESETS: ShapePreset[] = [
           // Vis de 15 mm, la plus courte du catalogue : une devant la chambre
           // de billes, une derriere — aucune ne la traverse.
           { id: 'vis-avant', position: 0.14, size: 'auto', head: 'countersunk', length: 15 },
-          { id: 'vis-arriere', position: 0.54, size: 'auto', head: 'countersunk', length: 15 },
+          { id: 'vis-arriere', position: 0.55, size: 'auto', head: 'countersunk', length: 15 },
         ],
       },
       infill: 15,

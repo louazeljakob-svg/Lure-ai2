@@ -735,11 +735,14 @@ function checkAnatomyAT(
   if (!(plate > 0.01)) fail(`opercule sans bord libre saillant (${(plate * 10).toFixed(3)} mm)`);
   if (!(slit < -0.01)) fail(`fente branchiale absente (${(slit * 10).toFixed(3)} mm)`);
   // Preopercule : un second plan, plus bas que la plaque d'opercule, avec son
-  // sillon : on cherche un creux local EN AVANT du bord libre.
+  // sillon : on cherche un creux local EN AVANT du bord libre, d'au moins
+  // 0,02 mm sous ses deux bords pris a 0,4 % de la longueur (un sillon de
+  // 0,5 a 1 mm de large).
   const iMax = line.indexOf(plate);
   let pre = false;
-  for (let i = 2; i < iMax - 2; i++) {
-    if (line[i] < line[i - 2] - 0.002 && line[i] < line[i + 2] - 0.002 && line[i] > 0) pre = true;
+  const w = 12;
+  for (let i = w; i < iMax - 2; i++) {
+    if (line[i] < line[i - w] - 0.002 && line[i] < line[i + w] - 0.002 && line[i] > 0) pre = true;
   }
   if (!pre) fail('preopercule non dessine (aucun sillon en avant du bord d opercule)');
   // Orbite : logement au diametre reel de l'oeil, bourrelet periorbitaire.

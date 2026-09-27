@@ -140,7 +140,10 @@ export function assemblyExport(params: LureParams): AssemblyResolution {
       arcSamples: Math.min(Math.max(Math.round(halfGirthMm / SHELL_STEP_MM.around), 24), 160),
       bakeScales: true,
       absolute: true,
-      refine: {
+      // Pas de raffinement sur un corps importe : sa surface est celle du
+      // maillage lu, facettes comprises — la suivre plus finement n'ajoute
+      // rien, et ses discontinuites feraient des pointes.
+      refine: params.meshBody ? undefined : {
         tolerance: SHELL_REFINE.chordMm * MM_TO_CM,
         budget: Math.round(SHELL_REFINE.perMm * params.length),
         floor: Math.round(SHELL_REFINE.floorPerMm * params.length),

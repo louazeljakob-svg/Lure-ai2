@@ -108,7 +108,12 @@ coupee en deux — bissection par la plus longue arete, avec propagation
 (LEPP) — tant que la surface parametrique exacte s'ecarte d'elle de plus de
 **0,015 mm**. Chaque sommet ajoute est pose sur la vraie surface. Les faces
 planes (plan de joint, logements) ne recoivent de sommet que la ou une arete
-de peau voisine a ete coupee : les coques restent fermees.
+de peau voisine a ete coupee : les coques restent fermees. Aucun sommet
+n'est ajoute a moins de 0,01 mm d'un sommet existant : sur une paroi quasi
+verticale (fente ventrale du souple), deux milieux d'aretes voisines
+tomberaient sinon au meme point, que toute trancheuse souderait. Un corps
+importe n'est pas raffine : sa surface est celle du maillage lu, facettes
+comprises.
 
 Le resultat se concentre la ou la forme change — tete, opercule, bouche,
 orbites, rayons, bords libres — et laisse les flancs legers. Budget : une

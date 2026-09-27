@@ -23,7 +23,7 @@ import { ARCHETYPES } from './archetypes';
 import { clonePreset, LIMITS, type Range } from './presets';
 import { meshBodyRef, type MeshBody } from './meshBody';
 import { createProfile } from './profile';
-import { ASSEMBLY_PREVIEW, buildAssembly, disposeAssembly, type AssemblyResult } from './assembly';
+import { ASSEMBLY_PREVIEW, assemblyExport, buildAssembly, disposeAssembly, type AssemblyResult } from './assembly';
 import { buildLure, DISPLAY_RESOLUTION } from './geometry';
 import { computePhysics, type PhysicsResult } from './physics';
 import { seedId } from './tackle';
@@ -696,12 +696,81 @@ function fitProject(
     }
   }
 
-  // Une vis qui ne trouve de place nulle part est retiree, et on le dit :
-  // une vis refusee n'est pas percee, elle ne tiendrait rien.
+  // Verdict final a la resolution d'export : la previsualisation ne voit pas
+  // toujours un pincement (crete, nageoire couchee) entre deux de ses
+  // stations, l'export si. Une vis refusee a l'export glisse le long du corps
+  // comme plus haut ; celle qui ne trouve de place nulle part est retiree, et
+  // on le dit : une vis refusee n'est pas percee, elle ne tiendrait rien.
   if (params.screws.enabled) {
-    const assembly = check(params);
-    const bad = assembly.screws.filter((screw) => !screw.valid);
-    disposeAssembly(assembly);
+    const verdict = (candidate: LureParams) => {
+      const assembly = buildAssembly(
+        profile,
+        {
+          ...candidate,
+          assembly: {
+            ...candidate.assembly,
+            hollow: { ...candidate.assembly.hollow, enabled: false },
+            glueGroove: { ...candidate.assembly.glueGroove, enabled: false },
+            pegs: { ...candidate.assembly.pegs, enabled: false },
+          },
+        },
+        assemblyExport(candidate),
+      );
+      const out = assembly.screws.map((screw) => ({ id: screw.id, valid: screw.valid, problem: screw.problem }));
+      disposeAssembly(assembly);
+      return out;
+    };
+    let bad = verdict(params).filter((screw) => !screw.valid);
+    for (const plan of [...bad]) {
+      const index = params.screws.screws.findIndex((screw) => screw.id === plan.id);
+      if (index < 0) continue;
+      const original = params.screws.screws[index];
+      const candidates = tall
+        .map((p) => Math.round(p * 1000) / 1000)
+        .filter((p) => Math.abs(p - original.position) > 1e-6)
+        .filter((p) => !params.screws.screws.some((other, i) => i !== index && Math.abs(other.position - p) < spacing))
+        .filter(free)
+        .sort((a, b) => Math.abs(a - original.position) - Math.abs(b - original.position))
+        .slice(0, 8);
+      for (const position of candidates) {
+        const screws = params.screws.screws.map((screw, i) => (i === index ? { ...screw, position } : screw));
+        const trial = { ...params, screws: { ...params.screws, screws } };
+        if (verdict(trial).find((item) => item.id === original.id)?.valid) {
+          params.screws = trial.screws;
+          bad = bad.filter((item) => item.id !== plan.id);
+          report.placements.push({
+            label: 'Vis deplacee',
+            detail: `De ${Math.round(original.position * 100)} % a ${Math.round(position * 100)} % : ${plan.problem ?? 'collision'}`,
+          });
+          break;
+        }
+      }
+    }
+    // Toutes refusees ensemble : sur un corps court, deux vis se tiennent
+    // mutuellement a l'ecart des seules places libres. On cherche alors UNE
+    // vis, seule, du plus pres de la premiere au plus loin — une vis suffit a
+    // serrer les coques.
+    if (bad.length > 1 && bad.length === params.screws.screws.length) {
+      const first = params.screws.screws[0];
+      const spots = [first.position, ...tall.filter(free)]
+        .sort((a, b) => Math.abs(a - first.position) - Math.abs(b - first.position))
+        .slice(0, 12);
+      for (const position of spots) {
+        const screw = { ...first, position: Math.round(position * 1000) / 1000 };
+        const trial = { ...params, screws: { ...params.screws, screws: [screw] } };
+        if (verdict(trial).find((item) => item.id === screw.id)?.valid) {
+          params.screws = trial.screws;
+          report.placements.push({
+            label: 'Une seule vis',
+            detail:
+              `Deux vis ne tiennent pas ensemble sur ce corps (${bad.map((plan) => plan.problem ?? 'refus').join(' ')}) : ` +
+              `une vis seule a ${Math.round(screw.position * 100)} %.`,
+          });
+          bad = [];
+          break;
+        }
+      }
+    }
     for (const plan of bad) {
       params.screws = { ...params.screws, screws: params.screws.screws.filter((screw) => screw.id !== plan.id) };
     }

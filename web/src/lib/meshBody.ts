@@ -439,7 +439,13 @@ export function sampleSkin(positions: Float32Array, allowance: GapAllowance | nu
   const height = (i: number) => r[i * nT] + r[i * nT + nT / 2];
   let bodyEnd = 1;
   let iMin = -1;
+  // Le pedoncule est le point le plus bas QUI EST SUIVI d'une lame plus
+  // haute : le bord de fuite arrondi ou festonne d'une caudale descend
+  // parfois plus bas que le pedoncule, mais rien ne remonte derriere lui.
+  const after: number[] = new Array(nP).fill(0);
+  for (let i = nP - 2; i >= 0; i--) after[i] = Math.max(after[i + 1], height(i + 1));
   for (let i = Math.round(nP * 0.55); i < nP - 2; i++) {
+    if (after[i] <= height(i) * 1.25) continue;
     if (iMin < 0 || height(i) < height(iMin)) iMin = i;
   }
   if (iMin > 0) {
