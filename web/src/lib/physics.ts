@@ -318,7 +318,9 @@ export function computePhysics(
   // pas dans le calcul et ne deplace pas d'eau au titre du corps.
   // La bavette est comptee a part, avec sa propre matiere : c'est la meme
   // plaque dans les deux modes (module AE), imprimee ou en polycarbonate.
-  const parts = [geo.body, geo.tail].filter(Boolean) as THREE.BufferGeometry[];
+  // Nageoires en volume (module AW) : paires integrees et pieces rapportees
+  // deplacent de l'eau et pesent de la matiere du corps, comme la caudale.
+  const parts = [geo.body, geo.tail, geo.fins].filter(Boolean) as THREE.BufferGeometry[];
   let volume = 0;
   const weightedCentroid = new THREE.Vector3();
   for (const part of parts) {
@@ -348,8 +350,8 @@ export function computePhysics(
         problems: [] as { id: string; title: string; detail: string }[],
         chamber: null as ChamberReport | null,
       };
-  // La caudale ne fait pas partie des coques : son volume s'ajoute a celui
-  // des deux demi-corps.
+  // La caudale et les nageoires en volume ne font pas partie des coques :
+  // leur volume s'ajoute a celui des deux demi-corps.
   const appendages = Math.max(volume - massProperties(geo.body).volume, 0);
 
   // Bavette : une plaque pleine, de la matiere de son mode. La partie
@@ -541,7 +543,7 @@ export function computePhysics(
   const tailBoost =
     params.tailShape === 'paddle'
       ? 0.25 * params.tailSize
-      : params.tailShape === 'fan'
+      : params.tailShape === 'fan' || params.tailShape === 'rounded'
         ? 0.15 * params.tailSize
         : 0;
   const wobble = clamp(
@@ -894,6 +896,11 @@ function shellContent(
       ...(assembly.chamberProblem
         ? [{ id: 'chamber', title: 'Chambre de billes refusee', detail: assembly.chamberProblem }]
         : []),
+      ...(assembly.finSlotProblems ?? []).map((detail, i) => ({
+        id: `fin-slot-${i}`,
+        title: 'Fente de nageoire rapportee refusee',
+        detail,
+      })),
       ...assembly.pegs
         .filter((peg) => !peg.valid && peg.problem)
         .map((peg, i) => ({ id: `peg-${i}`, title: 'Ergot non place', detail: peg.problem! })),

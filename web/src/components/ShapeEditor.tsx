@@ -33,6 +33,7 @@ const TAIL_OPTIONS: { value: TailShape; label: string; title: string }[] = [
   { value: 'forked', label: 'Fourchue', title: 'Caudale echancree, type poisson fourrage' },
   { value: 'paddle', label: 'Palette', title: 'Palette de swimbait, forte battue' },
   { value: 'fan', label: 'Eventail', title: 'Lame triangulaire, type cuiller' },
+  { value: 'rounded', label: 'Arrondie', title: 'Caudale arrondie, type gobie' },
 ];
 
 const mm = (value: number) => `${value.toFixed(value < 10 ? 1 : 0)} mm`;

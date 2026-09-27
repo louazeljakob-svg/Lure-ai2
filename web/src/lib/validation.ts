@@ -86,7 +86,7 @@ const INLAY_SHAPES: InlayShape[] = ['custom', 'oval', 'teardrop', 'band', 'flank
 const FINISH_STYLES: FinishStyle[] = ['smooth', 'faceted'];
 const PREVIEWS: PreviewQuality[] = ['low', 'medium', 'high'];
 
-const SHAPES: ShapeId[] = ['minnow', 'lipless', 'plopper', 'pencil', 'nageur', 'souple', 'spoon'];
+const SHAPES: ShapeId[] = ['minnow', 'lipless', 'plopper', 'pencil', 'nageur', 'souple', 'crank', 'spoon'];
 
 /**
  * Identifiants des bibliotheques precedentes.
@@ -112,7 +112,7 @@ const LEGACY_SHAPES: Record<string, ShapeId> = {
   chugger: 'minnow',
   minnownervure: 'minnow',
 };
-const TAILS: TailShape[] = ['round', 'forked', 'paddle', 'fan'];
+const TAILS: TailShape[] = ['round', 'forked', 'paddle', 'fan', 'rounded'];
 const MATERIALS: MaterialId[] = [
   'pla',
   'lwpla',

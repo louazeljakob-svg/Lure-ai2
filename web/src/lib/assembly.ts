@@ -23,9 +23,11 @@
  */
 
 import * as THREE from 'three';
-import type { BallastWeight, LureParams, PinAnchor, PinExit, SocketMethod } from '../types/lure';
+import type { BallastWeight, FinConfig, LureParams, PinAnchor, PinExit, SocketMethod } from '../types/lure';
 import { ballastMarkers, createSurfaceSampler, type SurfaceSampler } from './geometry';
-import { warpArc } from './anatomy';
+import { FIN_FIT, finModeOf, medianTabOf, warpArc, type FinKind } from './anatomy';
+import { caudalSlot } from './fins';
+import { refineSoup, type ParamSurface, type RefineOptions, type RefineStats } from './refine';
 import { articulationPlan, type ArticulationPlan } from './articulation';
 import { PINS, autoPin, buildPin, getPin, type PinPart, type PinSpec } from './hardware';
 import { MM_TO_CM, type ProfileSampler } from './profile';
@@ -85,6 +87,11 @@ export interface AssemblyResolution {
    * le facteur d'affinage des corps anatomiques.
    */
   absolute?: boolean;
+  /**
+   * Maillage adaptatif de la peau (module AT.2) : tolerance de corde et
+   * budget de triangles par coque, en cm et en triangles.
+   */
+  refine?: { tolerance: number; budget: number; floor?: number; minEdge: number; maxEdge?: number };
 }
 
 export const ASSEMBLY_DISPLAY: AssemblyResolution = {
@@ -111,6 +118,19 @@ export const ASSEMBLY_STEP: AssemblyResolution = { stations: 64, arcSamples: 24 
  */
 export const SHELL_STEP_MM = { along: 0.9, around: 0.75 };
 
+/**
+ * Maillage adaptatif des coques (module AT.2). La grille de depart garde le
+ * pas du module AQ ; la peau est ensuite coupee la ou la surface s'ecarte de
+ * plus de 0,015 mm de ses facettes — tete, opercule, bouche, orbites,
+ * rayons et bords libres —, dans la limite de 540 triangles par millimetre
+ * de corps (54 000 pour une coque de 100 mm). Un corps tres lisse qui tient
+ * la tolerance plus tot est affine jusqu'a 220 triangles par millimetre :
+ * une coque de 100 mm sort ainsi entre 22 000 et 54 000 triangles, dans la
+ * fourchette de 20 000 a 60 000. Aucune arete de peau n'est coupee sous
+ * 0,04 mm.
+ */
+export const SHELL_REFINE = { chordMm: 0.015, perMm: 540, floorPerMm: 220, minEdgeMm: 0.04 };
+
 export function assemblyExport(params: LureParams): AssemblyResolution {
   if (!params.scales.enabled) {
     const halfGirthMm = (Math.PI * (params.maxWidth + params.thickness)) / 4;
@@ -120,6 +140,12 @@ export function assemblyExport(params: LureParams): AssemblyResolution {
       arcSamples: Math.min(Math.max(Math.round(halfGirthMm / SHELL_STEP_MM.around), 24), 160),
       bakeScales: true,
       absolute: true,
+      refine: {
+        tolerance: SHELL_REFINE.chordMm * MM_TO_CM,
+        budget: Math.round(SHELL_REFINE.perMm * params.length),
+        floor: Math.round(SHELL_REFINE.floorPerMm * params.length),
+        minEdge: SHELL_REFINE.minEdgeMm * MM_TO_CM,
+      },
     };
   }
   const finest = Math.min(params.scales.width, params.scales.height) * MM_TO_CM;
@@ -173,8 +199,21 @@ function jointFrame(angleDeg: number): JointFrame {
 // Maillage
 // ---------------------------------------------------------------------------
 
+/**
+ * Parametres de surface (p, theta) des points de peau, par objet point :
+ * c'est ce qui permet au maillage adaptatif de poser chaque sommet ajoute
+ * sur la vraie surface (module AT.2).
+ */
+const SKIN_PARAMS = new WeakMap<THREE.Vector3, [number, number]>();
+
 class MeshBuilder {
   private readonly positions: number[] = [];
+  private readonly params: number[] = [];
+  private readonly skinFlags: number[] = [];
+  /** Vrai pendant l'emission de la peau : ces triangles seuls se raffinent. */
+  skin = false;
+  /** Bilan du dernier raffinement, pour les compteurs. */
+  refineStats: RefineStats | null = null;
 
   /**
    * `mirror` inverse le sens de tous les triangles. La coque femelle est
@@ -213,6 +252,11 @@ class MeshBuilder {
       return;
     }
     this.positions.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
+    for (const v of [a, b, c]) {
+      const q = SKIN_PARAMS.get(v);
+      this.params.push(q ? q[0] : NaN, q ? q[1] : NaN);
+    }
+    this.skinFlags.push(this.skin ? 1 : 0);
   }
 
   quad(a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, d: THREE.Vector3): void {
@@ -220,12 +264,28 @@ class MeshBuilder {
     this.triangle(a, c, d);
   }
 
-  build(): THREE.BufferGeometry {
+  build(refine?: ShellRefine): THREE.BufferGeometry {
     const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(this.positions, 3));
+    let positions = this.positions;
+    if (refine) {
+      const out = refineSoup(
+        { positions: this.positions, params: this.params, skin: this.skinFlags },
+        refine.surface,
+        refine.options,
+      );
+      positions = out.positions;
+      this.refineStats = out.stats;
+    }
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
     geometry.computeVertexNormals();
     return geometry;
   }
+}
+
+/** Raffinement adaptatif d'une coque : surface exacte et criteres. */
+interface ShellRefine {
+  surface: ParamSurface;
+  options: RefineOptions;
 }
 
 // ---------------------------------------------------------------------------
@@ -661,6 +721,8 @@ export interface AssemblyResult {
   jointProblem: string | null;
   /** Pourquoi la fente de la queue rapportee n'a pas pu etre creusee. */
   tailSlotProblem: string | null;
+  /** Fentes de nageoires rapportees refusees (module AW). */
+  finSlotProblems: string[];
   /** Gorge de colle : troncons creuses et interruptions, ou null si inactive. */
   glueGroove: GlueGrooveReport | null;
   /** Barreaux imprimes, poses a plat a cote des coques. */
@@ -961,6 +1023,7 @@ function buildRing(
     const s = j / arcSamples;
     const theta = from + (to - from) * (warp && j > 0 && j < arcSamples ? warpArc(s) : s);
     const point = surface(station.p, theta).clone();
+    SKIN_PARAMS.set(point, [station.p, theta]);
     points.push(point);
     t.push(frame.transverseOf(point.y, point.z));
     n.push(Math.abs(frame.normalOf(point.y, point.z)));
@@ -1028,6 +1091,10 @@ interface ShellInput {
   vFront?: VFace;
   /** Face de joint en V a l'arriere de la coque (segment avant). */
   vRear?: VFace;
+  /** Raffinement adaptatif de la peau (export). */
+  refine?: ShellRefine;
+  /** Stations du corps entier, quand la coque n'en porte qu'une part. */
+  totalStations?: number;
 }
 
 /** Ergot d'alignement, en coordonnees du plan de joint. */
@@ -1213,6 +1280,7 @@ function buildShell(
   }
 
   // --- Peau ----------------------------------------------------------------
+  mesh.skin = true;
   for (let i = 0; i < stations.length - 1; i++) {
     if (chinStrip.has(i)) continue;
     const a = rings[i];
@@ -1223,6 +1291,7 @@ function buildShell(
       mesh.quad(a.points[j], b.points[j], b.points[j + 1], a.points[j + 1]);
     }
   }
+  mesh.skin = false;
 
   // --- Peau et parois au droit d'une fente de bavette ----------------------
   for (const { slot, rank } of chinCuts) {
@@ -1234,6 +1303,7 @@ function buildShell(
       const sa = rank[k];
       const sb = rank[k + 1];
       const end = Math.min(a.clipEnd, b.clipEnd);
+      mesh.skin = true;
       for (let j = Math.max(sa, sb); j < end; j++) {
         mesh.quad(a.points[j], b.points[j], b.points[j + 1], a.points[j + 1]);
       }
@@ -1241,6 +1311,7 @@ function buildShell(
       // decalage sans laisser de T-jonction.
       for (let j = sa; j < sb; j++) mesh.triangle(a.points[j], b.points[sb], a.points[j + 1]);
       for (let j = sb; j < sa; j++) mesh.triangle(a.points[sa], b.points[j], b.points[j + 1]);
+      mesh.skin = false;
       // Paroi haute de la bouche : du plan de joint a la peau, normale vers
       // le vide de la fente. A la derniere station elle se scinde a la cote
       // du fond de poche, sinon l'arete ne s'apparierait pas avec la face de
@@ -1512,7 +1583,20 @@ function buildShell(
     emitCavity(mesh, marked.outline, exit, planar, lift, marked.skip);
   }
 
-  return mesh.build();
+  if (!input.refine) return mesh.build();
+  // Segment d'un leurre articule : il recoit la part du budget qui revient a
+  // ses stations.
+  const share = input.stations.length / Math.max(input.totalStations ?? input.stations.length, 1);
+  const geometry = mesh.build({
+    surface: input.refine.surface,
+    options: {
+      ...input.refine.options,
+      budget: Math.round(input.refine.options.budget * share),
+      floor: input.refine.options.floor ? Math.round(input.refine.options.floor * share) : undefined,
+    },
+  });
+  geometry.userData.refine = mesh.refineStats;
+  return geometry;
 }
 
 /**
@@ -2740,7 +2824,9 @@ export function buildAssembly(
   // depuis cette face-la, jamais depuis une pointe deja retiree.
   // Queue rapportee : le bout de queue arrondi est tronque la ou la lame sort,
   // et la fente se prend en sandwich entre les coques, comme la bavette.
-  const tailSlot = softTailSlot(profile, params);
+  const softSlot = softTailSlot(profile, params);
+  const tailSlot = softSlot ?? caudalSlot(profile, params);
+  const tailSlotIsCaudal = !softSlot && tailSlot !== null;
   if (tailSlot && !cutRear) {
     pEnd = Math.min(pEnd, tailSlot.pCut);
     cutRear = true;
@@ -2965,15 +3051,26 @@ export function buildAssembly(
       if (fin.rail === rail && x1 >= fin.x0 - 0.1 && x0 <= fin.x1 + 0.1) return fin.label;
     }
     if (!anatomy) return null;
-    const fins =
+    // Seules les nageoires qui sortent du corps dans le plan de joint (cretes
+    // integrees) ou qui s'y logent (rapportees) bloquent une bouche ; une
+    // nageoire dessinee en relief laisse passer. Les pelviennes couchees
+    // restent comptees : leur relief borde le ventre.
+    const blocks = (fin: FinConfig | undefined, kind: FinKind) =>
+      !!fin && (kind === 'pelvic' ? finModeOf(fin, kind) !== 'attached' : finModeOf(fin, kind) !== 'relief');
+    const fins = (
       rail === 'lo'
         ? [
-            { fin: anatomy.pelvicFin, label: 'la nageoire ventrale' },
-            { fin: anatomy.analFin, label: 'la nageoire anale' },
+            { fin: anatomy.pelvicFin, kind: 'pelvic' as FinKind, label: 'la nageoire ventrale' },
+            { fin: anatomy.analFin, kind: 'anal' as FinKind, label: 'la nageoire anale' },
           ]
-        : [{ fin: anatomy.dorsalFin, label: 'la nageoire dorsale' }];
+        : [
+            { fin: anatomy.dorsalFin, kind: 'dorsal' as FinKind, label: 'la nageoire dorsale' },
+            { fin: anatomy.dorsalFin2, kind: 'dorsal2' as FinKind, label: 'la seconde dorsale' },
+          ]
+    ).filter((item) => blocks(item.fin, item.kind) && !(item.kind === 'pelvic' && anatomy.pelvicSucker));
     const margin = 0.1;
-    for (const { fin, label } of fins) {
+    for (const { fin: f, label } of fins) {
+      const fin = f!;
       if (!fin.enabled || fin.size <= 0) continue;
       const a = profile.xAt(fin.from) - margin;
       const b = profile.xAt(fin.to) + margin;
@@ -2986,10 +3083,23 @@ export function buildAssembly(
   // elles partagent les memes stations, et les faces de coupe du plan de
   // joint se recouperaient — la coque ne se refermerait plus.
   const taken: [number, number][] = [];
-  const reserve = (iStart: number, iEnd: number): boolean => {
-    if (vJoint && iStart < split && iEnd >= split - 1) return false;
-    for (const [a, b] of taken) if (iStart <= b + 1 && a - 1 <= iEnd) return false;
+  const takenBy: string[] = [];
+  /** Dernier passage qui a refuse une reservation : il est nomme dans le refus. */
+  let blockedBy = '';
+  const reserve = (iStart: number, iEnd: number, owner = 'un passage'): boolean => {
+    if (vJoint && iStart < split && iEnd >= split - 1) {
+      blockedBy = 'le joint articule';
+      return false;
+    }
+    for (let k = 0; k < taken.length; k++) {
+      const [a, b] = taken[k];
+      if (iStart <= b + 1 && a - 1 <= iEnd) {
+        blockedBy = takenBy[k];
+        return false;
+      }
+    }
     taken.push([iStart, iEnd]);
+    takenBy.push(owner);
     return true;
   };
   /** Encoches deja placees dans une face de coupe, pour eviter qu'elles se touchent. */
@@ -3078,7 +3188,11 @@ export function buildAssembly(
       // Le contour du puits doit passer au large des rails, sinon le percage
       // profond mordrait sur la paroi de la rainure.
       const outer = Math.hypot(R, Math.max(aLo, aHi)) + LEDGE;
-      if (iStart < 1 || iEnd > stations.length - 2 || !reserve(iStart, iEnd)) {
+      if (
+        iStart < 1 ||
+        iEnd > stations.length - 2 ||
+        !reserve(iStart, iEnd, `la sortie de l ancrage a ${((center.x - profile.xAt(0)) / MM_TO_CM).toFixed(0)} mm`)
+      ) {
         plan.valid = false;
         plan.problem = 'Le passage de sortie ne tient pas ici : deplacez l ancrage.';
         continue;
@@ -3139,6 +3253,70 @@ export function buildAssembly(
         EXIT_ANGLE[plan.exit],
       ),
     );
+  }
+
+  // --- Nageoires impaires rapportees : fente dans le plan de joint ---------
+  // La languette de la piece (1,2 mm) se prend en sandwich entre les deux
+  // coques, comme la bavette : une bouche sur le rail du dos (dorsales) ou du
+  // ventre (anale), aussi longue que la base de la nageoire, qui suit le
+  // contour a la profondeur de la languette. Jeu de collage : 0,10 mm par
+  // face (FIN_FIT).
+  const finSlotProblems: string[] = [];
+  const finSlots: { rail: 'lo' | 'hi'; x0: number; x1: number; label: string }[] = [];
+  if (anatomy && params.assembly.planeAngle < 5) {
+    const H = params.thickness * MM_TO_CM;
+    const tab = medianTabOf(H);
+    const w = tab.thickness / 2 + FIN_FIT;
+    const medians: [FinConfig | undefined, FinKind, 'lo' | 'hi', string][] = [
+      [anatomy.dorsalFin, 'dorsal', 'hi', 'la dorsale'],
+      [anatomy.dorsalFin2, 'dorsal2', 'hi', 'la seconde dorsale'],
+      [anatomy.analFin, 'anal', 'lo', 'l anale'],
+    ];
+    for (const [fin, kind, rail, label] of medians) {
+      if (!fin || !fin.enabled || fin.size <= 0 || finModeOf(fin, kind) !== 'attached') continue;
+      const xa = profile.xAt(fin.from) - FIN_FIT;
+      const xb = profile.xAt(fin.to) + FIN_FIT;
+      let iStart = 0;
+      while (iStart < stations.length - 1 && stations[iStart + 1].x <= xa) iStart++;
+      let iEnd = stations.length - 1;
+      while (iEnd > 0 && stations[iEnd - 1].x >= xb) iEnd--;
+      if (iStart < 1 || iEnd > stations.length - 2 || iEnd < iStart + 2) {
+        finSlotProblems.push(`Fente de ${label} rapportee : la base de la nageoire sort du corps.`);
+        continue;
+      }
+      if (!reserve(iStart, iEnd, `la fente de ${label}`)) {
+        finSlotProblems.push(
+          `Fente de ${label} rapportee : elle partage ses stations avec ${blockedBy} — deux bouches du ` +
+            'plan de joint ne peuvent pas se chevaucher, meme sur des rails opposes. Deplacez la nageoire ' +
+            'ou ce passage le long du corps.',
+        );
+        continue;
+      }
+      const path: THREE.Vector2[] = [];
+      let ok = true;
+      for (let i = iStart; i <= iEnd; i++) {
+        const station = stations[i];
+        if (station.degenerate) {
+          ok = false;
+          break;
+        }
+        const [lo, hi] = stationRange(surface, frame, station);
+        const tIn = rail === 'hi' ? hi - tab.depth : lo + tab.depth;
+        if (bulgeAtT(surface, frame, station, tIn + (rail === 'hi' ? -SKIN : SKIN)) < w + SKIN) ok = false;
+        path.push(new THREE.Vector2(station.x, tIn));
+      }
+      if (!ok) {
+        finSlotProblems.push(
+          `Fente de ${label} rapportee : le corps est trop mince sous la base pour loger la languette de ` +
+            `${(tab.thickness / MM_TO_CM).toFixed(1)} mm. Passez la nageoire en relief ou en integree.`,
+        );
+        continue;
+      }
+      const exit: SideExit = { rail, iStart, iEnd, path, depth: w };
+      maleSides.push(exit);
+      femaleSides.push(exit);
+      finSlots.push({ rail, x0: xa, x1: xb, label });
+    }
   }
 
   // --- Fente de bavette, identique dans les deux coques --------------------
@@ -3215,7 +3393,7 @@ export function buildAssembly(
         iEnd - iStart >= 1 &&
         baseT >= tMin + WALL &&
         topT <= tMax - SKIN &&
-        reserve(iStart, iEnd)
+        reserve(iStart, iEnd, 'la fente de bavette')
       ) {
         chinSlots.push({ iStart, iEnd, topT: topT_, baseT, depth: bill.depth, back });
         billResult = {
@@ -3284,6 +3462,20 @@ export function buildAssembly(
     cutRear,
     arcSamples: resolution.arcSamples,
     chinSlots,
+    // Maillage adaptatif (module AT.2) : a l'export seulement, sur la
+    // surface exacte de la coque.
+    refine: resolution.refine
+      ? {
+          surface: (p: number, theta: number) => surface(p, theta),
+          options: {
+            tolerance: resolution.refine.tolerance,
+            budget: resolution.refine.budget,
+            floor: resolution.refine.floor,
+            minEdge: resolution.refine.minEdge,
+            maxEdge: resolution.refine.maxEdge,
+          },
+        }
+      : undefined,
   };
   // --- Goupilles cylindriques d'assemblage --------------------------------
   // Elles alignent les deux coques pendant le collage. Leur logement est un
@@ -3410,7 +3602,11 @@ export function buildAssembly(
         continue;
       }
     }
-    if (iStart < 1 || iEnd > stations.length - 2 || !reserve(iStart, iEnd)) {
+    if (
+      iStart < 1 ||
+      iEnd > stations.length - 2 ||
+      !reserve(iStart, iEnd, `la vis a ${((screw.x - profile.xAt(0)) / MM_TO_CM).toFixed(0)} mm`)
+    ) {
       screw.valid = false;
       screw.problem =
         `Vis a ${((screw.x - profile.xAt(0)) / MM_TO_CM).toFixed(0)} mm : un autre passage ` +
@@ -3626,9 +3822,13 @@ export function buildAssembly(
       room = Math.min(room, notchRoom(surface, frame, station, tLo, tHi));
     }
     if (tLo < lo + SKIN || tHi > hi - SKIN || room < tailSlot.depth + SKIN) {
-      tailSlotProblem =
-        `La fente de la queue rapportee (${((tailSlot.depth * 2) / MM_TO_CM).toFixed(2)} mm jeu compris) ` +
-        'percerait le pedoncule : amincissez la lame ou reculez sa racine.';
+      tailSlotProblem = tailSlotIsCaudal
+        ? `La fente de la caudale rapportee (${((tailSlot.depth * 2) / MM_TO_CM).toFixed(2)} mm jeu compris) ` +
+          `percerait le pedoncule, qui n a que ${((room * 2) / MM_TO_CM).toFixed(2)} mm d epaisseur la ou la ` +
+          `languette entre (il en faut ${(((tailSlot.depth + SKIN) * 2) / MM_TO_CM).toFixed(2)}). Epaississez le ` +
+          'pedoncule ou gardez la caudale integree.'
+        : `La fente de la queue rapportee (${((tailSlot.depth * 2) / MM_TO_CM).toFixed(2)} mm jeu compris) ` +
+          'percerait le pedoncule : amincissez la lame ou reculez sa racine.';
     } else if (freeNotch('rear', tLo, tHi)) {
       const path = [
         new THREE.Vector2(xCut, tLo),
@@ -4414,6 +4614,7 @@ export function buildAssembly(
         cutFront,
         cutRear: true,
         vRear: { x0: vJoint.xFront, tan: vJoint.tanFront },
+        totalStations: stations.length,
       },
       maleSide,
     );
@@ -4436,6 +4637,7 @@ export function buildAssembly(
         cutFront: true,
         cutRear,
         vFront: { x0: vJoint.xRear, tan: vJoint.tanRear },
+        totalStations: stations.length,
       },
       maleSide,
     );
@@ -4490,6 +4692,7 @@ export function buildAssembly(
     jointPlan: jointResult,
     jointProblem,
     tailSlotProblem,
+    finSlotProblems,
     chamber: chamberReport,
     chamberProblem,
     dowelPins: buildDowelPins(dowels),

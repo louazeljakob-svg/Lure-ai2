@@ -32,7 +32,7 @@
  */
 
 import * as THREE from 'three';
-import type { Anatomy, FinConfig, LureParams, ProfileKnot } from '../types/lure';
+import type { Anatomy, FinConfig, FinMode, LureParams, ProfileKnot } from '../types/lure';
 import type { ProfileSampler, Section } from './profile';
 
 const MM = 0.1;
@@ -231,6 +231,10 @@ export interface AnatomyContext {
   bodyEnd: number;
   /** Enveloppe dessinee a la main, ou null. */
   drawn: ((p: number) => { top: number; bottom: number } | null) | null;
+  /** Caudale dessinee en relief sur le bout de queue (module AW). */
+  caudalDrawn?: boolean;
+  /** Caudale rapportee : le pedoncule se referme court, comme sous une lame. */
+  finRoot?: boolean;
 }
 
 /**
@@ -299,7 +303,7 @@ export function createAnatomicalProfile(
   const noseShape = clampN(anatomy.noseShape, 0.35, 1);
   // Arriere : une nageoire se greffe sur un pedoncule qui se referme en
   // calotte courte ; une queue ronde se ferme plus largement.
-  const tailCap = hasFin ? 0.03 : 0.07;
+  const tailCap = hasFin || ctx.finRoot ? 0.03 : 0.07;
 
   const capFactor = (u: number): number => {
     let f = 1;
@@ -444,6 +448,7 @@ export function createAnatomicalProfile(
     cup,
     section,
     xAt,
+    caudalDrawn: ctx.caudalDrawn === true,
   });
 
   return {
@@ -468,6 +473,7 @@ interface FieldContext {
   H: number;
   bodyEnd: number;
   pc: number;
+  caudalDrawn: boolean;
   cup: boolean;
   section: (p: number) => Section;
   xAt: (p: number) => number;
@@ -485,6 +491,42 @@ function finEnabled(fin: FinConfig): boolean {
   return fin.enabled && fin.to - fin.from > 0.01 && fin.size > 0.001;
 }
 
+/** Realisation effective d'une nageoire (module AW). */
+export type FinKind = 'dorsal' | 'dorsal2' | 'anal' | 'pectoral' | 'pelvic';
+
+/**
+ * Mode d'une nageoire : celui du reglage, ou a defaut le comportement d'avant
+ * le module AW — cretes pour la dorsale et l'anale, nageoires couchees pour
+ * les paires. Un projet anterieur se rouvre donc a l'identique.
+ */
+export function finModeOf(fin: FinConfig | undefined, kind: FinKind): FinMode {
+  if (fin?.mode) return fin.mode;
+  return kind === 'pectoral' || kind === 'pelvic' ? 'relief' : 'integrated';
+}
+
+/** Mode de la caudale : integree par defaut. */
+export const caudalModeOf = (anatomy: Anatomy | null | undefined): FinMode =>
+  anatomy?.caudalMode ?? 'integrated';
+
+/** Angle de l'oeil depuis le dos, en radians. */
+export const eyeThetaOf = (anatomy: Anatomy | null | undefined): number =>
+  clampN(anatomy?.eyeTheta ?? EYE_THETA, 0.35, 1.5);
+
+/** Epaisseurs minimales d'une nageoire integree (module AW), en cm. */
+export const FIN_MIN = { base: 0.12, edge: 0.06 };
+
+/** Jeu d'insertion d'une nageoire rapportee, par face, en cm : celui des portees d'ecrou. */
+export const FIN_FIT = 0.01;
+
+/**
+ * Crete a rayons : un leger creusement de la membrane entre deux rayons, qui
+ * fait le bord libre dentele. `s` court de 0 a 1 le long de la base.
+ */
+const rayScallop = (s: number, rays: number): number => {
+  const q = s * Math.max(rays, 1);
+  return 0.5 + 0.5 * Math.cos(Math.PI * 2 * q);
+};
+
 function createAnatomyField(
   params: LureParams,
   anatomy: Anatomy,
@@ -495,10 +537,13 @@ function createAnatomyField(
   // --- Repartition des stations -------------------------------------------
   // Serrees la ou la forme change vite : pointe du nez, tete (machoire, oeil,
   // opercule), pedoncule, calotte de queue, et le long des nageoires dont
-  // les rayons demandent une station tous les quelques dixiemes.
+  // les rayons demandent une station tous les quelques dixiemes. A l'export,
+  // le maillage adaptatif (module AT.2) affine encore la ou la surface
+  // s'ecarte de ses facettes.
   const ped = clampN(anatomy.peduncle, 0.4, bodyEnd - 0.02);
   const head = Math.max(params.gills.position, anatomy.jaw) + 0.04;
   const dorsal = anatomy.dorsalFin;
+  const dorsal2 = anatomy.dorsalFin2;
   const anal = anatomy.analFin;
   const density = (p: number): number => {
     let rho = 1;
@@ -507,43 +552,71 @@ function createAnatomyField(
     rho += 1.3 * Math.exp(-(((p - ped) / 0.07) ** 2));
     rho += 4 * Math.exp(-(((bodyEnd - p) / 0.015) ** 2));
     if (ctx.cup && p < pc) rho += 4;
-    for (const fin of [dorsal, anal]) {
-      if (finEnabled(fin) && p > fin.from - 0.01 && p < fin.to + 0.01) rho += 0.7;
+    for (const fin of [dorsal, dorsal2, anal]) {
+      if (fin && finEnabled(fin) && p > fin.from - 0.01 && p < fin.to + 0.01) rho += 0.7;
     }
     return rho;
   };
   const warp = distribution(density, bodyEnd);
 
-  // --- Cotes des reliefs, en cm -------------------------------------------
+  // Largeur minimale d'un detail : en dessous de 0,25 mm, une buse de
+  // 0,4 mm ne le reproduit pas, et une facette le trahirait.
+  const FEATURE = 0.025;
+
+  // --- Bouche : levres, commissure, rebord de machoire ---------------------
   const jawP = clampN(anatomy.jaw, 0.02, 0.3);
   const jawDepth = Math.max(anatomy.jawDepth, 0) * H;
-  const jawSigma = clampN(0.0035 * L, 0.018, 0.05);
+  const jawSigma = clampN(0.0035 * L, FEATURE, 0.05);
+  const lipH = Math.max(anatomy.lips ?? 0.4 * anatomy.jawDepth, 0) * H;
+  const protrude = clampN(anatomy.jawProtrusion ?? 0, -1, 1.5) * MM;
+  const lineThetaAt = (p: number) => Math.PI / 2 + 0.05 + 0.28 * Math.pow(Math.min(Math.max(p, 0), jawP) / jawP, 1.3);
+  const xJaw = ctx.xAt(jawP);
 
+  // --- Oeil : logement au diametre reel, bourrelet periorbitaire ----------
   const eyes = params.eyes.enabled ? params.eyes : null;
+  const eyeTheta = eyeThetaOf(anatomy);
   const eyeX = eyes ? ctx.xAt(eyes.position) : 0;
   const eyeR = eyes ? Math.max((eyes.size * MM) / 2, 0.05) : 1;
   const orbitDepth = Math.max(anatomy.orbitDepth, 0) * MM;
-  const socketR = eyeR * 1.06;
-  const socketWall = Math.max(0.3 * eyeR, 0.04);
-  const rimH = Math.max(0.35 * orbitDepth, 0.012);
-  const rimW = Math.max(0.22 * eyeR, 0.04);
+  const socketWall = Math.max(0.25 * eyeR, 0.03);
+  const rimW = Math.max(0.24 * eyeR, 0.035);
+  const rimH = Math.max(0.4 * orbitDepth, 0.015);
   const corneaH = eyes ? Math.max(eyes.relief, 0) * MM : 0;
+  const orbitReach = eyeR + socketWall + 3.5 * rimW;
 
+  // --- Narines : deux fossettes entre le museau et l'oeil ------------------
+  const nostrilDepth = Math.max(anatomy.nostrils ?? 0, 0) * MM;
+  const nostrilR = clampN(0.012 * H, 0.03, 0.06);
+  const nostrilP = eyes ? eyes.position * 0.55 : jawP * 0.7;
+  const nostrilX = ctx.xAt(nostrilP);
+  const nostrilGap = Math.max(2.2 * nostrilR, 0.07);
+  const nostrilTheta = Math.max(eyeTheta - 0.14, 0.3);
+
+  // --- Opercule, preopercule, fente branchiale ----------------------------
   const gills = params.gills.enabled ? params.gills : null;
   const opX = gills ? ctx.xAt(gills.position) : 0;
   const opBow = gills ? Math.max(gills.size * MM, 0.05) : 0;
   const opR = Math.max(anatomy.opercleRelief, 0) * H;
   const slitD = gills ? Math.abs(gills.relief) * MM : 0;
-  const opEdge = clampN(0.002 * L, 0.012, 0.035);
+  // Transitions d'au moins 0,3 mm : le bord libre reste franc a l'oeil et
+  // imprimable a la buse.
+  const opEdge = clampN(0.0028 * L, 0.03, 0.045);
   const opLen = 0.075 * L;
+  const preA = 0.42 * opLen;
   const OP_TOP = 0.42;
   const OP_BOT = 2.55;
 
+  // --- Ligne laterale et carene ventrale ----------------------------------
   const llDepth = Math.max(anatomy.lateralLine, 0) * MM;
   const llFrom = (gills ? gills.position : 0.25) + 0.04;
   const llTo = Math.min(ped + 0.05, bodyEnd - 0.04);
-  const llSigma = clampN(0.0022 * L, 0.012, 0.03);
+  const llSigma = clampN(0.0022 * L, 0.02, 0.03);
+  const keel = Math.max(anatomy.ventralLine ?? 0, 0) * MM;
+  const keelFrom = (gills ? gills.position : 0.2) + 0.02;
+  const keelTo = Math.min(finEnabled(anal) ? anal.from : ped, bodyEnd - 0.05);
+  const keelSigma = Math.max(0.004 * H, FEATURE);
 
+  // --- Nageoires paires couchees ------------------------------------------
   interface Flat {
     fin: FinConfig;
     theta: number;
@@ -554,8 +627,8 @@ function createAnatomyField(
     thick: number;
   }
   const flats: Flat[] = [];
-  const flat = (fin: FinConfig, theta: number, tilt: number) => {
-    if (!finEnabled(fin)) return;
+  const flat = (fin: FinConfig, kind: FinKind, theta: number, tilt: number) => {
+    if (!finEnabled(fin) || finModeOf(fin, kind) !== 'relief') return;
     flats.push({
       fin,
       theta,
@@ -563,11 +636,90 @@ function createAnatomyField(
       x0: ctx.xAt(fin.from),
       length: Math.max((fin.to - fin.from) * L, 0.1),
       span: fin.size * H,
-      thick: clampN(0.035 * H, 0.04, 0.12),
+      // Nageoire dessinee, pas plaquee : 0,3 a 0,6 mm de relief.
+      thick: clampN(0.018 * H, 0.03, 0.06),
     });
   };
-  flat(anatomy.pectoralFin, 2.02, 0.2);
-  flat(anatomy.pelvicFin, 2.62, 0.1);
+  flat(anatomy.pectoralFin, 'pectoral', 2.02, 0.2);
+  if (!anatomy.pelvicSucker) flat(anatomy.pelvicFin, 'pelvic', 2.62, 0.1);
+
+  // Logements des nageoires paires rapportees : un puits a fond plat au pied
+  // de la nageoire, qui recoit le tenon de la piece, jeu de collage compris.
+  interface Socket {
+    x: number;
+    theta: number;
+    radius: number;
+    depth: number;
+  }
+  const sockets: Socket[] = [];
+  for (const [fin, kind, theta] of [
+    [anatomy.pectoralFin, 'pectoral', 2.02],
+    [anatomy.pelvicFin, 'pelvic', 2.62],
+  ] as [FinConfig, FinKind, number][]) {
+    if (!finEnabled(fin) || finModeOf(fin, kind) !== 'attached') continue;
+    const tab = pairedTabOf(H);
+    const radius = pairedSocketRadius(H);
+    sockets.push({ x: ctx.xAt(fin.from) + radius + 0.02, theta, radius, depth: tab.depth + FIN_FIT });
+  }
+
+  // Ventouse pelvienne (gobie) : disque sous la gorge, bourrelet et rayons.
+  const sucker =
+    anatomy.pelvicSucker && finEnabled(anatomy.pelvicFin)
+      ? {
+          x: ctx.xAt((anatomy.pelvicFin.from + anatomy.pelvicFin.to) / 2),
+          radius: Math.max(((anatomy.pelvicFin.to - anatomy.pelvicFin.from) * L) / 2, 0.15),
+          height: clampN(0.02 * H, 0.03, 0.08),
+          rays: Math.max(anatomy.pelvicFin.rays, 4),
+        }
+      : null;
+
+  // --- Nageoires impaires couchees sur le flanc ----------------------------
+  // Mode relief : la nageoire est rabattue contre le flanc, rayons inclines
+  // vers l'arriere, bord libre dentele. Rien ne depasse du corps.
+  interface Folded {
+    fin: FinConfig;
+    /** 0 pour une dorsale (depuis le dos), PI pour l'anale (depuis le ventre). */
+    ridge: number;
+    xa: number;
+    xb: number;
+    height: number;
+    thick: number;
+  }
+  const folded: Folded[] = [];
+  const fold = (fin: FinConfig | undefined, kind: FinKind, ridge: number) => {
+    if (!fin || !finEnabled(fin) || finModeOf(fin, kind) !== 'relief') return;
+    folded.push({
+      fin,
+      ridge,
+      xa: ctx.xAt(fin.from),
+      xb: ctx.xAt(fin.to),
+      height: fin.size * H,
+      thick: clampN(0.016 * H, 0.03, 0.055),
+    });
+  };
+  fold(dorsal, 'dorsal', 0);
+  fold(dorsal2, 'dorsal2', 0);
+  fold(anal, 'anal', Math.PI);
+  const RAY_SWEEP = Math.tan(0.85);
+
+  // Caudale en relief (module AW) : un eventail rayonne dessine sur le bout
+  // de queue, de part et d'autre, du pedoncule a la pointe.
+  const caudal = ctx.caudalDrawn
+    ? (() => {
+        const x0 = ctx.xAt(ped);
+        const x1 = ctx.xAt(bodyEnd);
+        const span = Math.max(x1 - x0, 0.1);
+        const xo = x0 - 0.35 * span;
+        return {
+          xo,
+          r0: x0 - xo,
+          r1: (x1 - xo) * 0.96,
+          psiMax: 0.75,
+          rays: Math.max(Math.round(anatomy.caudalRays), 6),
+          thick: clampN(0.014 * H, 0.025, 0.045),
+        };
+      })()
+    : null;
 
   const relief = (p: number, theta: number, section: Section): number => {
     if (p <= 0 || p >= bodyEnd) return 0;
@@ -581,61 +733,84 @@ function createAnatomyField(
     const x = ctx.xAt(p);
     let d = 0;
 
-    // Machoire : sillon de la pointe du museau a la commissure, qui descend
-    // legerement vers l'arriere, avec la levre inferieure en leger bourrelet
-    // et une fossette a la commissure.
-    if (jawDepth > 0 && p < jawP + 0.05) {
-      const pClamp = Math.min(p, jawP);
-      const lineTheta = Math.PI / 2 + 0.05 + 0.28 * Math.pow(pClamp / jawP, 1.3);
+    // Bouche : sillon de la pointe du museau a la commissure, levre
+    // superieure au-dessus, levre inferieure au-dessous, commissure marquee
+    // d'une fossette ; sous la levre, le rebord de la machoire inferieure.
+    if ((jawDepth > 0 || lipH > 0) && p < jawP * 1.35 + 0.03) {
+      const lineTheta = lineThetaAt(p);
       const across = chordBetween(section, th, lineTheta);
-      const along = p <= jawP ? 0 : x - ctx.xAt(jawP);
-      const dist = Math.hypot(across, along);
+      const along = p <= jawP ? 0 : x - xJaw;
       const envelope = smoothstep(pc + 0.004, pc + 0.03, p);
-      const groove = -jawDepth * Math.exp(-((dist / jawSigma) ** 2));
-      const lip =
-        0.4 * jawDepth * Math.exp(-(((across - 1.8 * jawSigma) / jawSigma) ** 2)) *
-        Math.exp(-((along / jawSigma) ** 2));
+      const behind = Math.exp(-((along / (1.3 * jawSigma)) ** 2));
+      const groove = -jawDepth * Math.exp(-((Math.hypot(across, along) / jawSigma) ** 2));
+      const upperLip = lipH * Math.exp(-(((across + 1.7 * jawSigma) / (1.1 * jawSigma)) ** 2)) * behind;
+      const lowerLip = lipH * Math.exp(-(((across - 1.7 * jawSigma) / (1.1 * jawSigma)) ** 2)) * behind;
       const pit =
-        -0.5 * jawDepth *
-        Math.exp(-((Math.hypot(x - ctx.xAt(jawP), chordBetween(section, th, Math.PI / 2 + 0.33)) /
-          (1.6 * jawSigma)) ** 2));
-      d += envelope * (groove + lip + pit);
+        -0.6 * jawDepth *
+        Math.exp(-((Math.hypot(x - xJaw, chordBetween(section, th, lineThetaAt(jawP))) / (1.4 * jawSigma)) ** 2));
+      // Rebord de machoire inferieure : une arete douce parallele a la levre,
+      // plus bas, jusqu'un peu au-dela de la commissure.
+      const mandible =
+        0.55 * lipH *
+        Math.exp(-(((across - 4.2 * jawSigma) / (1.2 * jawSigma)) ** 2)) *
+        (1 - smoothstep(jawP, jawP * 1.35 + 0.02, p));
+      // Machoire proeminente (ou en retrait) : la levre inferieure et le
+      // menton poussent vers l'exterieur pres de la pointe.
+      const jut = protrude * smoothstep(0, 2 * jawSigma, across) * (1 - smoothstep(0, 0.45 * jawP, p));
+      d += envelope * (groove + upperLip + lowerLip + pit + mandible + jut);
     }
 
-    // Orbite creusee, bourrelet de bord, et cornee bombee dans le logement.
-    if (eyes) {
-      const dx = x - eyeX;
-      if (Math.abs(dx) < socketR + 4 * rimW) {
-        const chord = Math.abs(chordBetween(section, th, EYE_THETA));
-        const dist = Math.hypot(dx, chord);
-        if (dist < socketR + 4 * rimW) {
-          const socket = -orbitDepth * (1 - smoothstep(socketR - socketWall, socketR, dist));
-          const rim = rimH * Math.exp(-(((dist - socketR - 0.25 * rimW) / rimW) ** 2));
-          let cornea = 0;
-          const rd = eyeR * 0.9;
-          if (corneaH > 0 && dist < rd) {
-            cornea = (orbitDepth * 0.9 + corneaH) * Math.pow(1 - (dist / rd) ** 2, 0.7);
-          }
-          d += socket + rim + cornea;
-        }
+    // Narines : deux fossettes ourlees, devant l'oeil.
+    if (nostrilDepth > 0 && Math.abs(x - nostrilX) < nostrilGap + 3 * nostrilR) {
+      const across = chordBetween(section, th, nostrilTheta);
+      for (const dx of [-nostrilGap / 2, nostrilGap / 2]) {
+        const dist = Math.hypot(x - nostrilX - dx, across);
+        if (dist > 2.2 * nostrilR) continue;
+        d += -nostrilDepth * (1 - smoothstep(0.45 * nostrilR, nostrilR, dist));
+        d += 0.3 * nostrilDepth * Math.exp(-(((dist - 1.25 * nostrilR) / (0.4 * nostrilR)) ** 2));
       }
     }
 
-    // Opercule : plaque en relief dont le bord arriere est saillant, doublee
-    // d'un bourrelet, suivie de la fente d'ouie ; sillon du preopercule en
-    // avant. Le bord bombe vers l'arriere a mi-flanc et revient vers la gorge.
+    // Orbite : logement a fond plat au diametre reel de l'oeil, paroi, puis
+    // bourrelet periorbitaire ; cornee bombee dans le logement si demandee.
+    if (eyes && Math.abs(x - eyeX) < orbitReach) {
+      const chord = Math.abs(chordBetween(section, th, eyeTheta));
+      const dist = Math.hypot(x - eyeX, chord);
+      if (dist < orbitReach) {
+        const socket = -orbitDepth * (1 - smoothstep(eyeR, eyeR + socketWall, dist));
+        const rim = rimH * Math.exp(-(((dist - eyeR - socketWall - rimW) / rimW) ** 2));
+        let cornea = 0;
+        const rd = eyeR * 0.92;
+        if (corneaH > 0 && dist < rd) {
+          const q = dist / rd;
+          cornea = (orbitDepth * 0.9 + corneaH) * (1 - q * q) * (1 - q * q);
+        }
+        d += socket + rim + cornea;
+      }
+    }
+
+    // Opercule : plaque en relief a bord libre saillant (bourrelet), fente
+    // branchiale juste derriere ; en avant, le preopercule : un second plan
+    // plus bas, separe de l'opercule par son propre bord et un sillon. Le
+    // bord bombe vers l'arriere a mi-flanc et revient vers la gorge.
+    let opCover = 0;
     if (gills && th > OP_TOP - 0.1 && th < OP_BOT + 0.1) {
       const phi = clampN((th - OP_TOP) / (OP_BOT - OP_TOP), 0, 1);
       const edge = opX + opBow * Math.sin(Math.PI * Math.pow(phi, 0.85)) - 0.5 * opBow * phi * phi;
       const a = edge - x;
-      if (a > -8 * opEdge && a < opLen * 1.1) {
+      if (a > -8 * opEdge && a < opLen * 1.25) {
         const window =
           smoothstep(0, 0.1, (th - OP_TOP + 0.1) / (OP_BOT - OP_TOP)) *
           smoothstep(0, 0.1, (OP_BOT + 0.1 - th) / (OP_BOT - OP_TOP));
-        const plate = opR * smoothstep(-opEdge, opEdge, a) * (1 - smoothstep(0.55 * opLen, opLen, a));
-        const rim = 0.6 * opR * Math.exp(-(((a - 1.5 * opEdge) / (1.2 * opEdge)) ** 2));
-        const slit = -slitD * Math.exp(-(((a + 2.4 * opEdge) / (1.3 * opEdge)) ** 2));
-        const pre = -0.35 * opR * Math.exp(-(((a - 0.55 * opLen) / (1.6 * opEdge)) ** 2));
+        opCover = window * smoothstep(-opEdge, opEdge, a);
+        const plate =
+          opR *
+          smoothstep(-opEdge, opEdge, a) *
+          (1 - 0.45 * smoothstep(preA - opEdge, preA + opEdge, a)) *
+          (1 - smoothstep(0.75 * opLen, 1.2 * opLen, a));
+        const rim = 0.45 * opR * Math.exp(-(((a - 1.2 * opEdge) / opEdge) ** 2));
+        const slit = -slitD * Math.exp(-(((a + 2 * opEdge) / (1.1 * opEdge)) ** 2));
+        const pre = -0.3 * opR * Math.exp(-(((a - preA) / (1.2 * opEdge)) ** 2));
         d += window * (plate + rim + slit + pre);
       }
     }
@@ -651,9 +826,20 @@ function createAnatomyField(
       }
     }
 
+    // Carene ventrale : la ligne mediane du ventre, un leger bourrelet.
+    if (keel > 0 && p > keelFrom && p < keelTo && th > Math.PI / 2) {
+      const across = chordBetween(section, Math.PI, th);
+      if (across < 4 * keelSigma) {
+        const t = (p - keelFrom) / Math.max(keelTo - keelFrom, 1e-6);
+        const env = smoothstep(0, 0.12, t) * smoothstep(0, 0.12, 1 - t);
+        d += keel * env * Math.exp(-((across / keelSigma) ** 2));
+      }
+    }
+
     // Nageoires couchees (pectorales, ventrales) : un eventail en relief,
-    // epais a la racine et mince au bord, rayons compris. Le bord est arrondi
-    // et la racine se fond dans le corps.
+    // epais a la racine et mince au bord, rayons compris, bord libre
+    // festonne entre les rayons. La racine sort de sous l'opercule : le
+    // relief s'efface la ou la plaque operculaire le recouvre.
     for (const fin of flats) {
       const dx = x - fin.x0;
       if (dx < -0.1 || dx > fin.length * 1.1) continue;
@@ -662,23 +848,98 @@ function createAnatomyField(
       const a = dx * Math.cos(fin.tilt) + ds * Math.sin(fin.tilt);
       const b = -dx * Math.sin(fin.tilt) + ds * Math.cos(fin.tilt);
       const s = a / fin.length;
-      if (s < -0.05 || s > 1.05) continue;
-      const half = 0.5 * fin.span * (0.3 + 0.7 * Math.pow(Math.sin(Math.PI * clampN(s * 0.85, 0, 1)), 0.7));
-      const q = Math.abs(b) / Math.max(half, 1e-4);
-      const margin = Math.min(0.045 / Math.max(half, 1e-4), 0.5);
-      const inside = smoothstep(1, 1 - margin, q) * smoothstep(1, 0.95, s) * smoothstep(-0.03, 0.06, s);
-      if (inside <= 0) continue;
-      const thick = fin.thick * (1 - 0.7 * clampN(s, 0, 1));
+      if (s < -0.05 || s > 1.08) continue;
       const origin = -0.2 * fin.length;
       const psi = Math.atan2(b, a - origin) / 0.9;
-      const ray = Math.pow(0.5 + 0.5 * Math.cos(Math.PI * 2 * psi * Math.max(fin.fin.rays, 1) * 0.5), 3);
-      d += inside * (thick + 0.22 * fin.thick * (1 - 0.5 * clampN(s, 0, 1)) * ray);
+      const rays = Math.max(fin.fin.rays, 1);
+      const ray = Math.pow(0.5 + 0.5 * Math.cos(Math.PI * 2 * psi * rays * 0.5), 3);
+      // Bord libre festonne : la membrane recule entre deux rayons.
+      const reach = 1 - 0.06 * (1 - ray);
+      const half = 0.5 * fin.span * (0.3 + 0.7 * Math.pow(Math.sin(Math.PI * clampN(s * 0.85, 0, 1)), 0.7));
+      const q = Math.abs(b) / Math.max(half, 1e-4);
+      const margin = Math.min(FEATURE * 1.6 / Math.max(half, 1e-4), 0.5);
+      const inside =
+        smoothstep(1, 1 - margin, q) *
+        smoothstep(reach, reach - Math.max(0.05, FEATURE / fin.length), s) *
+        smoothstep(-0.03, 0.06, s);
+      if (inside <= 0) continue;
+      const thick = fin.thick * (1 - 0.6 * clampN(s, 0, 1));
+      d += inside * (1 - opCover) * (thick + 0.35 * fin.thick * (1 - 0.5 * clampN(s, 0, 1)) * ray);
+    }
+
+    // Nageoires impaires rabattues (mode relief) : la base court le long de
+    // l'arete, la nageoire se couche vers l'arriere et vers le bas.
+    for (const fin of folded) {
+      if (x < fin.xa - 0.05 || x > fin.xb + fin.height * RAY_SWEEP + 0.1) continue;
+      const ds = Math.abs(chordBetween(section, th, fin.ridge));
+      if (ds > fin.height * 1.1) continue;
+      const xBase = x - ds * RAY_SWEEP;
+      const s = (xBase - fin.xa) / Math.max(fin.xb - fin.xa, 1e-4);
+      if (s < -0.04 || s > 1.04) continue;
+      const rays = Math.max(fin.fin.rays, 1);
+      const scallop = rayScallop(s, rays);
+      const ray = Math.pow(scallop, 3);
+      const reach =
+        fin.height * Math.pow(Math.sin(Math.PI * Math.pow(clampN(s, 0, 1), 0.75)), 0.6) * (1 - 0.3 * s) *
+        (1 - 0.07 * (1 - scallop));
+      const along = ds * Math.sqrt(1 + RAY_SWEEP * RAY_SWEEP);
+      const inside =
+        smoothstep(reach, reach - FEATURE * 1.6, along) *
+        smoothstep(-0.03, 0.03, s) *
+        smoothstep(1.03, 0.97, s);
+      if (inside <= 0) continue;
+      const t = clampN(along / Math.max(reach, 1e-4), 0, 1);
+      d += inside * fin.thick * ((1 - 0.6 * t) + 0.4 * ray * (1 - 0.5 * t));
+    }
+
+    // Caudale dessinee : eventail de rayons sur le flanc du bout de queue,
+    // bord libre festonne, rien ne depasse du corps.
+    if (caudal && x > caudal.xo + caudal.r0 * 0.8) {
+      const ds = chordBetween(section, th, Math.PI / 2);
+      const r = Math.hypot(x - caudal.xo, ds);
+      const psi = Math.atan2(ds, x - caudal.xo);
+      if (Math.abs(psi) < caudal.psiMax * 1.1 && r > caudal.r0 * 0.9) {
+        const k = ((psi / caudal.psiMax + 1) / 2) * caudal.rays;
+        const scallop = 0.5 + 0.5 * Math.cos(Math.PI * 2 * k);
+        const edge = caudal.r1 * (1 - 0.03 * (1 - scallop));
+        const inside =
+          smoothstep(caudal.r0, caudal.r0 + FEATURE * 2, r) *
+          smoothstep(edge, edge - FEATURE * 1.6, r) *
+          smoothstep(caudal.psiMax, caudal.psiMax - 0.12, Math.abs(psi));
+        if (inside > 0) {
+          const t = clampN((r - caudal.r0) / Math.max(caudal.r1 - caudal.r0, 1e-4), 0, 1);
+          d += inside * caudal.thick * ((1 - 0.5 * t) + 0.5 * Math.pow(scallop, 3) * (1 - 0.4 * t));
+        }
+      }
+    }
+
+    // Ventouse pelvienne : disque ourle, creux au centre, rayons rayonnants.
+    if (sucker && th > Math.PI / 2 && Math.abs(x - sucker.x) < sucker.radius * 1.4) {
+      const across = chordBetween(section, Math.PI, th);
+      const dist = Math.hypot(x - sucker.x, across);
+      if (dist < sucker.radius * 1.3) {
+        const q = dist / sucker.radius;
+        const lip = sucker.height * Math.exp(-(((q - 0.86) / 0.12) ** 2));
+        const cup = -0.45 * sucker.height * (1 - smoothstep(0.2, 0.8, q));
+        const ang = Math.atan2(across, x - sucker.x);
+        const spokes = Math.pow(0.5 + 0.5 * Math.cos(ang * sucker.rays), 3);
+        const disc = smoothstep(1.05, 0.9, q);
+        d += lip + cup + 0.35 * sucker.height * spokes * disc * smoothstep(0.25, 0.5, q);
+      }
+    }
+
+    // Logements des nageoires paires rapportees.
+    for (const sock of sockets) {
+      if (Math.abs(x - sock.x) > sock.radius * 1.6) continue;
+      const dist = Math.hypot(x - sock.x, chordBetween(section, th, sock.theta));
+      if (dist > sock.radius * 1.6) continue;
+      d -= sock.depth * (1 - smoothstep(sock.radius, sock.radius + 0.015, dist));
     }
 
     return d;
   };
 
-  // --- Cretes : dorsale et anale ------------------------------------------
+  // --- Cretes : nageoires impaires integrees -------------------------------
   interface Crest {
     fin: FinConfig;
     sign: 1 | -1;
@@ -687,18 +948,20 @@ function createAnatomyField(
     we: number;
   }
   const crests: Crest[] = [];
-  const addCrest = (fin: FinConfig, sign: 1 | -1) => {
-    if (!finEnabled(fin)) return;
+  const addCrest = (fin: FinConfig | undefined, kind: FinKind, sign: 1 | -1) => {
+    if (!fin || !finEnabled(fin) || finModeOf(fin, kind) !== 'integrated') return;
     crests.push({
       fin,
       sign,
       height: fin.size * H,
-      wb: clampN(0.045 * H, 0.05, 0.16),
-      we: clampN(0.014 * H, 0.03, 0.06),
+      // Integree (module AW) : 1,2 mm minimum a la base, 0,6 mm au bord libre.
+      wb: Math.max(clampN(0.045 * H, 0.05, 0.16), FIN_MIN.base / 2),
+      we: Math.max(clampN(0.014 * H, 0.03, 0.06), FIN_MIN.edge / 2),
     });
   };
-  addCrest(dorsal, 1);
-  addCrest(anal, -1);
+  addCrest(dorsal, 'dorsal', 1);
+  addCrest(dorsal2, 'dorsal2', 1);
+  addCrest(anal, 'anal', -1);
 
   const crest = (p: number, theta: number, z: number): number => {
     let out = 0;
@@ -707,13 +970,17 @@ function createAnatomyField(
       if (fin.sign * c <= 0) continue;
       const s = (p - fin.fin.from) / (fin.fin.to - fin.fin.from);
       if (s <= 0 || s >= 1) continue;
-      // Bord d'attaque haut, bord de fuite qui s'abaisse.
-      const h = fin.height * Math.pow(Math.sin(Math.PI * Math.pow(s, 0.75)), 0.6) * (1 - 0.3 * s);
+      const rays = Math.max(fin.fin.rays, 1);
+      // Bord d'attaque haut, bord de fuite qui s'abaisse ; le bord libre est
+      // festonne entre les rayons, jamais une decoupe franche.
+      const scallop = rayScallop(s, rays);
+      const h =
+        fin.height * Math.pow(Math.sin(Math.PI * Math.pow(s, 0.75)), 0.6) * (1 - 0.3 * s) *
+        (1 - 0.07 * (1 - scallop));
       if (h <= 1e-4) continue;
       const az = Math.abs(z);
       // Rayons : une surepaisseur qui court de la base vers le bord, inclinee
       // vers l'arriere comme sur une vraie nageoire.
-      const rays = Math.max(fin.fin.rays, 1);
       const q = s * rays - 0.6 * clampN(1 - az / fin.wb, 0, 1);
       const ray = Math.pow(Math.max(Math.cos(Math.PI * 2 * q), 0), 4);
       const wb = fin.wb * (1 + 0.25 * ray);
@@ -738,6 +1005,26 @@ function createAnatomyField(
   };
 }
 
+/** Languette d'une nageoire paire rapportee, en cm : elle entre dans un puits du flanc. */
+export function pairedTabOf(bodyHeightCm: number): { width: number; thickness: number; depth: number } {
+  return {
+    width: clampN(0.1 * bodyHeightCm, 0.15, 0.25),
+    thickness: FIN_MIN.base,
+    depth: clampN(0.06 * bodyHeightCm, 0.1, 0.18),
+  };
+}
+
+/** Rayon du puits d'une nageoire paire rapportee : demi-diagonale de la languette, plus le jeu. */
+export const pairedSocketRadius = (bodyHeightCm: number): number => {
+  const tab = pairedTabOf(bodyHeightCm);
+  return Math.hypot(tab.width, tab.thickness) / 2 + FIN_FIT;
+};
+
+/** Languette d'une nageoire impaire rapportee (dorsale, anale), en cm. */
+export function medianTabOf(bodyHeightCm: number): { thickness: number; depth: number } {
+  return { thickness: FIN_MIN.base, depth: clampN(0.09 * bodyHeightCm, 0.15, 0.3) };
+}
+
 // ---------------------------------------------------------------------------
 // Nageoire caudale en volume
 // ---------------------------------------------------------------------------
@@ -757,7 +1044,7 @@ function createAnatomyField(
 export function buildCaudalFin(
   profile: ProfileSampler,
   params: LureParams,
-  part: 'full' | 'male' | 'female' = 'full',
+  part: 'full' | 'male' | 'female' | 'print' = 'full',
 ): THREE.BufferGeometry {
   const H = params.thickness * MM;
   // La racine est posee la ou la calotte de queue commence : la lame y
@@ -772,22 +1059,35 @@ export function buildCaudalFin(
   const centreY = (rootSection.top + rootSection.bottom) / 2 + rootSection.offset;
   const rootThick = rootSection.halfWidth * 2 * 1.08;
   const size = clampN(params.tailSize, 0.4, 1.8);
-  const h = Math.max(H * 0.5 * size * (params.tailShape === 'fan' ? 1.02 : params.tailShape === 'paddle' ? 0.8 : 0.95), stalk * 1.2);
+  const shapeK =
+    params.tailShape === 'fan' ? 1.02 : params.tailShape === 'paddle' ? 0.8 : params.tailShape === 'rounded' ? 0.9 : 0.95;
+  const h = Math.max(H * 0.5 * size * shapeK, stalk * 1.2);
   const rays = Math.max(Math.round(params.anatomy?.caudalRays ?? 14), 4);
-  const tb = clampN(0.06 * H, 0.08, 0.22);
+  // Integree (module AW) : 1,2 mm au moins a la racine de la lame.
+  const tb = clampN(0.06 * H, FIN_MIN.base, 0.22);
+  // Feston du bord libre : la membrane recule d'un rien entre deux rayons.
+  const scallopDepth = params.tailShape === 'paddle' ? 0 : 0.035;
+  const festoon = (v: number): number => {
+    const k = ((v + 1) / 2) * rays;
+    return 1 - scallopDepth * (1 - Math.pow(0.5 + 0.5 * Math.cos(Math.PI * 2 * k), 2));
+  };
 
   /** Bord de fuite, pour v de -1 (lobe bas) a +1 (lobe haut). */
   const trailing = (v: number): { x: number; y: number } => {
     const av = Math.abs(v);
     if (params.tailShape === 'forked') {
       const notch = 0.55;
-      return { x: len * (notch + (1 - notch) * Math.pow(av, 1.25)), y: v * h * (0.2 + 0.8 * Math.pow(av, 0.8)) };
+      return { x: len * (notch + (1 - notch) * Math.pow(av, 1.25)) * festoon(v), y: v * h * (0.2 + 0.8 * Math.pow(av, 0.8)) };
     }
     if (params.tailShape === 'paddle') {
       return { x: len * (0.97 - 0.08 * av * av), y: v * h };
     }
+    if (params.tailShape === 'rounded') {
+      // Caudale arrondie (gobie) : bord de fuite en demi-cercle.
+      return { x: len * (0.6 + 0.4 * Math.sqrt(Math.max(1 - av * av, 0))) * festoon(v), y: v * h * 0.94 };
+    }
     // Eventail : bord de fuite legerement convexe.
-    return { x: len * (0.9 + 0.1 * Math.cos((av * Math.PI) / 2)), y: v * h };
+    return { x: len * (0.9 + 0.1 * Math.cos((av * Math.PI) / 2)) * festoon(v), y: v * h };
   };
 
   // Demi-caudale d'une coque (module AQ) : trois rangs par rayon suffisent
@@ -807,16 +1107,29 @@ export function buildCaudalFin(
   };
 
   const thickness = (v: number, w: number): number => {
-    const edge = Math.max(0, 1 - Math.pow(Math.abs(v), 6)) * Math.max(0, 1 - Math.pow(w, 6));
     const rootRamp = smoothstep(0, 0.04, w);
     const k = ((v + 1) / 2) * rays;
     const ray = Math.pow(Math.max(Math.cos(Math.PI * 2 * k), 0), 4);
-    const blade = tb * (1 - 0.72 * w) * (1 + 0.28 * ray * (1 - 0.5 * w));
+    // Epaisseur degressive de la racine au bord libre, jamais moins de
+    // 0,6 mm au bord (module AW).
+    // Piece rapportee : la racine a l'epaisseur de la languette, pour entrer
+    // dans la fente ; pas de moyeu, le pedoncule est dans le corps.
+    const printPart = part === 'print';
+    const tbEff = printPart ? FIN_MIN.base : tb;
+    const blade = Math.max(tbEff * (1 - (printPart ? 0.5 : 0.72) * w), FIN_MIN.edge) * (1 + (printPart ? 0 : 0.28) * ray * (1 - 0.5 * w));
     // Pres de la racine, l'epaisseur est celle du pedoncule, puis elle se
     // resserre vers la lame : c'est le raccord, sans marche.
-    const hub = rootThick * (1 - smoothstep(0, 0.2, w));
+    const hub = printPart ? 0 : rootThick * (1 - smoothstep(0, 0.2, w));
     const base = Math.max(blade, hub);
-    return base * Math.sqrt(edge) * (0.25 + 0.75 * rootRamp);
+    // Bord libre arrondi : demi-rond de rayon egal a la demi-epaisseur,
+    // mesure en distance reelle au contour. La lame garde ainsi toute son
+    // epaisseur jusqu'a 0,3 mm du bord, puis se referme sans arete vive.
+    const tip = trailing(v);
+    const across = Math.max(Math.abs(tip.y) - Math.abs(v * stalk), 1e-4) + stalk;
+    const dEdge = Math.min((1 - Math.abs(v)) * across, (1 - w) * Math.max(tip.x, 1e-4));
+    const r = base / 2;
+    const e = dEdge >= r ? 1 : Math.sqrt(Math.max(1 - (1 - dEdge / r) ** 2, 0));
+    return base * e * (0.25 + 0.75 * rootRamp);
   };
 
   const positions: number[] = [];
@@ -845,7 +1158,9 @@ export function buildCaudalFin(
         // Un sommet interieur garde une epaisseur minimale : arrondi a zero,
         // il se confondrait avec son vis-a-vis et deux faces partageraient
         // la meme arete.
-        const t = onEdge ? 0 : Math.max(thickness(v, w) / 2, 2e-5);
+        // Piece a imprimer (caudale rapportee) : toute l'epaisseur d'un seul
+        // cote, face d'appui plane.
+        const t = onEdge ? 0 : Math.max(thickness(v, w) / (part === 'print' ? 1 : 2), 2e-5);
         const id = vertex(x0 + pt.x, centreY + pt.y, side * t);
         if (onEdge) rim.add(id);
         row.push(id);
@@ -881,7 +1196,7 @@ export function buildCaudalFin(
 
   // Face +z : (v croissant, w croissant) donne une normale vers -z ; on
   // retourne donc cette face, et pas l'autre.
-  const upper = part === 'full' || part === 'male' ? grid(1) : null;
+  const upper = part === 'full' || part === 'male' || part === 'print' ? grid(1) : null;
   const lower = part === 'full' || part === 'female' ? grid(-1) : null;
   if (upper) emit(upper, true);
   if (lower) emit(lower, false);

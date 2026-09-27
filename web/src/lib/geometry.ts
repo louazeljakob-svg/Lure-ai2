@@ -19,6 +19,7 @@ import { createSurfaceDetail } from './surfaceDetail';
 import { buildCaudalFin, sectionPoint } from './anatomy';
 import { meshGeometry, releaseGeometry } from './meshBody';
 import { propellerParts, type PropellerParts } from './propeller';
+import { attachedFinsMounted, merge as mergeFins, pairedFinSolids } from './fins';
 import { propellerActive } from './throughWire';
 import {
   articulationPlan,
@@ -165,6 +166,11 @@ export interface LureGeometry {
    * imprimees a part, affichees en place sur leur axe.
    */
   propeller: PropellerParts | null;
+  /**
+   * Nageoires en volume hors peau (module AW) : paires integrees des deux
+   * cotes, et pieces rapportees montees en place. Null si aucune.
+   */
+  fins: THREE.BufferGeometry | null;
   /** Encombrement reel en mm (bavette comprise). */
   bounds: { length: number; width: number; height: number };
   dispose: () => void;
@@ -719,6 +725,25 @@ export function createSurfaceSampler(
   return createSkin(profile, params, bakeScales);
 }
 
+/**
+ * Nageoires en volume hors peau, en repere du leurre : paires integrees des
+ * deux cotes (module AW, pectorales en eventail du gobie) et pieces
+ * rapportees montees en place.
+ */
+export function finSolids(profile: ProfileSampler, params: LureParams): THREE.BufferGeometry | null {
+  if (!profile.anatomy) return null;
+  const skin = createSkin(profile, params, false);
+  const parts = [
+    ...pairedFinSolids(params, skin, 1),
+    ...pairedFinSolids(params, skin, -1),
+    ...attachedFinsMounted(profile, params, skin),
+  ];
+  if (parts.length === 0) return null;
+  const merged = mergeFins(parts);
+  for (const part of parts) part.dispose();
+  return merged;
+}
+
 export function buildLure(
   params: LureParams,
   resolution: Resolution = DISPLAY_RESOLUTION,
@@ -757,11 +782,12 @@ export function buildLure(
   const tail = profile.hasFin ? buildTailFin(profile, params) : null;
   const clip = buildClip(profile, params.clip);
   const propeller = propellerActive(params) ? propellerParts(params, profile) : null;
+  const fins = profile.anatomy ? finSolids(profile, params) : null;
 
   const box = new THREE.Box3();
   body.computeBoundingBox();
   if (body.boundingBox) box.union(body.boundingBox);
-  for (const part of [bibIsGhost ? null : bib, tail, propeller?.propeller ?? null, propeller?.bead ?? null]) {
+  for (const part of [bibIsGhost ? null : bib, tail, fins, propeller?.propeller ?? null, propeller?.bead ?? null]) {
     if (!part) continue;
     part.computeBoundingBox();
     if (part.boundingBox) box.union(part.boundingBox);
@@ -781,6 +807,7 @@ export function buildLure(
     clip,
     ballasts: ballastMarkers(profile, params.ballasts, params.ballastDensity),
     propeller,
+    fins,
     bounds: {
       length: size.x * 10,
       width: size.z * 10,
@@ -788,6 +815,7 @@ export function buildLure(
     },
     dispose: () => {
       // Le corps d'un maillage importe est partage par le cache : il survit.
+      fins?.dispose();
       releaseGeometry(body);
       segments?.front.dispose();
       segments?.rear.dispose();

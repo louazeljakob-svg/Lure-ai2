@@ -13,6 +13,7 @@ import {
   buildBib,
   buildLure,
   buildTailFin,
+  createSkin,
   printedBodies,
   DISPLAY_RESOLUTION,
   STEP_RESOLUTION,
@@ -34,6 +35,7 @@ import { createProfile } from './profile';
 import { buildRetentionPins } from './articulation';
 import { buildStepFile } from './step';
 import { encodeMeshBody, meshBodyOf, restoreMeshBody } from './meshBody';
+import { attachedFinParts, layoutFlat, pairedFinSolids } from './fins';
 
 /** Piece a exporter : ensemble assemble, ou l'une des deux coques. */
 export type ExportKind =
@@ -44,10 +46,12 @@ export type ExportKind =
   | 'softTail'
   | 'bib'
   | 'propeller'
-  | 'bead';
+  | 'bead'
+  | 'fins';
 
 export const EXPORT_LABEL: Record<ExportKind, string> = {
   assembly: 'assemble-visualisation',
+  fins: 'nageoires-rapportees',
   bib: 'bavette',
   propeller: 'helice',
   bead: 'perle',
@@ -98,6 +102,17 @@ export function collectParts(
     return { parts, owned };
   }
 
+  // Nageoires rapportees (module AW) : posees a plat, cote a cote, chacune
+  // avec sa languette ou son tenon.
+  if (kind === 'fins') {
+    const flat = layoutFlat(attachedFinParts(createProfile(params), params));
+    if (flat) {
+      owned.push(flat);
+      parts.push(flat);
+    }
+    return { parts, owned };
+  }
+
   // Helice et perle (module AP.1) : pieces imprimees a part, chacune sous son
   // nom. Une perle achetee ne sort pas : c'est de la quincaillerie.
   if (kind === 'propeller' || kind === 'bead') {
@@ -140,6 +155,8 @@ export function collectParts(
     const bib = assemblyActive(params) ? geo.bib : printedBib;
     if (bib) parts.push(bib);
     if (geo.tail) parts.push(geo.tail);
+    // Nageoires paires integrees et pieces rapportees, en place.
+    if (geo.fins) parts.push(geo.fins);
     // Helice et perle en place sur leur axe : la vue assemblee montre le
     // leurre complet.
     if (geo.propeller) parts.push(geo.propeller.propeller, geo.propeller.bead);
@@ -155,6 +172,12 @@ export function collectParts(
   // Les barreaux d'assemblage sont imprimes A PART, poses a plat a cote des
   // coques : ils accompagnent donc la piece male, une seule fois.
   if (assembly.dowelPins) owned.push(assembly.dowelPins);
+
+  // Nageoires paires integrees : chacune fait corps avec la coque de son
+  // cote (droite : male, gauche : femelle).
+  const sideFins = pairedFinSolids(params, createSkin(profile, params, false), kind === 'male' ? 1 : -1);
+  owned.push(...sideFins);
+  parts.push(...sideFins);
 
   if (kind === 'male') {
     parts.push(assembly.male);
@@ -198,20 +221,25 @@ export function collectParts(
 import { sanitizeName, sanitizeParams, sanitizePalettes } from './validation';
 
 /**
- * Densite visee pour une demi-coque de corps, en triangles par millimetre de
- * longueur, mesuree sur le STL exporte (module AQ) : une coque de 100 mm sort
- * entre 15 000 et 20 000 triangles.
+ * Densite admise pour une demi-coque de corps, en triangles par millimetre de
+ * longueur, mesuree sur le STL exporte (module AT.2) : une coque de 100 mm
+ * sort entre 20 000 et 60 000 triangles. Le maillage adaptatif les place la
+ * ou la forme change — tete, opercule, orbites, rayons, bords libres — et
+ * laisse les flancs legers.
  */
-export const SHELL_DENSITY = { min: 150, max: 200, target: 175 };
+export const SHELL_DENSITY = { min: 200, max: 600, target: 400 };
 
 const trianglesOf = (geometry: THREE.BufferGeometry | null | undefined): number =>
   geometry ? (geometry.getIndex() ? geometry.getIndex()!.count : geometry.getAttribute('position').count) / 3 : 0;
 
 /**
- * Coques d'export a la densite du module AQ.
+ * Coques d'export a la densite du module AT.2.
  *
  * La resolution de depart suit des pas absolus (0,9 mm le long du corps,
- * 0,75 mm autour). Selon la finesse du corps et ses details, la densite
+ * 0,75 mm autour), puis le maillage adaptatif affine la peau jusqu'a la
+ * tolerance de corde, dans le budget. Si la densite obtenue sortait
+ * malgre tout de la fourchette, le nombre de stations de depart est recale.
+ * Selon la finesse du corps et ses details, la densite
  * reelle en sort plus ou moins loin de la cible : on MESURE les deux fichiers
  * que l'export produira — coque, goujons, demi-caudale, barreaux — et, hors
  * de la fourchette, on recale le nombre de stations une fois. Le calcul ne
@@ -388,10 +416,13 @@ export function printableParts(
    * relief (ergots, goujons) vers le haut. L'ecart d'epaisseur entre les deux
    * se lit alors directement sur la cote Z des deux STL.
    */
-  shellPlaneAngle: number | 'axial' | null = null,
+  shellPlaneAngle: number | 'axial' | 'flat' | null = null,
 ): THREE.BufferGeometry[] {
   const place =
-    shellPlaneAngle === 'axial'
+    shellPlaneAngle === 'flat'
+      ? // Pieces deja posees a plat (nageoires rapportees) : face d'appui en z = 0.
+        new THREE.Matrix4().makeScale(10, 10, 10)
+      : shellPlaneAngle === 'axial'
       ? // Piece de revolution (helice, perle) : debout sur la face de moyeu,
         // l'axe sur Z.
         new THREE.Matrix4().makeRotationY(-Math.PI / 2).premultiply(new THREE.Matrix4().makeScale(10, 10, 10))
@@ -421,8 +452,10 @@ const fileSuffix = (params: LureParams, kind: ExportKind): string =>
   kind === 'assembly' ? (assemblyActive(params) ? `-${EXPORT_LABEL.assembly}` : '') : `-${EXPORT_LABEL[kind]}`;
 
 /** Angle du plan de joint si la piece est une demi-coque, sinon null. */
-const shellAngle = (params: LureParams, kind: ExportKind): number | 'axial' | null =>
-  kind === 'propeller' || kind === 'bead'
+const shellAngle = (params: LureParams, kind: ExportKind): number | 'axial' | 'flat' | null =>
+  kind === 'fins'
+    ? 'flat'
+    : kind === 'propeller' || kind === 'bead'
     ? 'axial'
     : (kind === 'male' || kind === 'female') && assemblyActive(params)
       ? params.assembly.planeAngle

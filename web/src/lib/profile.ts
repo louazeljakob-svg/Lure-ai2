@@ -91,8 +91,28 @@ export const clamp = (v: number, min: number, max: number): number =>
 const gauss = (p: number, center: number, width: number): number =>
   Math.exp(-((p - center) ** 2) / (2 * width * width));
 
+/** Forme de queue qui porte une caudale (quel que soit son mode). */
+export const tailShapeHasFin = (params: LureParams): boolean =>
+  params.tailShape === 'forked' ||
+  params.tailShape === 'paddle' ||
+  params.tailShape === 'fan' ||
+  params.tailShape === 'rounded';
+
+/**
+ * Caudale en volume, solidaire du corps. Une caudale dessinee en relief ou
+ * rapportee (module AW) laisse le corps se refermer sur son pedoncule.
+ */
 export const tailHasFin = (params: LureParams): boolean =>
-  params.tailShape === 'forked' || params.tailShape === 'paddle' || params.tailShape === 'fan';
+  tailShapeHasFin(params) && (params.anatomy?.caudalMode ?? 'integrated') === 'integrated';
+
+/** Caudale rapportee : piece a part, inseree dans une fente de pedoncule. */
+export const caudalAttached = (params: LureParams): boolean =>
+  tailShapeHasFin(params) && params.anatomy?.caudalMode === 'attached';
+
+/** Caudale dessinee en relief sur le bout de queue, sans lame. */
+export const caudalRelief = (params: LureParams): boolean =>
+  params.anatomy !== null && params.anatomy !== undefined &&
+  (params.anatomy.caudalMode === 'relief' || (!tailShapeHasFin(params) && params.anatomy.caudalMode !== undefined));
 
 /**
  * Rayon relatif a l'extremite arriere du corps, avant arrondi de fermeture.
@@ -116,7 +136,10 @@ export function createProfile(params: LureParams): ProfileSampler {
   const halfH = (params.thickness * MM_TO_CM) / 2;
 
   const hasFin = tailHasFin(params);
-  const bodyEnd = hasFin ? clamp(1 - 0.16 * params.tailSize, 0.68, 0.94) : 1;
+  // Caudale rapportee (module AW) : le corps s'arrete la ou la lame
+  // commencerait, referme sur son pedoncule ; la piece prend le reste.
+  const bodyEnd =
+    hasFin || caudalAttached(params) ? clamp(1 - 0.16 * params.tailSize, 0.68, 0.94) : 1;
 
   // Corps tire d'un maillage importe (module AD.3) : il l'emporte sur tout
   // le reste. Si le maillage n'est plus en memoire, le projet retombe sur
@@ -131,6 +154,8 @@ export function createProfile(params: LureParams): ProfileSampler {
       hasFin,
       bodyEnd,
       drawn: drawnEnvelope(params.outline),
+      caudalDrawn: caudalRelief(params),
+      finRoot: caudalAttached(params),
     });
   }
 

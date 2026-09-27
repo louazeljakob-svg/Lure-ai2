@@ -8,6 +8,7 @@
 import type {
   Anatomy,
   FinConfig,
+  FinMode,
   GlueGrooveConfig,
   HollowConfig,
   LureParams,
@@ -408,12 +409,18 @@ const print = (): LureParams['print'] => ({
 
 const knots = (pairs: [number, number][]): ProfileKnot[] => pairs.map(([u, v]) => ({ u, v }));
 
-const fin = (from: number, to: number, size: number, rays: number, enabled = true): FinConfig => ({
-  enabled,
+/**
+ * Nageoire de famille. Par defaut elle est dessinee EN RELIEF (module AW) :
+ * une nageoire fine se casse et gene l'impression. La caudale, elle, reste
+ * integree (reglage `caudalMode` de l'anatomie).
+ */
+const fin = (from: number, to: number, size: number, rays: number, mode: FinMode = 'relief'): FinConfig => ({
+  enabled: true,
   from,
   to,
   size,
   rays,
+  mode,
 });
 
 /** Gorge de colle : 0,8 mm de large, 0,4 mm de fond par coque, a 0,9 mm de la peau. */
@@ -455,6 +462,7 @@ export const cloneAnatomy = (anatomy: Anatomy | null): Anatomy | null =>
         analFin: { ...anatomy.analFin },
         pectoralFin: { ...anatomy.pectoralFin },
         pelvicFin: { ...anatomy.pelvicFin },
+        ...(anatomy.dorsalFin2 ? { dorsalFin2: { ...anatomy.dorsalFin2 } } : {}),
       }
     : null;
 
@@ -561,6 +569,14 @@ const minnowParams = (): LureParams => ({
     pectoralFin: fin(0.215, 0.3, 0.3, 11),
     pelvicFin: fin(0.53, 0.585, 0.2, 7),
     caudalRays: 16,
+    // Module AT : detail de tete et de corps au niveau des scans de
+    // poisson fourrage — levres distinctes, machoire inferieure un peu
+    // proeminente, narines, carene ventrale.
+    caudalMode: 'integrated',
+    lips: 0.009,
+    jawProtrusion: 0.3,
+    nostrils: 0.3,
+    ventralLine: 0.12,
   },
   meshBody: null,
   mouthCup: 0,
@@ -1041,6 +1057,102 @@ const FAMILY_PRESETS: ShapePreset[] = [
       ballasts: [ballast(0.35, -0.35, 18, 'sou', 'cylinder')],
       mounts: [mount('mount-ventre', 'Support ventral', 'ventre', 0.64, -1, treble('#4'), ring('#3'))],
       paint: paint('#5a6b74', '#e6e9eb', { pattern: 'none' }),
+    }),
+  ),
+  family(
+    'crank',
+    'Crankbait',
+    'Corps haut et court, epaules pleines, bavette large',
+    'Crankbait : corps haut et court (elancement voisin de 2,5), front bombe, epaules pleines, ventre plein, dos arrondi, pedoncule court et bavette large et courte, fortement inclinee. Assemblage Minnow 100 a l identique : male, femelle, bavette. Longueur, hauteur, largeur et angle de bavette : reglages de famille. Plage 40 a 90 mm.',
+    (base) => ({
+      length: 65,
+      maxWidth: 19,
+      thickness: 26,
+      bellyPosition: 0.42,
+      noseSharpness: 0.3,
+      anatomy: {
+        ...base.anatomy!,
+        jaw: 0.1,
+        peduncle: 0.88,
+        // Front bombe : le dos monte d'un trait depuis un nez bas et atteint
+        // sa hauteur vers 40 % du corps ; epaules pleines, puis une pente
+        // reguliere jusqu'a un pedoncule court. Proportions d'un crankbait
+        // classique, pas les cotes d'un modele.
+        dorsal: knots([
+          [0, 0.04], [0.03, 0.14], [0.08, 0.24], [0.14, 0.33], [0.21, 0.41], [0.28, 0.465],
+          [0.35, 0.5], [0.42, 0.51], [0.5, 0.5], [0.58, 0.47], [0.66, 0.42], [0.74, 0.35],
+          [0.82, 0.27], [0.89, 0.19], [0.95, 0.13], [1, 0.11],
+        ]),
+        // Ventre plein : le menton descend vite sous la bavette, le point bas
+        // est au droit du dos, la ligne remonte doucement vers la queue.
+        ventral: knots([
+          [0, 0.04], [0.04, 0.14], [0.1, 0.26], [0.17, 0.36], [0.25, 0.43], [0.33, 0.47],
+          [0.41, 0.48], [0.49, 0.47], [0.57, 0.44], [0.65, 0.39], [0.74, 0.32], [0.83, 0.26],
+          [0.9, 0.22], [0.96, 0.19], [1, 0.18],
+        ]),
+        width: knots([
+          [0, 0.42], [0.04, 0.66], [0.1, 0.82], [0.17, 0.91], [0.25, 0.97], [0.33, 1], [0.41, 0.98],
+          [0.5, 0.92], [0.6, 0.8], [0.7, 0.66], [0.8, 0.5], [0.88, 0.36], [0.95, 0.27], [1, 0.21],
+        ]),
+        // Epaules pleines (exposant au-dessus de 2), dos arrondi, carene
+        // douce seulement au pedoncule.
+        upper: knots([[0, 2.2], [0.2, 2.45], [0.45, 2.35], [0.7, 2.05], [0.88, 1.8], [1, 1.75]]),
+        lower: knots([[0, 2.3], [0.3, 2.6], [0.6, 2.45], [0.85, 2.1], [1, 1.9]]),
+        noseCap: 0.09,
+        noseShape: 0.55,
+        jawDepth: 0.016,
+        opercleRelief: 0.02,
+        orbitDepth: 0.5,
+        lateralLine: 0.1,
+        dorsalFin: fin(0.46, 0.64, 0.08, 10),
+        analFin: fin(0.8, 0.86, 0.06, 7),
+        pectoralFin: fin(0.25, 0.33, 0.2, 9),
+        pelvicFin: fin(0.52, 0.57, 0.12, 6),
+        caudalRays: 12,
+      },
+      hasBib: true,
+      billMode: 'polycarbonate',
+      billThickness: 1.5,
+      billUniform: false,
+      billOffset: 6,
+      billInsertion: 5,
+      billProfile: 'rounded',
+      // Bavette large et courte : plus large que longue, fortement inclinee.
+      bibAngle: 50,
+      bibLength: 14,
+      bibWidth: 17,
+      tailShape: 'fan',
+      tailSize: 0.5,
+      gills: { enabled: true, position: 0.25, size: 4.5, relief: -0.5 },
+      eyes: { enabled: true, position: 0.12, size: 6, relief: 0.3 },
+      assembly: assembly({
+        anchors: [
+          anchor('nez', 0.08, 0, 'nose'),
+          anchor('ventre', 0.4, -0.5, 'belly'),
+          anchor('arriere', 0.74, -0.5, 'belly'),
+        ],
+      }),
+      screws: {
+        enabled: true,
+        nutFit: 0.1,
+        screws: [
+          // Vis avant sous les epaules, ou le corps depasse 22 mm de haut : la
+          // regle donne une M3. Son ecrou s'arrete a 3,1 mm au-dessus de
+          // l'axe, a 9 mm sous le dos et 11 mm devant la chambre de lest.
+          // Vis arriere, la ou le corps redescend sous 22 mm : M2.
+          { id: 'vis-avant', position: 0.28, size: 'auto', head: 'countersunk', length: 15 },
+          { id: 'vis-arriere', position: 0.64, size: 'auto', head: 'countersunk', length: 15 },
+        ],
+      },
+      infill: 15,
+      // Lest bas, juste derriere l'attache ventrale : le crankbait flotte
+      // et se redresse seul.
+      ballasts: [ballast(0.5, -0.5, 3, 'crk', 'sphere')],
+      mounts: [
+        mount('mount-ventre', 'Support ventral', 'ventre', 0.4, -1, treble('#6'), ring('#3')),
+        mount('mount-arriere', 'Support arriere', 'arriere', 0.74, -1, treble('#6'), ring('#3')),
+      ],
+      paint: paint('#3c5b2a', '#e4d9a2', { belly: '#f3ecd0', pattern: 'none' }),
     }),
   ),
 ];

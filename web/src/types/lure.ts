@@ -9,17 +9,18 @@
  */
 
 export type ShapeId =
-  // Les six familles de la bibliotheque (modules AH et AO). Une variante —
-  // minnow nervure, suspendu, vibe de traine — est un REGLAGE de sa famille,
-  // pas une entree de plus. Chaque famille ajoutee porte une geometrie
-  // reellement distincte : helice rotative, section circulaire, chambre de
-  // billes, lest ventral integre.
+  // Les sept familles de la bibliotheque (modules AH, AO, AU et AV). Une
+  // variante — minnow nervure, suspendu, vibe de traine — est un REGLAGE de
+  // sa famille, pas une entree de plus. Chaque famille ajoutee porte une
+  // geometrie reellement distincte : helice rotative, section circulaire,
+  // chambre de billes, souple monobloc, corps trapu a bavette large.
   | 'minnow'
   | 'lipless'
   | 'plopper'
   | 'pencil'
   | 'nageur'
   | 'souple'
+  | 'crank'
   // Cuiller : forme historique sans tete, conservee pour rouvrir les anciens
   // projets a l'identique. Elle ne figure plus dans la bibliotheque.
   | 'spoon';
@@ -111,7 +112,7 @@ export interface RattleChamber {
 
 /** Forme de la queue. `taper` et `round` sont portees par le corps lui-meme, */
 /** les autres ajoutent une nageoire caudale plate generee par extrusion.     */
-export type TailShape = 'round' | 'forked' | 'paddle' | 'fan';
+export type TailShape = 'round' | 'forked' | 'paddle' | 'fan' | 'rounded';
 
 export type MaterialId =
   | 'pla'
@@ -584,6 +585,17 @@ export interface ProfileKnot {
 }
 
 /** Nageoire en relief (couchee sur le flanc) ou en crete (dans le plan de symetrie). */
+/**
+ * Mode de realisation d'une nageoire sur un leurre imprime (module AW).
+ *
+ * - `integrated` : la nageoire sort du corps, epaissie a 1,2 mm minimum a la
+ *   base et 0,6 mm au bord libre ;
+ * - `relief` : dessinee sur le flanc (rayons, bord, epaisseur degressive) sans
+ *   depasser du corps ;
+ * - `attached` : piece separee, a coller ou a inserer dans son logement.
+ */
+export type FinMode = 'integrated' | 'relief' | 'attached';
+
 export interface FinConfig {
   enabled: boolean;
   /** Debut et fin de la base le long du corps, en fraction de longueur. */
@@ -593,6 +605,11 @@ export interface FinConfig {
   size: number;
   /** Nombre de rayons. */
   rays: number;
+  /**
+   * Realisation. Absent : comportement d'avant le module AW (dorsale et
+   * anale en crete, pectorales et pelviennes couchees).
+   */
+  mode?: FinMode;
 }
 
 /**
@@ -648,6 +665,29 @@ export interface Anatomy {
   pelvicFin: FinConfig;
   /** Rayons de la caudale. */
   caudalRays: number;
+  // --- Module AT : detail anatomique au niveau des scans -----------------
+  // Tous optionnels : un projet anterieur s'ouvre a l'identique.
+  /** Seconde dorsale (gobie : premiere courte et haute, seconde longue). */
+  dorsalFin2?: FinConfig;
+  /** Realisation de la caudale. Absent : integree. */
+  caudalMode?: FinMode;
+  /** Relief des levres superieure et inferieure, en fraction de la hauteur. */
+  lips?: number;
+  /** Machoire inferieure : + proeminente, - en retrait, en mm. */
+  jawProtrusion?: number;
+  /** Profondeur des narines, en mm ; zero pour les omettre. */
+  nostrils?: number;
+  /** Relief de la carene ventrale (ligne ventrale), en mm ; zero pour l'omettre. */
+  ventralLine?: number;
+  /** Angle de l'oeil depuis le dos, en radians (gobie : yeux hauts). */
+  eyeTheta?: number;
+  /** Pelviennes fusionnees en ventouse sous la gorge (gobie). */
+  pelvicSucker?: boolean;
+  /**
+   * Envergure des pectorales deployees, bout a bout, en mm (pectorales
+   * integrees en eventail). Absent : pectorales couchees contre le flanc.
+   */
+  pectoralSpan?: number;
 }
 
 export interface DetailConfig {
