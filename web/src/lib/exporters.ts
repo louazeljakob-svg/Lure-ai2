@@ -36,6 +36,7 @@ import { buildRetentionPins } from './articulation';
 import { buildStepFile } from './step';
 import { encodeMeshBody, meshBodyOf, restoreMeshBody } from './meshBody';
 import { attachedFinParts, layoutFlat, pairedFinSolids } from './fins';
+import { buildMonobloc, softActive } from './soft';
 
 /** Piece a exporter : ensemble assemble, ou l'une des deux coques. */
 export type ExportKind =
@@ -47,11 +48,13 @@ export type ExportKind =
   | 'bib'
   | 'propeller'
   | 'bead'
-  | 'fins';
+  | 'fins'
+  | 'monobloc';
 
 export const EXPORT_LABEL: Record<ExportKind, string> = {
   assembly: 'assemble-visualisation',
   fins: 'nageoires-rapportees',
+  monobloc: 'piece-unique-tpu',
   bib: 'bavette',
   propeller: 'helice',
   bead: 'perle',
@@ -99,6 +102,18 @@ export function collectParts(
       owned.push(part.geometry);
       parts.push(part.geometry);
     }
+    return { parts, owned };
+  }
+
+  // Souple monobloc (module AU) : la piece unique en TPU, maillage adaptatif,
+  // et l'assemble de verification avec l'hamecon (et la tete plombee) en
+  // place. Ni coque, ni vis, ni ecrou.
+  if (softActive(params) && (kind === 'monobloc' || kind === 'assembly')) {
+    const profile = createProfile(params);
+    const mono = buildMonobloc(profile, params, !coarse);
+    owned.push(mono.geometry);
+    parts.push(mono.geometry);
+    if (kind === 'assembly' && geo.rigging) parts.push(geo.rigging);
     return { parts, owned };
   }
 
@@ -199,7 +214,7 @@ export function collectParts(
   // joint incline, les couper proprement demanderait une decoupe hors plan :
   // elles restent alors solidaires de la coque male.
   const vertical = params.assembly.planeAngle < 5;
-  const share: ShellPart = vertical ? kind : 'full';
+  const share: ShellPart = vertical && (kind === 'male' || kind === 'female') ? kind : 'full';
   if (vertical || kind === 'male') {
     // Une bavette imprimee logee dans sa fente sort a part (piece « bavette ») :
     // elle se prend en sandwich au montage. Sans fente, elle reste solidaire

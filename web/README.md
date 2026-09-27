@@ -58,7 +58,7 @@ s'affichent correctement sans dependre d'une declaration de charset de l'hote.
 
 ### 1. Galerie de formes
 
-Six familles, une entree chacune, chacune pour une geometrie qui lui est
+Sept familles, une entree chacune, chacune pour une geometrie qui lui est
 propre :
 
 | Famille | Ce qui la distingue | Verdict |
@@ -68,20 +68,121 @@ propre :
 | **Whopper_Plopper** | corps rond, **helice rotative** de queue sur perle | flottant |
 | **Pencil** | **section circulaire** pleine, lest arriere | flottant |
 | **Poisson nageur** | grande bavette, **chambre de billes** | suspendu |
-| **Souple** | corps TPU, **lest ventral integre** a l'avant | coulant |
+| **Souple (gobie)** | **piece unique TPU** : tete large et plate, pectorales en eventail, deux dorsales, ventouse, caudale arrondie | coulant |
+| **Crankbait** | corps haut et court (elancement 2,5), epaules pleines, **bavette large et courte** | flottant |
 
 Les variantes — nervure, suspendu, vibe de traine — sont des reglages. Chaque
-nouvelle famille se pilote d'abord par ses « Reglages de famille » (panneau
-Forme), sur la plage de sa fiche : pales, diametre, angle et perle de
-l'helice ; diametre, position du diametre max et du lest du Pencil ; bavette
-et billes du Poisson nageur ; masse, position du lest et attache du Souple.
-Les corps des anciennes familles restent atteignables par les curseurs de
-forme, et un projet enregistre sur l'une d'elles se rouvre avec ses cotes et
-son anatomie.
+famille se pilote d'abord par ses « Reglages de famille » (panneau Forme),
+sur la plage de sa fiche, avec saisie numerique : pales, diametre, angle et
+perle de l'helice ; diametre, position du diametre max et du lest du Pencil ;
+bavette et billes du Poisson nageur ; longueur, largeur de tete, envergure
+des pectorales, hauteur de premiere dorsale, durete, remplissage et
+preparation d'armement du Souple ; longueur, hauteur, largeur et angle de
+bavette du Crankbait. Un projet enregistre sur une ancienne famille se
+rouvre avec ses cotes et son anatomie.
+
+#### Module AT — l'anatomie des scans, pas leur maillage
+
+Chaque corps porte, en geometrie reelle dans le STL : levres superieure et
+inferieure, commissure marquee, rebord de machoire inferieure (proeminente ou
+en retrait), narines, orbite creusee a bourrelet periorbitaire avec logement
+d'oeil **au diametre reel** de l'oeil, opercule a bord libre saillant,
+preopercule en second plan, fente branchiale, arete dorsale de vivacite
+variable, carene ventrale, ligne laterale, pedoncule marque, nageoires a
+rayons individuels, epaisseur degressive et bord libre festonne entre les
+rayons. Les largeurs de relief ne descendent pas sous 0,25 a 0,3 mm : un
+detail plus fin ne passe pas a la buse et se trahirait en facettes.
+
+Les scans fournis (poissons fourrage, crankbait) servent de reference de
+forme et de detail ; ils ne sont **jamais** importes, copies, decimes ou
+reutilises dans la bibliotheque. Le scan de gobie annonce par le cahier des
+charges n'a pas ete fourni : le Souple a ete dessine d'apres les traits
+enumeres (tete large et aplatie, pectorales en eventail, deux dorsales,
+ventouse, caudale arrondie) et les cotes de sa fiche.
+
+#### Module AT.2 — maillage adaptatif
+
+La peau n'est plus une grille reguliere. La grille de depart est grossiere
+(0,9 mm le long du corps, 0,75 mm autour), puis chaque facette de peau est
+coupee en deux — bissection par la plus longue arete, avec propagation
+(LEPP) — tant que la surface parametrique exacte s'ecarte d'elle de plus de
+**0,015 mm**. Chaque sommet ajoute est pose sur la vraie surface. Les faces
+planes (plan de joint, logements) ne recoivent de sommet que la ou une arete
+de peau voisine a ete coupee : les coques restent fermees.
+
+Le resultat se concentre la ou la forme change — tete, opercule, bouche,
+orbites, rayons, bords libres — et laisse les flancs legers. Budget : une
+demi-coque de 100 mm sort entre **20 000 et 60 000 triangles** (peau :
+220 a 500 triangles par millimetre de corps, plus demi-caudale et ergots) ;
+le souple monobloc de 90 mm entre **60 000 et 150 000**. Le test verifie,
+sur chaque famille, que la tete et la caudale sont plus denses (en triangles
+par mm2) que les flancs, et donne l'ecart de corde au 95e centile.
+
+#### Module AW — nageoires : integree, en relief, rapportee
+
+Pour chaque nageoire, trois realisations :
+
+- **integree** : elle sort du corps, jamais moins de **1,2 mm a la base et
+  0,6 mm au bord libre** (bord arrondi en demi-rond) ;
+- **en relief seulement** : dessinee sur le flanc — rayons, bord festonne,
+  epaisseur degressive — sans depasser du corps ; la dorsale se couche vers
+  l'arriere, la pectorale sort de sous l'opercule ;
+- **rapportee** : piece separee imprimee a plat (face d'appui plane),
+  languette de 1,2 mm prise en sandwich entre les coques pour les impaires et
+  la caudale, tenon dans un puits du flanc pour les paires ; jeu de collage
+  **0,10 mm par face**. Export « Nageoires rapportees ».
+
+Par defaut : **en relief** pour les dorsales et les pelviennes (et pour
+l'anale et les pectorales, qui croisent la trajectoire des hamecons),
+**integree** pour la caudale. Pencil et Whopper_Plopper, a queue ronde,
+portent leur caudale en relief sur le bout de queue. Les limites sont
+nommees : une fente de dorsale rapportee ne peut pas partager ses stations
+avec une bouche de goupille ou de vis ; une caudale rapportee demande un
+pedoncule d'au moins 2,4 mm d'epaisseur (languette 1,2 mm + jeu + deux peaux
+de 0,5 mm) — le Minnow, trop fin, la refuse et le dit.
+
+#### Module AU — Souple gobie, piece unique en TPU
+
+**Exception explicite au standard male / femelle** : le souple s'imprime
+d'une piece, pleine, sans vis ni ecrou. Durete **85 a 95 A** (densite
+1,17 a 1,21 g/cm3 selon la table TPU, fourchettes des fiches techniques),
+remplissage reglable (plein par defaut), et preparation d'armement au choix :
+
+- **fente ventrale** (texan, weightless) : 1,2 mm de large, 42 % de la
+  hauteur, extremites en rampe ;
+- **canal longitudinal** perce depuis le nez (tete plombee, traversant) :
+  tube circulaire a fond hemispherique, raccorde au museau par un conge ;
+- **logement de lest** interne : cavite fermee au diametre de la bille plus
+  0,10 mm, garnie pendant une **pause d'impression** dont la hauteur est
+  donnee.
+
+Livrables : **piece unique** et **assemble avec l'hamecon represente** (et la
+tete plombee du montage sur canal). La taille d'hamecon est choisie dans un
+gabarit indicatif pour que la pointe sorte du dos avec 1,5 mm de marge.
+
+Physique : la densite du TPU a sa durete entre dans le verdict de
+flottabilite, avec l'hamecon et le plomb. Le simulateur de nage est un modele
+de corps **rigide** : pour le Souple, il ne simule pas une caudale qui se
+deforme et le dit dans son panneau d'hypotheses. Il donne a la place ce qu'il
+sait calculer : vitesse de chute (a plat, tete en bas) en fourchette, et
+raideur de flexion du pedoncule pour comparer deux duretes.
+
+#### Module AV — Crankbait
+
+Corps haut et court (65 x 26 x 19 mm par defaut, elancement 2,5), front
+bombe, epaules pleines, ventre plein, dos arrondi, pedoncule court ; bavette
+large et courte (17 x 14 mm) a 50 degres. Assemblage Minnow 100 a
+l'identique : male, femelle (ecart 2,0 mm mesure), bavette, assemble. Vis
+avant **M3 x 15** a 18,2 mm du nez, la ou le corps depasse 22 mm : portee
+d'ecrou de 0,58 a 3,08 mm au-dessus de l'axe, 9,5 mm de matiere jusqu'au dos,
+14 mm devant la chambre de lest — aucun empietement, la M2 n'est pas
+necessaire. Si l'on deplace la vis sur la chambre ou sous le dos, le refus
+donne la position et la plus longue vis qui passe (M2 comprise).
 
 #### Standard d'assemblage Minnow 100 (module AM)
 
-Toutes les familles reprennent la methode sans adaptation : plan de joint
+Toutes les familles rigides reprennent la methode sans adaptation (le Souple
+en est la seule exception, explicite — module AU) : plan de joint
 median, coque male **exactement 2,0 mm** plus epaisse que la femelle (ergots
 et goujons au-dela du plan de joint, mesure sur les STL exportes), ecrous
 captifs a 0,10 mm, tetes noyees par le ventre, portees de goupille en 8
@@ -118,13 +219,12 @@ traverse une portee de goupille. Les billes ne sont jamais imprimees : elles
 pesent, figurent dans la **fiche de montage** (onglet Quincaillerie), et le
 panneau donne le centre de gravite billes tassees a l'avant puis a l'arriere.
 
-#### Densite de maillage (module AQ)
+#### Densite de maillage (modules AQ, AT.2)
 
-Une demi-coque exporte **150 a 200 triangles par millimetre** de longueur,
-mesures sur le fichier ; hors de cette plage, le nombre de stations est recale
-(identique pour la male et la femelle). Helice et perle : 700 a 1 500
-triangles ; bavette : quelques centaines. Les STL de reference fournis ne sont
-jamais importes ni copies dans la bibliotheque : chaque corps est parametrique.
+Voir le module AT.2 ci-dessus : 20 000 a 60 000 triangles par demi-coque de
+100 mm, maillage adaptatif. Helice et perle : 700 a 1 500 triangles ;
+bavette : quelques centaines. Les STL de reference fournis ne sont jamais
+importes ni copies dans la bibliotheque : chaque corps est parametrique.
 
 Les filtres de la bibliotheque ne proposent que des valeurs qui renvoient au
 moins une famille, compte tenu des autres : aucune combinaison ne vide la liste.

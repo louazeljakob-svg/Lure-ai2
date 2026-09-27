@@ -53,7 +53,7 @@ export interface Archetype {
 }
 
 /**
- * Les six familles de la bibliotheque — modules AB, AH et AO.
+ * Les sept familles de la bibliotheque — modules AB, AH, AO, AU et AV.
  *
  * Une entree par famille : ce qui n'est qu'une variante (minnow nervure,
  * suspendu, vibe de traine) est un reglage de sa famille. Chaque famille
@@ -131,17 +131,30 @@ export const ARCHETYPES: Archetype[] = [
   {
     shape: 'souple',
     rank: 6,
-    family: 'Souple',
-    action: 'Descend droit, s anime a la canne par tirees et relachers.',
+    family: 'Souple (gobie)',
+    action: 'Se traine et sautille sur le fond ; la caudale arrondie ondule a la moindre tiree.',
     actionTag: 'glide',
     hasBib: false,
     articulated: false,
     buoyancy: 'sink',
-    lengths: [70, 150],
-    slenderness: [3.8, 4.8],
-    tie: 'Attache dorsale ou de nez',
+    lengths: [50, 150],
+    slenderness: [5, 6.5],
+    tie: 'Hamecon texan dans la fente ventrale, ou tete plombee sur canal',
     caveat:
-      'Coques en TPU : serrez la visserie sans forcer — une tete fraisee s enfonce dans la matiere souple — et collez a la cyanoacrylate avec primaire.',
+      'Exception explicite au standard male / femelle : piece unique pleine en TPU (85 a 95 A), sans vis ni ecrou — la matiere se deforme, un serrage n aurait pas de sens. Le simulateur de nage, modele de corps rigide, ne represente pas la deformation de la caudale : il le dit plutot que de simuler un corps rigide.',
+  },
+  {
+    shape: 'crank',
+    rank: 7,
+    family: 'Crankbait',
+    action: 'Plonge sous sa bavette large et roule franchement, heurte le fond et repart.',
+    actionTag: 'roulis',
+    hasBib: true,
+    articulated: false,
+    buoyancy: 'float',
+    lengths: [40, 90],
+    slenderness: [2.2, 2.8],
+    tie: 'Attache de nez, bavette polycarbonate large et courte en sandwich',
   },
 ];
 

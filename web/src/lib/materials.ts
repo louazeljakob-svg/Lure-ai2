@@ -91,6 +91,76 @@ export const MATERIALS: PrintMaterial[] = [
   },
 ];
 
+/**
+ * TPU par durete Shore A (module AU.2) : densite et module d'elasticite.
+ *
+ * Valeurs typiques des fiches techniques de filaments du commerce ; elles
+ * varient d'une marque a l'autre, d'ou les fourchettes. Le module d'Young
+ * n'entre dans aucun calcul de nage (voir physique du Souple) : il sert a
+ * comparer deux duretes, pas a predire une ondulation.
+ */
+export interface TpuGrade {
+  shore: number;
+  density: number;
+  densityRange: [number, number];
+  modulusMPa: number;
+  modulusRange: [number, number];
+  note: string;
+}
+
+export const TPU_GRADES: TpuGrade[] = [
+  {
+    shore: 85,
+    density: 1.17,
+    densityRange: [1.12, 1.2],
+    modulusMPa: 12,
+    modulusRange: [8, 20],
+    note: 'Tres souple : la caudale bat le plus tot, mais le corps se dechire le plus vite.',
+  },
+  {
+    shore: 90,
+    density: 1.19,
+    densityRange: [1.15, 1.22],
+    modulusMPa: 18,
+    modulusRange: [12, 30],
+    note: 'Compromis : nage des la recuperation lente, tient mieux a l hamecon.',
+  },
+  {
+    shore: 95,
+    density: 1.21,
+    densityRange: [1.18, 1.24],
+    modulusMPa: 26,
+    modulusRange: [18, 45],
+    note: 'Le plus ferme : tient a l hamecon et aux dents, ondule moins.',
+  },
+];
+
+/** Grade TPU interpole a la durete demandee, bornee a 85-95 A. */
+export function tpuAt(shore: number): TpuGrade {
+  const s = Math.min(Math.max(shore, 85), 95);
+  const lo = s <= 90 ? TPU_GRADES[0] : TPU_GRADES[1];
+  const hi = s <= 90 ? TPU_GRADES[1] : TPU_GRADES[2];
+  const t = (s - lo.shore) / (hi.shore - lo.shore);
+  const mix = (a: number, b: number) => Math.round((a + (b - a) * t) * 1000) / 1000;
+  return {
+    shore: s,
+    density: mix(lo.density, hi.density),
+    densityRange: [mix(lo.densityRange[0], hi.densityRange[0]), mix(lo.densityRange[1], hi.densityRange[1])],
+    modulusMPa: mix(lo.modulusMPa, hi.modulusMPa),
+    modulusRange: [mix(lo.modulusRange[0], hi.modulusRange[0]), mix(lo.modulusRange[1], hi.modulusRange[1])],
+    note: t < 0.5 ? lo.note : hi.note,
+  };
+}
+
+/**
+ * Densite de la matiere du corps : celle du materiau, ou pour un souple
+ * monobloc en TPU, celle de sa durete.
+ */
+export function bodyDensity(params: { material: MaterialId; soft?: { enabled: boolean; hardness: number } }): number {
+  if (params.material === 'tpu' && params.soft?.enabled) return tpuAt(params.soft.hardness).density;
+  return getMaterial(params.material).density;
+}
+
 /** Matieres proposees pour un procede donne. */
 export const materialsFor = (process: ProcessId): PrintMaterial[] =>
   MATERIALS.filter((material) => material.process === process);

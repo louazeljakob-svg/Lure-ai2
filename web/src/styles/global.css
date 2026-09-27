@@ -790,6 +790,11 @@ textarea {
   line-height: 1.35;
 }
 
+/* Refus nomme dans un panneau de reglages (module AU) : lisible, sans alarme. */
+.control__hint--warn {
+  color: var(--amber);
+}
+
 input[type='range'] {
   -webkit-appearance: none;
   appearance: none;

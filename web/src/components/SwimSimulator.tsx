@@ -34,6 +34,7 @@ import {
   type WireMaterial,
 } from '../lib/swim';
 import { throughWireBlocker } from '../lib/throughWire';
+import { tpuAt } from '../lib/materials';
 import { resolveMount } from '../lib/tackle';
 import { EstimateStat, LineChart, RankBars, VIZ, type VizPoint } from './charts';
 import { Fieldset, NumberField, Segmented, Slider, Switch } from './ui';
@@ -265,6 +266,10 @@ export function SwimSimulator({ params, physics, sockets }: Props) {
   const predictedStrength = anchors.length
     ? anchors[0].kgf.value / Math.max(calibration.strength, 1e-6)
     : 0;
+
+  // Souple monobloc (module AU.2) : le modele de nage est un modele de corps
+  // RIGIDE. Il ne simule pas un corps qui se deforme ; il le dit.
+  if (params.soft?.enabled) return <SoftSwimPanel params={params} physics={physics} />;
 
   return (
     <>
@@ -864,6 +869,92 @@ export function SwimSimulator({ params, physics, sockets }: Props) {
             d'un corps aussi court et aussi peu profile qu'un leurre ne se calculent pas, ils se
             mesurent — et personne ne les a mesures pour celui-la. C'est pourquoi chaque resultat
             porte une fourchette plutot qu'un chiffre a trois decimales.
+          </p>
+        </Fieldset>
+      </div>
+    </>
+  );
+}
+
+/**
+ * Souple monobloc : ce que le modele physique sait representer, et ce qu'il
+ * ne sait pas. Aucune nage de corps rigide n'est simulee a sa place.
+ */
+function SoftSwimPanel({ params, physics }: { params: LureParams; physics: PhysicsResult }) {
+  const profile = useMemo(() => createProfile(params), [params]);
+  const grade = tpuAt(params.soft?.hardness ?? 90);
+  const stiff = tpuAt(95);
+  // Chute libre : poids apparent contre trainee, deux attitudes.
+  const netG = physics.totalMass - physics.displacedMass;
+  const forceN = (Math.max(netG, 0) * 9.81) / 1000;
+  const L = params.length / 1000;
+  const W = params.maxWidth / 1000;
+  const H = params.thickness / 1000;
+  const fall = (area: number, cd: number) => Math.sqrt((2 * forceN) / (1000 * cd * Math.max(area, 1e-6))) * 100;
+  const flat = { low: fall(L * W * 0.75, 1.3), high: fall(L * W * 0.75, 0.9) };
+  const nose = { low: fall((Math.PI / 4) * H * W, 0.6), high: fall((Math.PI / 4) * H * W, 0.3) };
+  // Raideur de flexion laterale du pedoncule : EI d'une section elliptique.
+  const ped = profile.section(params.anatomy ? params.anatomy.peduncle : 0.8);
+  const a = (ped.top - ped.bottom) / 2 * 10; // demi-hauteur, mm
+  const b = ped.halfWidth * 10; // demi-largeur, mm
+  const inertia = (Math.PI / 4) * a * b ** 3; // mm4
+  const ei = grade.modulusMPa * inertia;
+  const ratio = grade.modulusMPa / stiff.modulusMPa;
+  return (
+    <>
+      <div className="swim__section">
+        <Fieldset
+          legend="Souple : ce que le modele sait representer"
+          hint="Module AU.2 — des fourchettes d'ingenierie, pour comparer deux reglages, pas pour predire une nage."
+        >
+          <div className="stat-grid">
+            <EstimateStat
+              label="Chute a plat"
+              value={(flat.low + flat.high) / 2}
+              low={flat.low}
+              high={flat.high}
+              unit="cm/s"
+              sub="Trainee Cd 0,9 a 1,3 sur la surface en plan"
+            />
+            <EstimateStat
+              label="Chute tete en bas"
+              value={(nose.low + nose.high) / 2}
+              low={nose.low}
+              high={nose.high}
+              unit="cm/s"
+              sub="Tete plombee : Cd 0,3 a 0,6 sur la section"
+            />
+            <EstimateStat
+              label="Raideur du pedoncule"
+              value={ei}
+              low={(grade.modulusRange[0] / grade.modulusMPa) * ei}
+              high={(grade.modulusRange[1] / grade.modulusMPa) * ei}
+              unit="N.mm2"
+              digits={0}
+              sub={`TPU ${grade.shore.toFixed(0)} A : ${n(ratio * 100, 0)} % de la raideur d'un 95 A`}
+            />
+          </div>
+          <p className="control__hint">
+            Flottabilite : densite du TPU {grade.shore.toFixed(0)} A = {grade.density.toFixed(2)} g/cm3 (fiches
+            techniques : {grade.densityRange[0].toFixed(2)} a {grade.densityRange[1].toFixed(2)}), remplissage{' '}
+            {params.infill.toFixed(0)} %, hamecon, tete plombee et plomb loges compris. {grade.note}
+          </p>
+        </Fieldset>
+      </div>
+      <div className="swim__section">
+        <Fieldset legend="Hypotheses — ce que le modele ne sait pas representer">
+          <p className="control__hint">
+            La caudale d un souple se deforme : elle ondule, et l onde remonte le long du pedoncule. Le simulateur
+            de nage de SAKUMA est un modele de corps RIGIDE (portance de bavette, roulis, lacet, decrochage) : il
+            ne resout pas l interaction entre l eau et un corps qui plie. Il n affiche donc, pour le Souple, ni
+            profondeur de nage, ni vitesse de decrochage, ni frequence ou amplitude de battement — plutot que des
+            chiffres de corps rigide qui seraient faux.
+          </p>
+          <p className="control__hint">
+            Ce qui reste utilisable : le verdict de flottabilite et le centre de gravite (onglet Physique), la
+            vitesse de chute ci-dessus, et la raideur relative du pedoncule pour comparer deux duretes. Une TPU
+            plus tendre abaisse la vitesse a laquelle la caudale se met a battre ; l ordre de grandeur se recale a
+            l essai, en bassin.
           </p>
         </Fieldset>
       </div>

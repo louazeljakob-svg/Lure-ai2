@@ -7,6 +7,8 @@
 import { useEffect, useRef, useState } from 'react';
 import type { LureParams } from '../types/lure';
 import { countExportTriangles, type ExportKind } from '../lib/exporters';
+import { hasAttachedFins } from '../lib/fins';
+import { softActive } from '../lib/soft';
 import { assemblyActive } from '../lib/assembly';
 import { Segmented } from './ui';
 import type { LureGeometry } from '../lib/geometry';
@@ -61,6 +63,7 @@ export function ExportManager({
     return () => window.clearTimeout(timer);
   }, [params, geo]);
   const split = assemblyActive(params);
+  const soft = softActive(params);
   // Pieces rapportees : elles s'ajoutent a la liste des choix des qu'elles
   // existent, que le corps soit en une ou en deux parties.
   const extras: { value: ExportKind; label: string }[] = [
@@ -76,6 +79,10 @@ export function ExportManager({
     // Helice et perle (module AP.1) : une perle achetee n'a pas de STL.
     ...(geo.propeller ? [{ value: 'propeller' as ExportKind, label: 'Helice' }] : []),
     ...(geo.propeller && params.propeller.beadPrinted ? [{ value: 'bead' as ExportKind, label: 'Perle' }] : []),
+    // Souple monobloc (module AU) : la piece unique en TPU.
+    ...(soft ? [{ value: 'monobloc' as ExportKind, label: 'Piece unique TPU' }] : []),
+    // Nageoires rapportees (module AW) : a plat, cote a cote.
+    ...(hasAttachedFins(params) ? [{ value: 'fins' as ExportKind, label: 'Nageoires rapportees' }] : []),
   ];
   const allowed = new Set<ExportKind>([
     'assembly',
@@ -116,7 +123,7 @@ export function ExportManager({
           label="Piece a exporter"
           value={piece}
           options={[
-            { value: 'assembly' as ExportKind, label: split ? 'Assemble (vue)' : 'Assemble' },
+            { value: 'assembly' as ExportKind, label: split ? 'Assemble (vue)' : soft ? 'Assemble avec hamecon' : 'Assemble' },
             ...(split
               ? [
                   { value: 'male' as ExportKind, label: 'Male' },
@@ -135,12 +142,28 @@ export function ExportManager({
           coque male, la coque femelle et les pieces rapportees qui partent au trancheur.
         </p>
       ) : null}
+      {soft ? (
+        <p className="control__hint">
+          Souple monobloc : la piece unique en TPU part au trancheur, pleine, sans vis ni ecrou. L assemble montre
+          l hamecon {geo.softPlan?.hook ? geo.softPlan.hook.size : ''} en place pour verification ; il ne
+          s imprime pas.
+          {geo.softPlan?.pauseMm !== null && geo.softPlan?.pauseMm !== undefined
+            ? ` Pause d impression a ${geo.softPlan.pauseMm.toFixed(1)} mm du ventre pour loger le plomb.`
+            : ''}
+        </p>
+      ) : null}
+      {piece === 'fins' ? (
+        <p className="control__hint">
+          Nageoires rapportees posees a plat, face d appui sur le plateau : chaque piece porte sa languette ou son
+          tenon, a coller dans son logement (jeu 0,10 mm par face).
+        </p>
+      ) : null}
       {piece === 'bib' && params.billMode === 'polycarbonate' ? (
         <p className="control__hint">
           Bavette polycarbonate : le STL sert au controle ; la plaque se decoupe d apres le gabarit DXF ou SVG.
         </p>
       ) : null}
-      {extras.length > 0 ? (
+      {extras.some((item) => item.value !== 'monobloc') ? (
         <p className="control__hint">
           Les pieces rapportees sortent SEULES, sous leur propre nom : elles sont d un autre
           materiau, souvent decoupees plutot qu imprimees, et les fusionner au corps donnerait

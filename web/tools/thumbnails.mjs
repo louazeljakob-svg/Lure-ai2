@@ -34,6 +34,7 @@ import { assemblyExport, assemblyPlans, assemblyPreview, buildAssembly, disposeA
 import { computePhysics } from '${root}src/lib/physics';
 import { createProfile } from '${root}src/lib/profile';
 import { countExportTriangles, shellAssembly } from '${root}src/lib/exporters';
+import { buildMonobloc, softActive } from '${root}src/lib/soft';
 
 const count = (g) => (g.getIndex() ? g.getIndex().count : g.getAttribute('position').count) / 3;
 
@@ -47,7 +48,9 @@ window.generate = () =>
     const plans = assemblyPlans(profile, params, preview);
     const geo = buildLure(params, DISPLAY_RESOLUTION, plans.billPlan?.root ?? null);
     const physics = computePhysics(params, geo, 'fresh', preview);
-    const shells = shellAssembly(profile, params);
+    // Souple monobloc (module AU) : pas de coques, la piece unique.
+    const shells = softActive(params) ? null : shellAssembly(profile, params);
+    const mono = shells ? null : buildMonobloc(profile, params, true);
     const record = {
       id: preset.id,
       image: renderThumb(params, DISPLAY_RESOLUTION, 'image/webp', plans.billPlan?.root ?? null),
@@ -56,10 +59,11 @@ window.generate = () =>
       volumeCm3: Math.round(physics.volumeCm3 * 100) / 100,
       exportTriangles: countExportTriangles(params, geo, 'assembly'),
       bodyTriangles: count(geo.body),
-      shellTriangles: count(shells.male) + count(shells.female),
+      shellTriangles: shells ? count(shells.male) + count(shells.female) : count(mono.geometry),
     };
     geo.dispose();
-    disposeAssembly(shells);
+    if (shells) disposeAssembly(shells);
+    mono?.geometry.dispose();
     if (preview) disposeAssembly(preview);
     return record;
   });

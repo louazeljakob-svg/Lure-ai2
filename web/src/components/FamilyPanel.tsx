@@ -8,9 +8,12 @@
  * demeure accessible plus bas, curseur par curseur.
  */
 
-import type { LureParams, PinAnchor } from '../types/lure';
+import type { LureParams } from '../types/lure';
 import { LIMITS, PENCIL_BODY, cloneAnatomy, roundKnots } from '../lib/presets';
-import { Fieldset, Segmented, Slider } from './ui';
+import { Fieldset, Segmented, Slider, Switch } from './ui';
+import { tpuAt } from '../lib/materials';
+import { createProfile } from '../lib/profile';
+import { defaultSoftBody, softRigPlan } from '../lib/soft';
 
 interface Props {
   params: LureParams;
@@ -38,10 +41,25 @@ export const FAMILY_RANGES = {
     balls: { min: 2, max: 6, step: 1, hardMin: LIMITS.chamberBalls.hardMin, hardMax: LIMITS.chamberBalls.hardMax },
     ball: { min: 3, max: 8, step: 0.5, hardMin: LIMITS.rattleBall.hardMin, hardMax: LIMITS.rattleBall.hardMax },
   },
+  // Module AU : plages de la fiche du gobie.
   souple: {
-    length: { min: 70, max: 150, step: 1, hardMin: LIMITS.length.hardMin, hardMax: LIMITS.length.hardMax },
-    ballast: { min: 5, max: 60, step: 0.5, hardMin: LIMITS.ballastMass.hardMin, hardMax: LIMITS.ballastMass.hardMax },
-    ballastAt: { min: 0.25, max: 0.5, step: 0.01, hardMin: LIMITS.ballastPosition.hardMin, hardMax: LIMITS.ballastPosition.hardMax },
+    length: { min: 50, max: 150, step: 1, hardMin: LIMITS.length.hardMin, hardMax: LIMITS.length.hardMax },
+    headWidth: { min: 12, max: 30, step: 0.5, hardMin: 5, hardMax: 60 },
+    pectoralSpan: { min: 20, max: 50, step: 0.5, hardMin: 5, hardMax: 120 },
+    firstDorsal: { min: 5, max: 15, step: 0.5, hardMin: 1, hardMax: 40 },
+    hardness: { min: 85, max: 95, step: 1, hardMin: 85, hardMax: 95 },
+    infill: { min: 10, max: 100, step: 5, hardMin: 0, hardMax: 100 },
+    channel: { min: 1.2, max: 4, step: 0.1, hardMin: 0.8, hardMax: 5 },
+    jig: { min: 2, max: 20, step: 0.5, hardMin: 0.5, hardMax: 60 },
+    ballast: { min: 0.5, max: 10, step: 0.5, hardMin: LIMITS.ballastMass.hardMin, hardMax: LIMITS.ballastMass.hardMax },
+    ballastAt: { min: 0.15, max: 0.6, step: 0.01, hardMin: LIMITS.ballastPosition.hardMin, hardMax: LIMITS.ballastPosition.hardMax },
+  },
+  // Module AV : plages de la fiche du crankbait.
+  crank: {
+    length: { min: 40, max: 90, step: 1, hardMin: LIMITS.length.hardMin, hardMax: LIMITS.length.hardMax },
+    height: { min: 16, max: 36, step: 0.5, hardMin: LIMITS.thickness.hardMin, hardMax: LIMITS.thickness.hardMax },
+    width: { min: 12, max: 26, step: 0.5, hardMin: LIMITS.maxWidth.hardMin, hardMax: LIMITS.maxWidth.hardMax },
+    bibAngle: { min: 30, max: 70, step: 1, hardMin: LIMITS.bibAngle.hardMin, hardMax: LIMITS.bibAngle.hardMax },
   },
 } as const;
 
@@ -59,7 +77,23 @@ const pct = (value: number) => `${Math.round(value * 100)} %`;
 
 export function FamilyPanel({ params, onChange }: Props) {
   const shape = params.shape;
-  if (shape !== 'plopper' && shape !== 'pencil' && shape !== 'nageur' && shape !== 'souple') return null;
+  if (shape !== 'plopper' && shape !== 'pencil' && shape !== 'nageur' && shape !== 'souple' && shape !== 'crank') return null;
+
+  if (shape === 'crank') {
+    const r = FAMILY_RANGES.crank;
+    const slender = params.length / Math.max(params.thickness, 1);
+    return (
+      <Fieldset
+        legend="Reglages de famille — Crankbait"
+        hint="Corps haut et court, bavette large et courte. Assemblage Minnow 100 : male, femelle, bavette ; la visserie se choisit a la hauteur du corps (M3 des 22 mm)."
+      >
+        <Slider label="Longueur du corps" value={params.length} {...r.length} unit="mm" display={`${params.length.toFixed(0)} mm`} hint={`Elancement ${slender.toFixed(2)} (famille : voisin de 2,5).`} onChange={(length) => onChange({ length })} />
+        <Slider label="Hauteur" value={params.thickness} {...r.height} unit="mm" display={`${params.thickness.toFixed(1)} mm`} onChange={(thickness) => onChange({ thickness })} />
+        <Slider label="Largeur" value={params.maxWidth} {...r.width} unit="mm" display={`${params.maxWidth.toFixed(1)} mm`} onChange={(maxWidth) => onChange({ maxWidth })} />
+        <Slider label="Angle de bavette" value={params.bibAngle} {...r.bibAngle} unit="deg" display={`${params.bibAngle.toFixed(0)} deg`} onChange={(bibAngle) => onChange({ bibAngle })} />
+      </Fieldset>
+    );
+  }
 
   if (shape === 'plopper') {
     const r = FAMILY_RANGES.plopper;
@@ -156,48 +190,133 @@ export function FamilyPanel({ params, onChange }: Props) {
   }
 
   const r = FAMILY_RANGES.souple;
+  const soft = params.soft ?? defaultSoftBody();
+  const setSoft = (patch: Partial<typeof soft>) => onChange({ soft: { ...soft, ...patch } });
+  const anatomy = params.anatomy;
+  const grade = tpuAt(soft.hardness);
+  const plan = softRigPlan(createProfile(params), params);
   const main = params.ballasts[0] ?? null;
-  const dorsal = params.assembly.anchors.some((anchor) => anchor.exit === 'back');
-  const setTie = (value: 'dos' | 'nez') => {
-    const tie: PinAnchor =
-      value === 'dos'
-        ? { id: 'dos', position: 0.2, height: 0.5, exit: 'back', depth: 0, pin: 'auto', method: 'bore' }
-        : { id: 'nez', position: 0.06, height: 0, exit: 'nose', depth: 0, pin: 'auto', method: 'bore' };
-    const others = params.assembly.anchors.filter((anchor) => anchor.exit !== 'back' && anchor.exit !== 'nose');
-    onChange({ assembly: { ...params.assembly, anchors: [tie, ...others] } });
-  };
+  const setAnatomy = (patch: Partial<NonNullable<LureParams['anatomy']>>) =>
+    anatomy ? onChange({ anatomy: { ...cloneAnatomy(anatomy)!, ...patch } }) : undefined;
   return (
-    <Fieldset legend="Reglages de famille — Souple" hint="Corps elance en TPU, lest ventral integre vers l avant. Descend droit, s anime a la canne.">
-      <Slider label="Longueur" value={params.length} {...r.length} unit="mm" display={`${params.length.toFixed(0)} mm`} hint="Hauteur et largeur suivent, a proportions constantes." onChange={(length) => onChange(scaled(params, length))} />
-      {main ? (
+    <Fieldset
+      legend="Reglages de famille — Souple (gobie)"
+      hint="Piece unique pleine en TPU, sans vis ni ecrou : exception explicite au standard male / femelle. La matiere se deforme, un serrage n y aurait pas de sens."
+    >
+      <Slider
+        label="Longueur"
+        value={params.length}
+        {...r.length}
+        unit="mm"
+        display={`${params.length.toFixed(0)} mm`}
+        hint="Hauteur, largeur de tete et envergure suivent, a proportions constantes."
+        onChange={(length) => {
+          const k = length / Math.max(params.length, 1);
+          onChange({
+            ...scaled(params, length),
+            ...(anatomy?.pectoralSpan !== undefined
+              ? { anatomy: { ...cloneAnatomy(anatomy)!, pectoralSpan: Math.round(anatomy.pectoralSpan * k * 100) / 100 } }
+              : {}),
+          });
+        }}
+      />
+      <Slider label="Largeur de tete" value={params.maxWidth} {...r.headWidth} unit="mm" display={`${params.maxWidth.toFixed(1)} mm`} hint="La tete est la partie la plus large du gobie, plus large que haute." onChange={(maxWidth) => onChange({ maxWidth })} />
+      {anatomy ? (
         <>
           <Slider
-            label="Masse de lest"
-            value={main.mass}
-            {...r.ballast}
-            unit="g"
-            display={`${main.mass.toFixed(1)} g`}
-            hint="Plomb cylindrique loge a cheval sur le plan de joint ; refuse, avec la raison, s il ne tient plus dans la section."
-            onChange={(mass) => onChange({ ballasts: params.ballasts.map((item, i) => (i === 0 ? { ...item, mass } : item)) })}
+            label="Envergure des pectorales"
+            value={anatomy.pectoralSpan ?? 30}
+            {...r.pectoralSpan}
+            unit="mm"
+            display={`${(anatomy.pectoralSpan ?? 30).toFixed(1)} mm`}
+            hint="Bout a bout, eventails deployes ; mesuree sur la piece, pas estimee."
+            onChange={(pectoralSpan) => setAnatomy({ pectoralSpan })}
           />
           <Slider
-            label="Position du lest"
-            value={main.position}
-            {...r.ballastAt}
-            display={pct(main.position)}
-            onChange={(position) => onChange({ ballasts: params.ballasts.map((item, i) => (i === 0 ? { ...item, position } : item)) })}
+            label="Hauteur de premiere dorsale"
+            value={anatomy.dorsalFin.size * params.thickness}
+            {...r.firstDorsal}
+            unit="mm"
+            display={`${(anatomy.dorsalFin.size * params.thickness).toFixed(1)} mm`}
+            hint="Premiere dorsale courte et haute ; la seconde, longue, suit."
+            onChange={(h) => setAnatomy({ dorsalFin: { ...anatomy.dorsalFin, size: h / Math.max(params.thickness, 1) } })}
           />
         </>
       ) : null}
-      <Segmented
-        label="Position d attache"
-        value={dorsal ? 'dos' : 'nez'}
-        options={[
-          { value: 'dos', label: 'Dorsale' },
-          { value: 'nez', label: 'Nez' },
-        ]}
-        onChange={setTie}
+      <Slider
+        label="Durete TPU"
+        value={soft.hardness}
+        {...r.hardness}
+        unit="A"
+        display={`${soft.hardness.toFixed(0)} A`}
+        hint={`Densite ${grade.density.toFixed(2)} g/cm3 (${grade.densityRange[0].toFixed(2)} a ${grade.densityRange[1].toFixed(2)} selon la marque). ${grade.note}`}
+        onChange={(hardness) => setSoft({ hardness: Math.round(hardness) })}
       />
+      <Slider
+        label="Remplissage"
+        value={params.infill}
+        {...r.infill}
+        unit="%"
+        display={`${params.infill.toFixed(0)} %`}
+        hint="Plein par defaut. Moins rempli, le souple nage mieux mais se dechire plus vite — et flotte davantage."
+        onChange={(infill) => onChange({ infill })}
+      />
+      <Segmented
+        label="Preparation d armement"
+        value={soft.rigging}
+        options={[
+          { value: 'slot', label: 'Fente ventrale' },
+          { value: 'channel', label: 'Canal' },
+          { value: 'none', label: 'Aucune' },
+        ]}
+        onChange={(rigging) => setSoft({ rigging: rigging as typeof soft.rigging })}
+      />
+      <p className="control__hint">
+        {soft.rigging === 'slot'
+          ? 'Fente ventrale : montage texan ou weightless, la hampe se loge dans la fente et le TPU se referme dessus.'
+          : soft.rigging === 'channel'
+            ? 'Canal longitudinal perce depuis le nez : tete plombee ou montage traversant.'
+            : 'Corps plein : l armement est laisse au pecheur.'}
+        {plan.hook
+          ? ` Hamecon represente : ${plan.hook.size} (ouverture ${plan.hook.gapMm} mm pour ${plan.neededGapMm.toFixed(1)} mm necessaires, gabarit indicatif).`
+          : ''}
+      </p>
+      {soft.rigging === 'channel' ? (
+        <>
+          <Slider label="Diametre du canal" value={soft.channelDiameter} {...r.channel} unit="mm" display={`${soft.channelDiameter.toFixed(1)} mm`} onChange={(channelDiameter) => setSoft({ channelDiameter })} />
+          <Slider label="Tete plombee" value={soft.jigMass} {...r.jig} unit="g" display={`${soft.jigMass.toFixed(1)} g`} hint="Pesee dans le verdict de flottabilite, jamais imprimee." onChange={(jigMass) => setSoft({ jigMass })} />
+        </>
+      ) : null}
+      <Switch
+        label="Logement de lest interne"
+        checked={soft.ballastSeat}
+        hint={
+          soft.ballastSeat && plan.pauseMm !== null
+            ? `Pause d impression a ${plan.pauseMm.toFixed(1)} mm du ventre (piece posee sur le ventre) pour y glisser la bille.`
+            : 'Souple coulant : une bille de plomb logee dans une cavite fermee, garnie pendant une pause d impression.'
+        }
+        onChange={(ballastSeat) =>
+          onChange({
+            soft: { ...soft, ballastSeat },
+            ballasts: ballastSeat
+              ? main
+                ? params.ballasts
+                : [{ id: `sou-${Date.now()}`, position: 0.3, height: -0.4, mass: 2, shape: 'sphere' }]
+              : [],
+          })
+        }
+      />
+      {soft.ballastSeat && main ? (
+        <>
+          <Slider label="Masse du plomb" value={main.mass} {...r.ballast} unit="g" display={`${main.mass.toFixed(1)} g`} onChange={(mass) => onChange({ ballasts: params.ballasts.map((item, i) => (i === 0 ? { ...item, mass } : item)) })} />
+          <Slider label="Position du plomb" value={main.position} {...r.ballastAt} display={pct(main.position)} onChange={(position) => onChange({ ballasts: params.ballasts.map((item, i) => (i === 0 ? { ...item, position } : item)) })} />
+        </>
+      ) : null}
+      {plan.problems.map((problem) => (
+        <p key={problem} className="control__hint control__hint--warn">
+          {problem}
+        </p>
+      ))}
     </Fieldset>
   );
 }

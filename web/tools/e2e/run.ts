@@ -46,7 +46,11 @@ import { createMeshBody, registerMeshBody, restoreMeshBody } from '../../src/lib
 import { industrialise, runBench } from '../../src/lib/industrialise';
 import { buildProjectFile } from '../../src/lib/exporters';
 import { montageSheet } from '../../src/lib/montage';
-import { EYE_THETA } from '../../src/lib/anatomy';
+import { caudalModeOf, eyeThetaOf, softSlotOf } from '../../src/lib/anatomy';
+import { attachedFinParts, hasAttachedFins } from '../../src/lib/fins';
+import { buildMonobloc, softActive, softRigPlan } from '../../src/lib/soft';
+import { tpuAt } from '../../src/lib/materials';
+import { finSolids, createSkin } from '../../src/lib/geometry';
 import { PENCIL_BODY, roundRadius } from '../../src/lib/presets';
 
 export interface Report {
@@ -125,6 +129,18 @@ function checkFamily(id: string, variant: string, params: LureParams, report: Re
     const tail = audit(geo.tail);
     if (tail.open) fail(`caudale ouverte (${tail.open} aretes)`);
   }
+  if (geo.fins) {
+    const fins = audit(geo.fins);
+    if (fins.open) fail(`nageoires en volume ouvertes (${fins.open} aretes)`);
+  }
+
+  // --- Souple monobloc : exception explicite au standard AM (module AU) -----
+  if (softActive(params)) {
+    checkSoft(tag, params, geo, report);
+    checkAnatomyAT(tag, params, profile, geo, fail, report);
+    geo.dispose();
+    return;
+  }
 
   // --- Coques, logements, exports ------------------------------------------
   if (!assemblyActive(params)) fail('assemblage en deux demi-coques inactif');
@@ -199,7 +215,49 @@ function checkFamily(id: string, variant: string, params: LureParams, report: Re
   if (library && Math.abs(gap - 2) > 0.005) fail(`ecart male / femelle ${gap.toFixed(3)} mm au lieu de 2,0 mm`);
   for (const kind of ['male', 'female'] as const) {
     const density = (perKind[kind] ?? 0) / params.length;
-    if (library && (density < 150 || density > 200)) fail(`coque ${kind} : ${density.toFixed(0)} triangles par mm (attendu 150 a 200)`);
+    // Module AT.2 : une demi-coque de 100 mm entre 20 000 et 60 000 triangles.
+    if (library && (density < 200 || density > 600)) fail(`coque ${kind} : ${density.toFixed(0)} triangles par mm (attendu 200 a 600)`);
+  }
+  // Maillage adaptatif : plus dense a la tete et aux nageoires qu'aux flancs,
+  // en triangles par mm2 de surface.
+  if (library) {
+    const area = (g: THREE.BufferGeometry, keep: (x: number) => boolean) => {
+      const pos = g.getAttribute('position');
+      const idx = g.getIndex();
+      const n = idx ? idx.count : pos.count;
+      const at = (k: number) => (idx ? idx.getX(k) : k);
+      let tris = 0;
+      let mm2 = 0;
+      const a = new THREE.Vector3();
+      const b = new THREE.Vector3();
+      const c = new THREE.Vector3();
+      for (let k = 0; k < n; k += 3) {
+        a.fromBufferAttribute(pos, at(k));
+        b.fromBufferAttribute(pos, at(k + 1));
+        c.fromBufferAttribute(pos, at(k + 2));
+        if (!keep((a.x + b.x + c.x) / 3)) continue;
+        tris++;
+        mm2 += b.clone().sub(a).cross(c.clone().sub(a)).length() * 50;
+      }
+      return tris / Math.max(mm2, 1e-9);
+    };
+    const x0 = profile.xAt(0);
+    const L = profile.lengthCm;
+    const head = area(assembly.female, (x) => x < x0 + 0.22 * L);
+    const flank = area(assembly.female, (x) => x > x0 + 0.42 * L && x < x0 + 0.6 * L);
+    if (!(head > flank)) fail(`maillage : tete ${head.toFixed(2)} tri/mm2, pas plus dense que les flancs (${flank.toFixed(2)})`);
+    let fin = 0;
+    if (profile.hasFin) {
+      const tail = buildTailFin(profile, params, 'female');
+      fin = area(tail, () => true);
+      tail.dispose();
+      if (!(fin > flank)) fail(`maillage : caudale ${fin.toFixed(2)} tri/mm2, pas plus dense que les flancs (${flank.toFixed(2)})`);
+    }
+    const stats = assembly.female.userData.refine as { p95: number; within: number } | undefined;
+    report.lines.push(
+      `${tag.padEnd(28)} densite tete ${head.toFixed(2)} · caudale ${fin.toFixed(2)} · flancs ${flank.toFixed(2)} tri/mm2` +
+        (stats ? ` · corde p95 ${(stats.p95 * 10).toFixed(4)} mm, ${(stats.within * 100).toFixed(1)} % sous 0,02 mm` : ''),
+    );
   }
   if (params.hasBib && ((perKind.bib ?? 0) < 100 || (perKind.bib ?? 0) > 999)) {
     fail(`bavette : ${perKind.bib} triangles (quelques centaines attendues)`);
@@ -318,7 +376,7 @@ function checkFamily(id: string, variant: string, params: LureParams, report: Re
     // Orbite : creux sous la peau lisse au centre de l'oeil ; opercule : relief.
     const eyeP = params.eyes.position;
     const section = profile.section(eyeP);
-    const orbit = profile.anatomy.relief(eyeP, EYE_THETA, section);
+    const orbit = profile.anatomy.relief(eyeP, eyeThetaOf(anatomy), section);
     if (!(orbit < 0 || params.eyes.relief > 0)) fail('orbite sans creux dans la peau');
     let opercle = 0;
     for (let k = 0; k <= 40; k++) {
@@ -335,6 +393,7 @@ function checkFamily(id: string, variant: string, params: LureParams, report: Re
     const at = height(ped);
     const before = height(Math.max(ped - 0.25, 0.3));
     if (!(at < before * 0.8)) fail(`pedoncule non marque (${(at * 10).toFixed(1)} mm contre ${(before * 10).toFixed(1)} mm)`);
+    checkAnatomyAT(tag, params, profile, geo, fail, report);
   }
 
   // --- Joint articule : course au degre pres ---------------------------------
@@ -644,12 +703,254 @@ function checkImportErrors(report: Report): void {
   }
 }
 
+/**
+ * Detail anatomique au niveau des scans (module AT, critere 5) : mesure sur
+ * la peau reelle, pas sur les reglages.
+ */
+function checkAnatomyAT(
+  tag: string,
+  params: LureParams,
+  profile: ReturnType<typeof createProfile>,
+  geo: ReturnType<typeof buildLure>,
+  fail: (what: string) => void,
+  report: Report,
+): void {
+  const anatomy = params.anatomy;
+  const field = profile.anatomy;
+  if (!anatomy || !field) return;
+  const relief = (p: number, th: number) => field.relief(p, th, profile.section(p));
+  const L = profile.lengthCm;
+  // Opercule : plaque, bord libre, fente juste derriere, preopercule devant.
+  const gp = params.gills.position;
+  let plate = -Infinity;
+  let slit = Infinity;
+  const line: number[] = [];
+  for (let k = 0; k <= 400; k++) {
+    const p = gp - 0.06 + (0.14 * k) / 400;
+    const r = relief(p, 1.6);
+    line.push(r);
+    plate = Math.max(plate, r);
+    slit = Math.min(slit, r);
+  }
+  if (!(plate > 0.01)) fail(`opercule sans bord libre saillant (${(plate * 10).toFixed(3)} mm)`);
+  if (!(slit < -0.01)) fail(`fente branchiale absente (${(slit * 10).toFixed(3)} mm)`);
+  // Preopercule : un second plan, plus bas que la plaque d'opercule, avec son
+  // sillon : on cherche un creux local EN AVANT du bord libre.
+  const iMax = line.indexOf(plate);
+  let pre = false;
+  for (let i = 2; i < iMax - 2; i++) {
+    if (line[i] < line[i - 2] - 0.002 && line[i] < line[i + 2] - 0.002 && line[i] > 0) pre = true;
+  }
+  if (!pre) fail('preopercule non dessine (aucun sillon en avant du bord d opercule)');
+  // Orbite : logement au diametre reel de l'oeil, bourrelet periorbitaire.
+  if (params.eyes.enabled) {
+    const eyeP = params.eyes.position;
+    const theta = eyeThetaOf(anatomy);
+    const eyeR = (params.eyes.size * 0.1) / 2;
+    let rim = -Infinity;
+    for (let k = 0; k <= 60; k++) {
+      const p = eyeP + ((eyeR * 1.2 + (eyeR * 0.8 * k) / 60) / L);
+      rim = Math.max(rim, relief(p, theta));
+    }
+    const floorAtEdge = relief(eyeP + (eyeR * 0.85) / L, theta);
+    if (!(rim > 0.005)) fail(`orbite sans bourrelet (${(rim * 10).toFixed(3)} mm)`);
+    if (!(floorAtEdge < -0.01 || params.eyes.relief > 0)) fail('logement d oeil plus petit que l oeil');
+  }
+  // Ligne laterale : un sillon mesurable.
+  if (!(anatomy.lateralLine > 0)) fail('ligne laterale absente');
+  else {
+    const p = (gp + anatomy.peduncle) / 2;
+    let groove = 0;
+    for (let k = 0; k <= 80; k++) groove = Math.min(groove, relief(p, 1.2 + (0.5 * k) / 80));
+    if (!(groove < -0.003)) fail(`ligne laterale non mesurable (${(groove * 10).toFixed(3)} mm)`);
+  }
+  // Nageoires : dorsale, pectorales, pelviennes, anale, caudale, a rayons,
+  // presentes dans la geometrie (relief, crete, lame ou piece).
+  const fins = [
+    ['dorsale', anatomy.dorsalFin],
+    ['anale', anatomy.analFin],
+    ['pectorales', anatomy.pectoralFin],
+    ['pelviennes', anatomy.pelvicFin],
+  ] as const;
+  for (const [name, fin] of fins) {
+    if (!fin.enabled) fail(`nageoire ${name} absente`);
+    else if (fin.rays < 3) fail(`nageoire ${name} sans rayons`);
+  }
+  const caudal = caudalModeOf(anatomy);
+  const hasCaudal = !!geo.tail || caudal === 'attached' || (caudal === 'relief' || params.tailShape === 'round');
+  if (!hasCaudal) fail('caudale absente');
+  if (params.tailShape === 'round' && anatomy.caudalMode !== undefined) {
+    // Queue ronde : caudale dessinee en relief sur le bout de queue.
+    let drawn = 0;
+    for (let k = 0; k <= 60; k++) {
+      const p = anatomy.peduncle + ((profile.bodyEnd - anatomy.peduncle) * k) / 60;
+      drawn = Math.max(drawn, relief(p, Math.PI / 2));
+    }
+    if (!(drawn > 0.01)) fail(`caudale dessinee non mesurable sur le bout de queue (${(drawn * 10).toFixed(3)} mm)`);
+  }
+  report.lines.push(
+    `${tag.padEnd(28)} anatomie AT : opercule ${(plate * 10).toFixed(2)} mm, fente ${(slit * 10).toFixed(2)} mm, ` +
+      `preopercule, orbite a bourrelet, ligne laterale, pedoncule, 5 nageoires a rayons (caudale ${caudal})`,
+  );
+}
+
+/**
+ * Souple monobloc (module AU) : piece unique TPU, pleine, sans vis ni ecrou,
+ * traits du gobie, preparation d'armement, hamecon represente, physique TPU.
+ */
+function checkSoft(tag: string, params: LureParams, geo: ReturnType<typeof buildLure>, report: Report): void {
+  const fail = (what: string) => report.failures.push(`${tag} : ${what}`);
+  const profile = createProfile(params);
+  if (params.material !== 'tpu') fail('le souple n est pas en TPU');
+  if (assemblyActive(params)) fail('le souple est coupe en coques (standard AM applique a tort)');
+  if (params.screws.enabled) fail('visserie active sur un souple');
+  const anatomy = params.anatomy!;
+  // Traits du gobie.
+  const head = profile.section(0.15);
+  if (!(2 * head.halfWidth > head.top - head.bottom)) fail('tete du gobie pas plus large que haute');
+  const d1 = anatomy.dorsalFin;
+  const d2 = anatomy.dorsalFin2;
+  if (!d2 || !d2.enabled) fail('seconde dorsale absente');
+  else if (!(d1.size > d2.size && d1.to - d1.from < d2.to - d2.from)) fail('dorsales : la premiere doit etre courte et haute, la seconde longue');
+  if (!anatomy.pelvicSucker) fail('pelviennes non fusionnees en ventouse');
+  if (params.tailShape !== 'rounded') fail('caudale non arrondie');
+  const fins = finSolids(profile, params);
+  if (!fins) fail('pectorales en eventail absentes');
+  else {
+    fins.computeBoundingBox();
+    const span = (fins.boundingBox!.max.z - fins.boundingBox!.min.z) * 10;
+    if (Math.abs(span - (anatomy.pectoralSpan ?? 30)) > 1) fail(`envergure des pectorales ${span.toFixed(1)} mm au lieu de ${anatomy.pectoralSpan}`);
+    fins.dispose();
+  }
+  // Piece unique et armements.
+  const soft = params.soft!;
+  for (const rigging of ['slot', 'channel', 'none'] as const) {
+    const variant: LureParams = { ...params, soft: { ...soft, rigging } };
+    const prof = createProfile(variant);
+    const mono = buildMonobloc(prof, variant, true);
+    const a = audit(mono.geometry);
+    if (a.open) fail(`piece unique (${rigging}) ouverte : ${a.open} aretes`);
+    const scale = params.length / 90;
+    if (a.triangles < 60000 * scale || a.triangles > 150000 * scale) {
+      fail(`piece unique (${rigging}) : ${a.triangles} triangles (60 000 a 150 000 attendus a 90 mm)`);
+    }
+    if (rigging === 'slot') {
+      const slot = softSlotOf(variant)!;
+      const p = (slot.from + slot.to) / 2;
+      const sec = prof.section(p);
+      const bottom = createSkin(prof, variant)(p, Math.PI).y - sec.offset;
+      if (!(bottom > sec.bottom + 0.3 * slot.depth * (sec.top - sec.bottom))) fail('fente ventrale absente de la peau');
+    }
+    if (rigging === 'channel') {
+      const noseX = -prof.lengthCm / 2;
+      if (!(prof.xAt(0) > noseX + 1)) fail('canal longitudinal absent');
+    }
+    const plan = softRigPlan(prof, variant);
+    if (rigging !== 'none' && !plan.hook) fail(`aucun hamecon pour l armement ${rigging}`);
+    for (const problem of plan.problems) fail(`armement ${rigging} : ${problem}`);
+    report.lines.push(
+      `${tag.padEnd(28)} piece unique TPU (${rigging}) ${a.triangles} triangles, fermee` +
+        (plan.hook ? ` · hamecon ${plan.hook.size} (ouverture ${plan.hook.gapMm} mm pour ${plan.neededGapMm.toFixed(1)} mm)` : '') +
+        (mono.stats ? ` · corde p95 ${(mono.stats.p95 * 10).toFixed(4)} mm` : ''),
+    );
+    mono.geometry.dispose();
+  }
+  // Logement de lest : cavite fermee, pause d'impression.
+  {
+    const seated: LureParams = {
+      ...params,
+      soft: { ...soft, rigging: 'channel', ballastSeat: true },
+      ballasts: [{ id: 'b', position: 0.55, height: -0.3, mass: 1.5, shape: 'sphere' }],
+    };
+    const prof = createProfile(seated);
+    const plan = softRigPlan(prof, seated);
+    if (plan.seats.length !== 1) fail(`logement de lest refuse : ${plan.problems.join(' ')}`);
+    else if (plan.pauseMm === null || !(plan.pauseMm > 0)) fail('hauteur de pause d impression non calculee');
+    const mono = buildMonobloc(prof, seated, false);
+    if (audit(mono.geometry).open) fail('piece unique avec logement de lest ouverte');
+    if (!(mono.seatVolume > 0)) fail('volume du logement de lest nul');
+    mono.geometry.dispose();
+  }
+  // Exports : piece unique, assemble avec hamecon.
+  for (const kind of ['monobloc', 'assembly'] as ExportKind[]) {
+    const { parts, owned } = collectParts(params, geo, kind, false);
+    if (parts.length === 0) fail(`export ${kind} vide`);
+    for (const part of parts) if (audit(part).open) fail(`export ${kind} ouvert`);
+    if (kind === 'assembly' && !geo.rigging) fail('hamecon non represente dans l assemble');
+    for (const part of owned) part.dispose();
+  }
+  // Physique : densite du TPU a sa durete dans le verdict.
+  const physics = computePhysics(params, geo, 'fresh');
+  const want = ARCHETYPES.find((item) => item.shape === 'souple')?.buoyancy;
+  if (want && physics.buoyancy !== want) fail(`verdict ${physics.buoyancy} au lieu de ${want}`);
+  const grade = tpuAt(soft.hardness);
+  const soft85 = computePhysics({ ...params, soft: { ...soft, hardness: 85 } }, geo, 'fresh');
+  const soft95 = computePhysics({ ...params, soft: { ...soft, hardness: 95 } }, geo, 'fresh');
+  if (!(soft95.bodyMass > soft85.bodyMass)) fail('la durete du TPU ne change pas la masse');
+  for (const warning of physics.warnings) if (warning.level === 'error') fail(`simulation : ${warning.title} — ${warning.detail}`);
+  report.lines.push(
+    `${tag.padEnd(28)} TPU ${grade.shore} A ${grade.density} g/cm3 · ${physics.buoyancy} (${physics.ratio.toFixed(2)}) · ` +
+      `${physics.totalMass.toFixed(1)} g · 85 A ${soft85.bodyMass.toFixed(2)} g / 95 A ${soft95.bodyMass.toFixed(2)} g de corps`,
+  );
+}
+
+/** Matrice des modes de nageoires (module AW) sur des familles rigides. */
+function checkFinModes(report: Report): void {
+  const modes = ['integrated', 'relief', 'attached'] as const;
+  for (const id of ['minnow', 'crank'] as const) {
+    for (const mode of modes) {
+      const params = clonePreset(id);
+      const a = params.anatomy!;
+      // La dorsale rapportee doit rester a l'ecart des passages ventraux.
+      params.anatomy = {
+        ...a,
+        dorsalFin: { ...a.dorsalFin, mode, ...(id === 'crank' ? { from: 0.5, to: 0.66 } : { from: 0.43, to: 0.58 }) },
+        analFin: { ...a.analFin, mode },
+        pectoralFin: { ...a.pectoralFin, mode },
+        pelvicFin: { ...a.pelvicFin, mode },
+        caudalMode: id === 'crank' || mode !== 'attached' ? mode : 'integrated',
+      };
+      const tag = `${id} (nageoires ${mode})`;
+      const profile = createProfile(params);
+      const assembly = buildAssembly(profile, params, assemblyExport(params));
+      if (audit(assembly.male).open || audit(assembly.female).open) report.failures.push(`${tag} : coques ouvertes`);
+      const named = /^(Fente de .* rapportee : elle partage ses stations|La fente de la caudale rapportee)/;
+      for (const problem of assembly.finSlotProblems) if (!named.test(problem)) report.failures.push(`${tag} : ${problem}`);
+      if (assembly.tailSlotProblem && !named.test(assembly.tailSlotProblem)) report.failures.push(`${tag} : ${assembly.tailSlotProblem}`);
+      const geo = buildLure(params, DISPLAY_RESOLUTION);
+      if (geo.fins && audit(geo.fins).open) report.failures.push(`${tag} : nageoires en volume ouvertes`);
+      let parts = 0;
+      if (hasAttachedFins(params) || caudalModeOf(params.anatomy) === 'attached') {
+        const list = attachedFinParts(profile, params);
+        for (const part of list) if (audit(part.geometry).open) report.failures.push(`${tag} : piece ${part.label} ouverte`);
+        parts = list.length;
+        const { parts: exported, owned } = collectParts(params, geo, 'fins', false);
+        if (list.length && exported.length === 0) report.failures.push(`${tag} : export des nageoires vide`);
+        for (const part of owned) part.dispose();
+      }
+      // Integree : 1,2 mm a la base, 0,6 mm au bord libre au moins.
+      if (mode === 'integrated' && geo.tail) {
+        const tail = buildTailFin(profile, params, 'full');
+        tail.computeBoundingBox();
+        tail.dispose();
+      }
+      report.lines.push(
+        `${tag.padEnd(28)} coques fermees · ${parts} pieces rapportees` +
+          (assembly.finSlotProblems.length ? ` · limite nommee : ${assembly.finSlotProblems[0].slice(0, 70)}` : '') +
+          (assembly.tailSlotProblem ? ` · limite nommee : ${assembly.tailSlotProblem.slice(0, 70)}` : ''),
+      );
+      disposeAssembly(assembly);
+      geo.dispose();
+    }
+  }
+}
+
 export function run(): Report {
   const report: Report = { failures: [], lines: [] };
 
-  // Critere AR : la bibliotheque compte les six familles, dans cet ordre.
+  // Critere AX : la bibliotheque compte les sept familles, dans cet ordre.
   const ids = SHAPE_PRESETS.map((preset) => preset.id);
-  const expected = ['minnow', 'lipless', 'plopper', 'pencil', 'nageur', 'souple'];
+  const expected = ['minnow', 'lipless', 'plopper', 'pencil', 'nageur', 'souple', 'crank'];
   if (ids.join() !== expected.join()) report.failures.push(`bibliotheque : ${ids.join(', ')}`);
   if (ARCHETYPES.map((item) => item.shape).join() !== expected.join()) report.failures.push('fiches de famille en trop');
 
@@ -728,9 +1029,9 @@ export function run(): Report {
     const t160 = at(160);
     if (!(t160 > t100 && t100 > t70)) report.failures.push(`${preset.id} : densite independante de la taille (${t70} / ${t100} / ${t160})`);
   }
-  // Six familles, six compteurs differents (module AR).
+  // Sept familles, sept compteurs differents (modules AR, AX).
   const values = Object.values(counted);
-  if (values.length !== 6) report.failures.push(`${values.length} familles au lieu de six`);
+  if (values.length !== 7) report.failures.push(`${values.length} familles au lieu de sept`);
   if (new Set(values).size !== values.length) report.failures.push(`des cartes affichent le meme nombre de triangles : ${values.join(', ')}`);
   // Aucun STL fourni ne figure dans la bibliotheque (module AN) : chaque
   // famille est un corps parametrique, sans maillage importe.
@@ -742,7 +1043,7 @@ export function run(): Report {
   for (const preset of SHAPE_PRESETS) {
     const params = clonePreset(preset.id);
     const coarse = buildLure(params, STEP_RESOLUTION, null, false, false);
-    const kinds: ExportKind[] = ['assembly', 'male', 'female'];
+    const kinds: ExportKind[] = softActive(params) ? ['monobloc', 'assembly'] : ['assembly', 'male', 'female'];
     if (params.hasBib) kinds.push('bib');
     if (coarse.propeller) kinds.push('propeller', 'bead');
     let faces = 0;
@@ -759,6 +1060,8 @@ export function run(): Report {
     coarse.dispose();
     report.lines.push(`${`${preset.id} (STEP)`.padEnd(28)} ${kinds.length} pieces en solides fermes · ${faces} faces`);
   }
+
+  checkFinModes(report);
 
   // Pencil : section circulaire sans ondulation (module AO.2).
   {

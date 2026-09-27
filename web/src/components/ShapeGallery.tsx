@@ -60,7 +60,7 @@ export function ShapeGallery({
           <div className="hero__step">
             <span>1</span>
             <p>
-              <strong>Partir d une famille</strong> — six leurres complets et regles,
+              <strong>Partir d une famille</strong> — sept leurres complets et regles,
               anatomie comprise. Chaque cote reste modifiable au curseur.
             </p>
           </div>
@@ -90,12 +90,13 @@ export function ShapeGallery({
       </div>
 
       <p className="gallery__lead">
-        Six familles, une entree chacune, chacune pour une geometrie qui lui est propre — helice
-        rotative, section circulaire, chambre de billes, lest ventral integre. Les variantes sont
-        des reglages. Chaque modele
-        arrive fonctionnel : armature anatomique (pedoncule, opercule en relief, orbites
-        creusees, nageoires), deux demi-coques vissees avec ergots et gorge de colle,
-        goupilles aux attaches, lest place, verdict de flottabilite valide.
+        Sept familles, une entree chacune, chacune pour une geometrie qui lui est propre — helice
+        rotative, section circulaire, chambre de billes, souple gobie monobloc, corps trapu a
+        bavette large. Les variantes sont des reglages. Chaque modele arrive fonctionnel :
+        anatomie complete (levres, narines, orbites a bourrelet, opercule et preopercule, fente
+        branchiale, ligne laterale, pedoncule, nageoires a rayons), maillage adaptatif, deux
+        demi-coques vissees avec ergots et gorge de colle — ou une piece unique en TPU pour le
+        souple —, lest place, verdict de flottabilite valide.
       </p>
 
       <div className="filters" role="group" aria-label="Filtres de la bibliotheque">

@@ -236,6 +236,25 @@ export function pairedFinSolids(
       v = new THREE.Vector3(v.x, v.y, -v.z);
     }
     const nrm = side < 0 ? new THREE.Vector3(normal.x, normal.y, -normal.z) : normal;
+    if (fan) {
+      // Envergure MESUREE : on cale la portee pour que le bout d'eventail le
+      // plus ecarte tombe exactement a la demi-envergure demandee.
+      const span = (anatomy.pectoralSpan ?? 30) * MM;
+      for (let pass = 0; pass < 3; pass++) {
+        let maxZ = 0;
+        for (let k = 0; k <= 40; k++) {
+          const b = -1 + (2 * k) / 40;
+          const phi = b * 1.05;
+          const r = reach * festoon(b, rays);
+          const q = { x: r * Math.cos(phi * 0.55), y: halfSpan * Math.sin(phi) / Math.sin(1.05) };
+          const z = Math.abs(origin.z + u.z * q.x + v.z * q.y);
+          maxZ = Math.max(maxZ, z);
+        }
+        const k = (span / 2 - Math.abs(origin.z)) / Math.max(maxZ - Math.abs(origin.z), 1e-4);
+        reach *= k;
+        halfSpan *= k;
+      }
+    }
     const tip = (b: number) => {
       const phi = b * (fan ? 1.05 : 0.8);
       const r = reach * festoon(b, rays) * (fan ? 1 : 0.8 + 0.2 * Math.cos(phi));
@@ -260,6 +279,61 @@ export function pairedFinSolids(
       toEdge: (a, b) => Math.min((1 - a) * reach, (1 - Math.abs(b)) * halfSpan),
     });
     out.push(buildBlade({ mid, normal: nrm, thickness, na: 18 + rays, nb: 14 + rays * 4 }));
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Nageoires impaires en volume d'un souple
+// ---------------------------------------------------------------------------
+
+/**
+ * Dorsales et anale INTEGREES d'un souple monobloc : des lames dans le plan
+ * de symetrie, racine noyee de 0,6 mm dans le dos (ou le ventre). Sur un
+ * rigide en coques, ces nageoires sont des cretes de la peau, coupees en
+ * deux par le plan de joint ; sur une piece unique, une lame dediee porte
+ * mieux ses rayons et son bord libre, a une fraction du maillage.
+ */
+export function medianFinSolids(params: LureParams, skin: SkinSampler): THREE.BufferGeometry[] {
+  const anatomy = params.anatomy;
+  if (!anatomy || !params.soft?.enabled) return [];
+  const H = params.thickness * MM;
+  const out: THREE.BufferGeometry[] = [];
+  const medians: [FinConfig | undefined, FinKind, 1 | -1][] = [
+    [anatomy.dorsalFin, 'dorsal', 1],
+    [anatomy.dorsalFin2, 'dorsal2', 1],
+    [anatomy.analFin, 'anal', -1],
+  ];
+  for (const [fin, kind, sign] of medians) {
+    if (!finOn(fin) || finModeOf(fin, kind) !== 'integrated') continue;
+    const rays = Math.max(fin.rays, 3);
+    const height = fin.size * H;
+    const ridge = sign > 0 ? 0 : Math.PI;
+    const sweep = 0.35;
+    const heightAt = (s: number) =>
+      Math.max(height * Math.pow(Math.sin(Math.PI * Math.pow(clampN(s, 0.002, 0.998), 0.75)), 0.6) * (1 - 0.3 * s), 0.04);
+    const mid = (a: number, b: number) => {
+      const s = (b + 1) / 2;
+      const p = fin.from + (fin.to - fin.from) * s;
+      const root = skin(p, ridge);
+      const h = heightAt(s) * festoon(b, rays, 0.07);
+      // Racine noyee : la lame part de 0,6 mm sous la peau.
+      const along = a * (h + 0.06) - 0.06;
+      return new THREE.Vector3(root.x + Math.max(along, 0) * sweep, root.y + sign * along, 0);
+    };
+    const base = Math.max(FIN_MIN.base, 0.15);
+    const edge = Math.max(FIN_MIN.edge, 0.07);
+    const baseLen = (fin.to - fin.from) * params.length * MM;
+    const thickness = finThickness({
+      base,
+      edge,
+      rays,
+      toEdge: (a, b) => {
+        const s = (b + 1) / 2;
+        return Math.min((1 - a) * heightAt(s), Math.min(s, 1 - s) * baseLen);
+      },
+    });
+    out.push(buildBlade({ mid, normal: new THREE.Vector3(0, 0, 1), thickness, na: 14, nb: 24 + rays * 5 }));
   }
   return out;
 }

@@ -387,6 +387,37 @@ export interface ThroughWireConfig {
  * ici : ce sont ceux des cylindres de retention (jeu de boucle), une seule
  * table de tolerances pour tout le logiciel.
  */
+/**
+ * Preparation d'armement d'un souple monobloc (module AU.2) :
+ * - `slot` : fente ventrale, montage texan ou weightless ;
+ * - `channel` : canal longitudinal perce depuis le nez, tete plombee ou
+ *   montage traversant ;
+ * - `none` : corps plein, armement laisse au pecheur.
+ */
+export type SoftRigging = 'slot' | 'channel' | 'none';
+
+/**
+ * Souple monobloc en TPU (module AU) : EXCEPTION EXPLICITE au standard male /
+ * femelle du module AM. Piece unique, pleine, sans vis ni ecrou ; la matiere
+ * se deforme, un serrage n'y aurait pas de sens.
+ */
+export interface SoftBodyConfig {
+  enabled: boolean;
+  /** Durete Shore A du TPU, de 85 a 95. La densite en depend. */
+  hardness: number;
+  rigging: SoftRigging;
+  /** Diametre du canal longitudinal, en mm. */
+  channelDiameter: number;
+  /**
+   * Logement de lest interne (souple coulant) : chaque lest de la liste des
+   * lests devient une cavite fermee au diametre de la bille, jeu de 0,10 mm,
+   * garnie pendant une pause d'impression.
+   */
+  ballastSeat: boolean;
+  /** Masse de la tete plombee (montage sur canal), en g. */
+  jigMass: number;
+}
+
 export interface PropellerConfig {
   enabled: boolean;
   /** Nombre de pales. */
@@ -669,6 +700,12 @@ export interface Anatomy {
   // Tous optionnels : un projet anterieur s'ouvre a l'identique.
   /** Seconde dorsale (gobie : premiere courte et haute, seconde longue). */
   dorsalFin2?: FinConfig;
+  /**
+   * Nageoire adipeuse : petite nageoire charnue, sans rayons, sur le dos
+   * entre la dorsale et la caudale (salmonides, eperlans). Integree ou en
+   * relief.
+   */
+  adiposeFin?: FinConfig;
   /** Realisation de la caudale. Absent : integree. */
   caudalMode?: FinMode;
   /** Relief des levres superieure et inferieure, en fraction de la hauteur. */
@@ -1133,6 +1170,11 @@ export interface LureParams {
   throughWire: ThroughWireConfig;
   /** Helice rotative de queue, montee sur le fil traversant (module AP.1). */
   propeller: PropellerConfig;
+  /**
+   * Souple monobloc TPU (module AU). Absent ou desactive : leurre en coques,
+   * comme avant.
+   */
+  soft?: SoftBodyConfig;
 
   // --- Quincaillerie pesee (module Q) -------------------------------------
   /**

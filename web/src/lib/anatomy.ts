@@ -57,6 +57,29 @@ const softMax0 = (a: number, k: number): number => {
 /** Angle de l'oeil depuis le dos, en radians : le meme que la livree. */
 export const EYE_THETA = 1.15;
 
+/**
+ * Fente ventrale d'un souple : 42 % de la hauteur locale, 1,2 mm de large
+ * (fil d'hamecon de 1 a 1,2 mm, plus le jeu).
+ */
+export function softSlotOf(params: LureParams): { from: number; to: number; depth: number; halfWidth: number } | null {
+  if (!params.soft?.enabled || params.soft.rigging !== 'slot') return null;
+  const anatomy = params.anatomy;
+  // Juste derriere la ventouse (ou la gorge), sur 12 % de la longueur : la
+  // hampe va de l'oeillet, au nez, au bout de la fente ; la pointe ressort
+  // du dos au droit du coude. Un 90 mm prend ainsi un hamecon de 4/0.
+  const from = anatomy ? Math.max(anatomy.pelvicFin.to + 0.02, 0.25) : 0.3;
+  const limit = anatomy && anatomy.analFin.enabled ? anatomy.analFin.from - 0.03 : 0.9;
+  const to = Math.min(from + 0.12, limit);
+  return { from, to: Math.max(to, from + 0.06), depth: 0.42, halfWidth: 0.06 };
+}
+
+/**
+ * Profondeur du canal longitudinal d'un souple, en cm : la longueur de hampe
+ * d'une tete plombee a la taille du leurre, un tiers de la longueur.
+ */
+export const channelDepthCm = (params: LureParams): number =>
+  clampN(0.33 * params.length, 15, 50) * MM;
+
 // ---------------------------------------------------------------------------
 // Courbes de profil
 // ---------------------------------------------------------------------------
@@ -284,18 +307,30 @@ export function createAnatomicalProfile(
   // vers l'arriere le long du corps. Chaque station reste un anneau plan.
   const face = params.popperFace;
   const cup = face.enabled && face.depth > 0.05;
-  const pc = cup ? 0.035 : 0;
-  const lipR = cup ? Math.max(face.lipRadius, 0.3) * MM : 0;
+  // Canal longitudinal d'un souple (module AU.2) : meme principe, le loft
+  // entre par le nez — mais en tube circulaire a fond hemispherique, raccorde
+  // au museau par un conge. Le nez garde sa calotte, refermee sur l'anneau
+  // du canal au lieu d'une pointe.
+  const bore =
+    !cup && params.soft?.enabled && params.soft.rigging === 'channel'
+      ? {
+          rc: (clampN(params.soft.channelDiameter, 0.8, 5) * MM) / 2,
+          depth: channelDepthCm(params),
+        }
+      : null;
+  const open = cup || bore !== null;
+  const pc = cup ? 0.035 : bore ? 0.03 : 0;
+  const lipR = cup ? Math.max(face.lipRadius, 0.3) * MM : bore ? 0.05 : 0;
   const cupDepth = cup ? Math.max(face.depth * MM, lipR * 1.2) : 0;
   const bottomRatio = cup ? clampN(1 - face.diameter, 0.15, 0.75) : 0;
   const xFront = -L / 2;
-  const bodyStartX = xFront + lipR;
+  const bodyStartX = xFront + (bore ? 0 : lipR);
 
   const uOf = (p: number): number =>
-    cup ? clampN((p - pc) / Math.max(bodyEnd - pc, 1e-6), 0, 1) : clampN(p / bodyEnd, 0, 1);
+    open ? clampN((p - pc) / Math.max(bodyEnd - pc, 1e-6), 0, 1) : clampN(p / bodyEnd, 0, 1);
 
   const xBody = (p: number): number =>
-    cup ? bodyStartX + ((p - pc) / (1 - pc)) * (L - lipR) : p * L - L / 2;
+    open ? bodyStartX + ((p - pc) / (1 - pc)) * (L - (bore ? 0 : lipR)) : p * L - L / 2;
 
   // Calotte de nez : le corps se referme en ogive, tangente perpendiculaire
   // a l'axe a la pointe. Pas de pointe vive, donc pas de facette de nez.
@@ -344,13 +379,31 @@ export function createAnatomicalProfile(
         bottom = H * env.bottom * f;
       }
     }
+    let nUpper = clampN(NU(u) * cs, 1.15, 5);
+    let nLower = clampN(NL(u) * cs, 1.15, 5);
+    if (bore) {
+      // Le museau se referme sur l'anneau du canal : maximum adouci, sans
+      // arete, et section qui s'arrondit en cercle a la levre.
+      const R0 = bore.rc + lipR;
+      const k = 0.6 * R0;
+      const smax = (a: number, b: number) => {
+        const d = Math.abs(a - b);
+        return d >= k ? Math.max(a, b) : Math.max(a, b) + ((k - d) * (k - d)) / (4 * k);
+      };
+      top = smax(top, R0);
+      bottom = -smax(-bottom, R0);
+      halfWidth = smax(halfWidth, R0);
+      const w = smoothstep(0, Math.max(noseCap, 0.02), u);
+      nUpper = 2 + (nUpper - 2) * w;
+      nLower = 2 + (nLower - 2) * w;
+    }
     return {
       offset: rake(p),
       top,
       bottom,
       halfWidth,
-      nUpper: clampN(NU(u) * cs, 1.15, 5),
-      nLower: clampN(NL(u) * cs, 1.15, 5),
+      nUpper,
+      nLower,
     };
   };
 
@@ -390,6 +443,31 @@ export function createAnatomicalProfile(
       s: number;
     })[];
   }
+  if (bore) {
+    // Fond hemispherique, tube, conge de levre : abscisse, rayon.
+    const pts: { x: number; r: number }[] = [];
+    const xb = xFront + bore.depth;
+    const CAP = 16;
+    for (let i = 0; i <= CAP; i++) {
+      const a = (Math.PI / 2) * (i / CAP);
+      pts.push({ x: xb - bore.rc + bore.rc * Math.cos(a), r: bore.rc * Math.sin(a) });
+    }
+    const TUBE = 40;
+    for (let i = 1; i <= TUBE; i++) {
+      pts.push({ x: xb - bore.rc + (xFront + lipR - (xb - bore.rc)) * (i / TUBE), r: bore.rc });
+    }
+    const ARC = 12;
+    for (let i = 1; i <= ARC; i++) {
+      const phi = -Math.PI / 2 - (Math.PI / 2) * (i / ARC);
+      pts.push({ x: xFront + lipR + lipR * Math.cos(phi), r: bore.rc + lipR + lipR * Math.sin(phi) });
+    }
+    const arc: number[] = [0];
+    for (let i = 1; i < pts.length; i++) {
+      arc.push(arc[i - 1] + Math.hypot(pts[i].x - pts[i - 1].x, pts[i].r - pts[i - 1].r));
+    }
+    const total = arc[arc.length - 1];
+    cupPath = pts.map((pt, i) => ({ x: pt.x, rho: pt.r, s: arc[i] / total })) as (CupPoint & { s: number })[];
+  }
   const cupAt = (p: number): CupPoint => {
     const s = clampN(p / pc, 0, 1);
     const path = cupPath as (CupPoint & { s: number })[];
@@ -406,11 +484,17 @@ export function createAnatomicalProfile(
   const section = (p: number): Section => {
     if (p === lastP && lastSection) return lastSection;
     let result: Section;
-    if (p <= 0 && !cup) {
+    if (p <= 0 && !open) {
       result = { offset: rake(0), top: 0, bottom: 0, halfWidth: 0, nUpper: 2, nLower: 2 };
     } else if (p >= bodyEnd) {
       const end = bodySection(bodyEnd);
       result = { ...end, top: 0, bottom: 0, halfWidth: 0 };
+    } else if (bore && p < pc) {
+      // Canal : section circulaire, sur l'axe de la levre.
+      const lip = bodySection(pc);
+      const { rho } = cupAt(p);
+      const centre = (lip.top + lip.bottom) / 2;
+      result = { offset: lip.offset + centre, top: rho, bottom: -rho, halfWidth: rho, nUpper: 2, nLower: 2 };
     } else if (cup && p < pc) {
       const lip = bodySection(pc);
       const { rho } = cupAt(p);
@@ -431,7 +515,7 @@ export function createAnatomicalProfile(
   };
 
   const xAt = (p: number): number => {
-    if (cup && p < pc) return cupAt(p).x;
+    if (open && p < pc) return cupAt(p).x;
     return xBody(p);
   };
 
@@ -445,7 +529,7 @@ export function createAnatomicalProfile(
     H,
     bodyEnd,
     pc,
-    cup,
+    cup: open,
     section,
     xAt,
     caudalDrawn: ctx.caudalDrawn === true,
@@ -492,7 +576,7 @@ function finEnabled(fin: FinConfig): boolean {
 }
 
 /** Realisation effective d'une nageoire (module AW). */
-export type FinKind = 'dorsal' | 'dorsal2' | 'anal' | 'pectoral' | 'pelvic';
+export type FinKind = 'dorsal' | 'dorsal2' | 'adipose' | 'anal' | 'pectoral' | 'pelvic';
 
 /**
  * Mode d'une nageoire : celui du reglage, ou a defaut le comportement d'avant
@@ -552,7 +636,7 @@ function createAnatomyField(
     rho += 1.3 * Math.exp(-(((p - ped) / 0.07) ** 2));
     rho += 4 * Math.exp(-(((bodyEnd - p) / 0.015) ** 2));
     if (ctx.cup && p < pc) rho += 4;
-    for (const fin of [dorsal, dorsal2, anal]) {
+    for (const fin of [dorsal, dorsal2, anatomy.adiposeFin, anal]) {
       if (fin && finEnabled(fin) && p > fin.from - 0.01 && p < fin.to + 0.01) rho += 0.7;
     }
     return rho;
@@ -678,6 +762,8 @@ function createAnatomyField(
   // vers l'arriere, bord libre dentele. Rien ne depasse du corps.
   interface Folded {
     fin: FinConfig;
+    /** Adipeuse : pas de rayons, bord lisse. */
+    rayless?: boolean;
     /** 0 pour une dorsale (depuis le dos), PI pour l'anale (depuis le ventre). */
     ridge: number;
     xa: number;
@@ -690,6 +776,7 @@ function createAnatomyField(
     if (!fin || !finEnabled(fin) || finModeOf(fin, kind) !== 'relief') return;
     folded.push({
       fin,
+      rayless: kind === 'adipose',
       ridge,
       xa: ctx.xAt(fin.from),
       xb: ctx.xAt(fin.to),
@@ -699,6 +786,7 @@ function createAnatomyField(
   };
   fold(dorsal, 'dorsal', 0);
   fold(dorsal2, 'dorsal2', 0);
+  fold(anatomy.adiposeFin, 'adipose', 0);
   fold(anal, 'anal', Math.PI);
   const RAY_SWEEP = Math.tan(0.85);
 
@@ -877,10 +965,11 @@ function createAnatomyField(
       const s = (xBase - fin.xa) / Math.max(fin.xb - fin.xa, 1e-4);
       if (s < -0.04 || s > 1.04) continue;
       const rays = Math.max(fin.fin.rays, 1);
-      const scallop = rayScallop(s, rays);
-      const ray = Math.pow(scallop, 3);
+      const scallop = fin.rayless ? 1 : rayScallop(s, rays);
+      const ray = fin.rayless ? 0 : Math.pow(scallop, 3);
       const reach =
-        fin.height * Math.pow(Math.sin(Math.PI * Math.pow(clampN(s, 0, 1), 0.75)), 0.6) * (1 - 0.3 * s) *
+        fin.height * Math.pow(Math.sin(Math.PI * Math.pow(clampN(s, 0, 1), fin.rayless ? 1 : 0.75)), 0.6) *
+        (1 - (fin.rayless ? 0 : 0.3) * s) *
         (1 - 0.07 * (1 - scallop));
       const along = ds * Math.sqrt(1 + RAY_SWEEP * RAY_SWEEP);
       const inside =
@@ -942,6 +1031,7 @@ function createAnatomyField(
   // --- Cretes : nageoires impaires integrees -------------------------------
   interface Crest {
     fin: FinConfig;
+    rayless?: boolean;
     sign: 1 | -1;
     height: number;
     wb: number;
@@ -950,8 +1040,12 @@ function createAnatomyField(
   const crests: Crest[] = [];
   const addCrest = (fin: FinConfig | undefined, kind: FinKind, sign: 1 | -1) => {
     if (!fin || !finEnabled(fin) || finModeOf(fin, kind) !== 'integrated') return;
+    // Souple monobloc : les nageoires impaires sont des lames en volume
+    // (fins.ts), pas des cretes de peau.
+    if (params.soft?.enabled) return;
     crests.push({
       fin,
+      rayless: kind === 'adipose',
       sign,
       height: fin.size * H,
       // Integree (module AW) : 1,2 mm minimum a la base, 0,6 mm au bord libre.
@@ -961,28 +1055,48 @@ function createAnatomyField(
   };
   addCrest(dorsal, 'dorsal', 1);
   addCrest(dorsal2, 'dorsal2', 1);
+  addCrest(anatomy.adiposeFin, 'adipose', 1);
   addCrest(anal, 'anal', -1);
 
+  // Fente ventrale d'un souple (module AU.2) : montage texan ou weightless.
+  // Une crete inversee : dans la bande de la fente, le ventre remonte de la
+  // profondeur de la fente ; ses parois sont verticales, ses extremites
+  // arrondies. La hampe de l'hamecon s'y loge, le TPU se referme dessus.
+  const slot = softSlotOf(params);
   const crest = (p: number, theta: number, z: number): number => {
     let out = 0;
     const c = Math.cos(theta);
+    if (slot && c < 0 && p > slot.from && p < slot.to) {
+      const s = (p - slot.from) / (slot.to - slot.from);
+      const sec = ctx.section(p);
+      // Extremites en rampe (pente de l'ordre de 60 degres) : la hampe y
+      // entre sans accrocher, et la paroi n'est pas une falaise transversale.
+      const rampCm = 0.6 * slot.depth * (sec.top - sec.bottom);
+      const ramp = Math.min(rampCm / Math.max((slot.to - slot.from) * L, 1e-3), 0.4);
+      const ends = smoothstep(0, ramp, s) * smoothstep(0, ramp, 1 - s);
+      const depth = slot.depth * (sec.top - sec.bottom) * ends;
+      const az = Math.abs(z);
+      out += depth * smoothstep(slot.halfWidth + 0.015, slot.halfWidth - 0.015, az);
+    }
     for (const fin of crests) {
       if (fin.sign * c <= 0) continue;
       const s = (p - fin.fin.from) / (fin.fin.to - fin.fin.from);
       if (s <= 0 || s >= 1) continue;
       const rays = Math.max(fin.fin.rays, 1);
       // Bord d'attaque haut, bord de fuite qui s'abaisse ; le bord libre est
-      // festonne entre les rayons, jamais une decoupe franche.
-      const scallop = rayScallop(s, rays);
-      const h =
-        fin.height * Math.pow(Math.sin(Math.PI * Math.pow(s, 0.75)), 0.6) * (1 - 0.3 * s) *
-        (1 - 0.07 * (1 - scallop));
+      // festonne entre les rayons, jamais une decoupe franche. L'adipeuse,
+      // charnue, n'a ni rayons ni feston : un lobe arrondi.
+      const scallop = fin.rayless ? 1 : rayScallop(s, rays);
+      const h = fin.rayless
+        ? fin.height * Math.pow(Math.sin(Math.PI * s), 0.7)
+        : fin.height * Math.pow(Math.sin(Math.PI * Math.pow(s, 0.75)), 0.6) * (1 - 0.3 * s) *
+          (1 - 0.07 * (1 - scallop));
       if (h <= 1e-4) continue;
       const az = Math.abs(z);
       // Rayons : une surepaisseur qui court de la base vers le bord, inclinee
       // vers l'arriere comme sur une vraie nageoire.
       const q = s * rays - 0.6 * clampN(1 - az / fin.wb, 0, 1);
-      const ray = Math.pow(Math.max(Math.cos(Math.PI * 2 * q), 0), 4);
+      const ray = fin.rayless ? 0 : Math.pow(Math.max(Math.cos(Math.PI * 2 * q), 0), 4);
       const wb = fin.wb * (1 + 0.25 * ray);
       const we = Math.min(fin.we * (1 + 0.25 * ray), wb * 0.8);
       if (az > wb + fin.wb) continue;

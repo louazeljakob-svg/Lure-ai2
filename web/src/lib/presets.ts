@@ -22,6 +22,7 @@ import { cloneLivery } from './liveries';
 import { seedCatalogue, seedId } from './tackle';
 import { defaultThroughWire } from './throughWire';
 import { defaultPropeller, PROPELLER_ANCHOR } from './propeller';
+import { defaultSoftBody } from './soft';
 
 export interface Range {
   /** Plage du curseur : un confort d'usage, pas une limite physique (AJ.3). */
@@ -463,6 +464,7 @@ export const cloneAnatomy = (anatomy: Anatomy | null): Anatomy | null =>
         pectoralFin: { ...anatomy.pectoralFin },
         pelvicFin: { ...anatomy.pelvicFin },
         ...(anatomy.dorsalFin2 ? { dorsalFin2: { ...anatomy.dorsalFin2 } } : {}),
+        ...(anatomy.adiposeFin ? { adiposeFin: { ...anatomy.adiposeFin } } : {}),
       }
     : null;
 
@@ -720,7 +722,7 @@ export const PENCIL_BODY: Omit<RoundBody, 'maxAt'> = { nose: 0.3, power: 2.4, wa
 export const PLOPPER_BODY: Omit<RoundBody, 'maxAt'> = { nose: 0.42, power: 2.1, waist: 0.42, waistAt: 0.8, flare: 0.5 };
 
 /**
- * Les six familles de la bibliotheque (modules AB, AH et AO).
+ * Les sept familles de la bibliotheque (modules AB, AH, AO, AU et AV).
  *
  * Chacune est un leurre COMPLET et fonctionnel des le chargement : cotes de
  * la famille, anatomie (pedoncule, opercule en relief, orbites creusees,
@@ -884,9 +886,9 @@ const FAMILY_PRESETS: ShapePreset[] = [
           jawDepth: 0.014,
           opercleRelief: 0.016,
           orbitDepth: 0.4,
-          // Pas de ligne laterale : un sillon longitudinal casserait la
-          // section circulaire sur toute sa longueur.
-          lateralLine: 0,
+          // Ligne laterale legere (module AT) : un sillon de 0,06 mm dans la
+          // peau. La section de base, elle, reste strictement circulaire.
+          lateralLine: 0.06,
           dorsalFin: fin(0.5, 0.64, 0.05, 9),
           analFin: fin(0.7, 0.76, 0.04, 7),
           pectoralFin: fin(0.21, 0.27, 0.15, 8),
@@ -948,6 +950,9 @@ const FAMILY_PRESETS: ShapePreset[] = [
         analFin: fin(0.76, 0.83, 0.08, 9),
         pectoralFin: fin(0.22, 0.3, 0.26, 10),
         pelvicFin: fin(0.59, 0.64, 0.18, 7),
+        // Nageoire adipeuse, comme sur le scan de poisson fourrage de
+        // reference : charnue, sans rayons, entre la dorsale et la caudale.
+        adiposeFin: fin(0.72, 0.77, 0.07, 0),
       },
       billThickness: 1.5,
       billOffset: 8,
@@ -1003,60 +1008,80 @@ const FAMILY_PRESETS: ShapePreset[] = [
   ),
   family(
     'souple',
-    'Souple',
-    'Corps elance en TPU, lest ventral integre a l avant',
-    'Corps elance imprime en TPU, lest ventral integre vers l avant, attache dorsale ou de nez, sans bavette, caudale en palette. Descend droit et s anime a la canne. Masse et position du lest, position d attache : reglages de famille. Plage 70 a 150 mm.',
+    'Souple (gobie)',
+    'Gobie en TPU : tete large, pectorales en eventail, ventouse',
+    'Souple sur le modele du gobie : tete large et aplatie, plus large que haute, grandes pectorales en eventail deployees, deux dorsales (la premiere courte et haute, la seconde longue), pelviennes fusionnees en ventouse sous la gorge, pedoncule court et caudale arrondie. Piece unique pleine en TPU (85 a 95 A), sans vis ni ecrou : exception explicite au standard male / femelle. Preparation d armement au choix : fente ventrale (texan, weightless), canal longitudinal (tete plombee, traversant), logement de lest. Plage 50 a 150 mm.',
     (base) => ({
-      length: 100,
-      maxWidth: 12.8,
-      thickness: 23.5,
+      length: 90,
+      maxWidth: 18,
+      thickness: 16,
+      bellyPosition: 0.3,
+      noseSharpness: 0.3,
       anatomy: {
         ...base.anatomy!,
-        jaw: 0.08,
-        peduncle: 0.74,
+        jaw: 0.11,
+        peduncle: 0.84,
+        // Dos : la tete reste basse et plate, le dos monte jusqu'a la
+        // premiere dorsale puis s'abaisse regulierement vers un pedoncule
+        // court.
         dorsal: knots([
-          [0, 0.12], [0.06, 0.25], [0.15, 0.39], [0.28, 0.47], [0.42, 0.49], [0.56, 0.45],
-          [0.68, 0.36], [0.8, 0.24], [0.88, 0.19], [0.95, 0.2], [1, 0.23],
+          [0, 0.1], [0.05, 0.2], [0.12, 0.3], [0.2, 0.38], [0.3, 0.45], [0.4, 0.48],
+          [0.5, 0.46], [0.62, 0.4], [0.74, 0.32], [0.84, 0.25], [0.9, 0.22], [0.96, 0.22], [1, 0.23],
         ]),
+        // Ventre plat : un gobie repose sur le fond, sa ventouse sous la gorge.
         ventral: knots([
-          [0, 0.1], [0.06, 0.22], [0.15, 0.36], [0.28, 0.47], [0.38, 0.51], [0.5, 0.46],
-          [0.64, 0.33], [0.78, 0.21], [0.88, 0.16], [0.95, 0.17], [1, 0.2],
+          [0, 0.1], [0.05, 0.24], [0.12, 0.36], [0.2, 0.44], [0.3, 0.48], [0.42, 0.48],
+          [0.55, 0.44], [0.68, 0.35], [0.8, 0.27], [0.88, 0.22], [0.95, 0.21], [1, 0.22],
         ]),
+        // Tete la plus large du corps, plus large que haute : 18 mm pour 14.
         width: knots([
-          [0, 0.4], [0.05, 0.64], [0.12, 0.84], [0.25, 0.95], [0.4, 1], [0.6, 0.97],
-          [0.72, 0.72], [0.82, 0.44], [0.9, 0.28], [0.95, 0.22], [1, 0.15],
+          [0, 0.55], [0.04, 0.8], [0.1, 0.95], [0.18, 1], [0.26, 0.97], [0.34, 0.88],
+          [0.45, 0.76], [0.58, 0.63], [0.7, 0.5], [0.82, 0.39], [0.9, 0.33], [0.96, 0.29], [1, 0.27],
         ]),
-        dorsalFin: fin(0.46, 0.62, 0.11, 11),
-        analFin: fin(0.7, 0.78, 0.08, 8),
-        pectoralFin: fin(0.21, 0.29, 0.22, 9),
-        pelvicFin: fin(0.44, 0.49, 0.15, 6),
+        // Dessus de tete plat (exposant eleve), ventre plat ; le corps
+        // s'arrondit vers la queue.
+        upper: knots([[0, 3.0], [0.2, 2.8], [0.35, 2.3], [0.6, 2.0], [0.85, 1.8], [1, 1.7]]),
+        lower: knots([[0, 3.2], [0.3, 3.2], [0.6, 2.6], [0.85, 2.1], [1, 1.9]]),
+        noseCap: 0.06,
+        noseShape: 0.5,
+        jawDepth: 0.025,
+        lips: 0.016,
+        jawProtrusion: 0.2,
+        nostrils: 0.3,
+        // Pas de carene : le ventre porte la ventouse et la fente d'armement.
+        ventralLine: 0,
+        opercleRelief: 0.022,
+        orbitDepth: 0.5,
+        lateralLine: 0.06,
+        // Yeux hauts, rapproches sur le dessus de la tete.
+        eyeTheta: 0.55,
+        // Souple : toutes les nageoires sont integrees, en TPU.
+        dorsalFin: fin(0.34, 0.44, 9 / 16, 6, 'integrated'),
+        dorsalFin2: fin(0.48, 0.8, 0.3, 14, 'integrated'),
+        analFin: fin(0.6, 0.8, 0.24, 12, 'integrated'),
+        pectoralFin: fin(0.26, 0.36, 0.6, 16, 'integrated'),
+        pectoralSpan: 30,
+        pelvicFin: fin(0.2, 0.3, 0.2, 10, 'integrated'),
+        pelvicSucker: true,
+        caudalRays: 14,
+        caudalMode: 'integrated',
       },
       hasBib: false,
-      tailShape: 'paddle',
-      tailSize: 0.8,
-      gills: { enabled: true, position: 0.2, size: 4.5, relief: -0.5 },
-      eyes: { enabled: true, position: 0.09, size: 5.5, relief: 0.3 },
-      assembly: assembly({
-        anchors: [
-          anchor('dos', 0.2, 0.5, 'back'),
-          anchor('ventre', 0.64, -0.5, 'belly'),
-        ],
-      }),
-      screws: {
-        enabled: true,
-        nutFit: 0.1,
-        screws: [
-          // Le lest ventral occupe le premier tiers : une vis devant lui, une
-          // derriere. 15 mm, la plus courte du catalogue.
-          { id: 'vis-avant', position: 0.13, size: 'auto', head: 'countersunk', length: 15 },
-          { id: 'vis-arriere', position: 0.55, size: 'auto', head: 'countersunk', length: 15 },
-        ],
-      },
+      tailShape: 'rounded',
+      tailSize: 0.9,
+      gills: { enabled: true, position: 0.26, size: 4, relief: -0.45 },
+      eyes: { enabled: true, position: 0.13, size: 5, relief: 0.3 },
+      // Monobloc : pas de coques, pas d'ancrage, pas de visserie.
+      assembly: { ...assembly({ anchors: [] }), enabled: false },
+      screws: { enabled: false, nutFit: 0.1, screws: [] },
       material: 'tpu',
-      infill: 25,
-      ballasts: [ballast(0.35, -0.35, 18, 'sou', 'cylinder')],
-      mounts: [mount('mount-ventre', 'Support ventral', 'ventre', 0.64, -1, treble('#4'), ring('#3'))],
-      paint: paint('#5a6b74', '#e6e9eb', { pattern: 'none' }),
+      // Piece PLEINE (module AU.2). Moins remplie, elle ondule mieux mais se
+      // dechire plus vite : reglage de famille.
+      infill: 100,
+      ballasts: [],
+      mounts: [],
+      soft: { ...defaultSoftBody(), enabled: true, hardness: 90, rigging: 'slot' },
+      paint: paint('#5b5134', '#b9ad86', { belly: '#e6dfc8', pattern: 'none' }),
     }),
   ),
   family(
@@ -1191,6 +1216,7 @@ export const clonePreset = (id: ShapeId): LureParams => {
     insert: { ...params.insert },
     throughWire: { ...params.throughWire, bellyPositions: [...params.throughWire.bellyPositions] },
     propeller: { ...params.propeller },
+    ...(params.soft ? { soft: { ...params.soft } } : {}),
     catalogue: params.catalogue.map((item) => ({ ...item })),
     mounts: params.mounts.map((item, i) => ({ ...item, id: `${item.id}-${i}-${Date.now()}` })),
     paint: { ...params.paint, livery: cloneLivery(params.paint.livery) },

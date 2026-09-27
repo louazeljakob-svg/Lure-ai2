@@ -19,7 +19,8 @@ import { createSurfaceDetail } from './surfaceDetail';
 import { buildCaudalFin, sectionPoint } from './anatomy';
 import { meshGeometry, releaseGeometry } from './meshBody';
 import { propellerParts, type PropellerParts } from './propeller';
-import { attachedFinsMounted, merge as mergeFins, pairedFinSolids } from './fins';
+import { attachedFinsMounted, medianFinSolids, merge as mergeFins, pairedFinSolids } from './fins';
+import { buildSoftRig, softActive, softRigPlan, type SoftRigPlan } from './soft';
 import { propellerActive } from './throughWire';
 import {
   articulationPlan,
@@ -171,6 +172,13 @@ export interface LureGeometry {
    * cotes, et pieces rapportees montees en place. Null si aucune.
    */
   fins: THREE.BufferGeometry | null;
+  /**
+   * Souple monobloc (module AU) : hamecon en place et tete plombee du montage
+   * sur canal, affiches et peses, jamais imprimes.
+   */
+  rigging: THREE.BufferGeometry | null;
+  /** Plan d'armement du souple, ou null. */
+  softPlan: SoftRigPlan | null;
   /** Encombrement reel en mm (bavette comprise). */
   bounds: { length: number; width: number; height: number };
   dispose: () => void;
@@ -736,6 +744,7 @@ export function finSolids(profile: ProfileSampler, params: LureParams): THREE.Bu
   const parts = [
     ...pairedFinSolids(params, skin, 1),
     ...pairedFinSolids(params, skin, -1),
+    ...medianFinSolids(params, skin),
     ...attachedFinsMounted(profile, params, skin),
   ];
   if (parts.length === 0) return null;
@@ -783,6 +792,8 @@ export function buildLure(
   const clip = buildClip(profile, params.clip);
   const propeller = propellerActive(params) ? propellerParts(params, profile) : null;
   const fins = profile.anatomy ? finSolids(profile, params) : null;
+  const softPlan = softActive(params) ? softRigPlan(profile, params) : null;
+  const rigging = softPlan ? buildSoftRig(profile, params, softPlan) : null;
 
   const box = new THREE.Box3();
   body.computeBoundingBox();
@@ -808,6 +819,8 @@ export function buildLure(
     ballasts: ballastMarkers(profile, params.ballasts, params.ballastDensity),
     propeller,
     fins,
+    rigging,
+    softPlan,
     bounds: {
       length: size.x * 10,
       width: size.z * 10,
@@ -816,6 +829,7 @@ export function buildLure(
     dispose: () => {
       // Le corps d'un maillage importe est partage par le cache : il survit.
       fins?.dispose();
+      rigging?.dispose();
       releaseGeometry(body);
       segments?.front.dispose();
       segments?.rear.dispose();

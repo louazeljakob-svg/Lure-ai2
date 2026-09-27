@@ -122,14 +122,14 @@ export const SHELL_STEP_MM = { along: 0.9, around: 0.75 };
  * Maillage adaptatif des coques (module AT.2). La grille de depart garde le
  * pas du module AQ ; la peau est ensuite coupee la ou la surface s'ecarte de
  * plus de 0,015 mm de ses facettes — tete, opercule, bouche, orbites,
- * rayons et bords libres —, dans la limite de 540 triangles par millimetre
- * de corps (54 000 pour une coque de 100 mm). Un corps tres lisse qui tient
+ * rayons et bords libres —, dans la limite de 500 triangles par millimetre
+ * de corps (50 000 pour une coque de 100 mm). Un corps tres lisse qui tient
  * la tolerance plus tot est affine jusqu'a 220 triangles par millimetre :
- * une coque de 100 mm sort ainsi entre 22 000 et 54 000 triangles, dans la
- * fourchette de 20 000 a 60 000. Aucune arete de peau n'est coupee sous
+ * une coque de 100 mm sort ainsi entre 22 000 et 50 000 triangles de peau,
+ * demi-caudale et ergots en plus, dans la fourchette de 20 000 a 60 000. Aucune arete de peau n'est coupee sous
  * 0,04 mm.
  */
-export const SHELL_REFINE = { chordMm: 0.015, perMm: 540, floorPerMm: 220, minEdgeMm: 0.04 };
+export const SHELL_REFINE = { chordMm: 0.015, perMm: 500, floorPerMm: 220, minEdgeMm: 0.04 };
 
 export function assemblyExport(params: LureParams): AssemblyResolution {
   if (!params.scales.enabled) {

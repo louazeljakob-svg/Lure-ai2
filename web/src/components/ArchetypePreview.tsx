@@ -81,6 +81,10 @@ export function renderThumb(
     side: THREE.DoubleSide,
   });
   if (geo.tail) group.add(new THREE.Mesh(geo.tail, finMat));
+  if (geo.fins) group.add(new THREE.Mesh(geo.fins, finMat));
+  if (geo.rigging) {
+    group.add(new THREE.Mesh(geo.rigging, new THREE.MeshStandardMaterial({ color: '#8d949b', roughness: 0.3, metalness: 0.85 })));
+  }
   if (geo.bib) {
     group.add(
       new THREE.Mesh(

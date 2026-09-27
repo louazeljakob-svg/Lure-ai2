@@ -12,7 +12,7 @@
 import * as THREE from 'three';
 import type { LureParams, WaterId } from '../types/lure';
 import type { LureGeometry } from './geometry';
-import { getMaterial, solidFraction, WATER_DENSITY } from './materials';
+import { bodyDensity, getMaterial, solidFraction, WATER_DENSITY } from './materials';
 import { clamp, createProfile, MM_TO_CM, type ProfileSampler } from './profile';
 import {
   ASSEMBLY_PREVIEW,
@@ -338,7 +338,13 @@ export function computePhysics(
   const cavities = assemblyActive(params)
     ? shellContent(params, profile, preview)
     : {
-        printed: printedBodies(geo).reduce((sum, part) => sum + massProperties(part).volume, 0),
+        // Souple monobloc : les logements de lest retirent du TPU (la bille
+        // de plomb, elle, pese a sa place comme tout lest).
+        printed: Math.max(
+          printedBodies(geo).reduce((sum, part) => sum + massProperties(part).volume, 0) -
+            (geo.softPlan?.seats ?? []).reduce((sum, seat) => sum + (4 / 3) * Math.PI * seat.radius ** 3, 0),
+          0,
+        ),
         chamberSurface: 0,
         mass: 0,
         points: [] as PointMass[],
@@ -347,7 +353,11 @@ export function computePhysics(
         dowelAdded: 0,
         dowels: [] as DowelPlacement[],
         screws: [] as ScrewPlan[],
-        problems: [] as { id: string; title: string; detail: string }[],
+        problems: (geo.softPlan?.problems ?? []).map((detail, i) => ({
+          id: `soft-${i}`,
+          title: 'Preparation d armement du souple',
+          detail,
+        })),
         chamber: null as ChamberReport | null,
       };
   // La caudale et les nageoires en volume ne font pas partie des coques :
@@ -391,7 +401,8 @@ export function computePhysics(
   const insertCentre = insertPart?.centre ?? null;
   insertPart?.geometry.dispose();
 
-  const material = getMaterial(params.material);
+  // Souple monobloc (module AU) : la densite du TPU suit sa durete.
+  const material = { ...getMaterial(params.material), density: bodyDensity(params) };
   // Les parois de perimetre comptent : a remplissage egal, six parois
   // deposent bien plus de matiere qu'une seule.
   const fill = solidFraction(params.material, params.infill, params.print.perimeters);
@@ -456,6 +467,12 @@ export function computePhysics(
     0,
   );
   const ringMass = tackleMass - hookMass;
+  // Souple monobloc (module AU) : l'hamecon represente et la tete plombee du
+  // montage sur canal pesent a leur place et deplacent leur volume.
+  const soft = geo.softPlan;
+  const softHookMass = soft?.hookMassG ?? 0;
+  const jigMass = soft?.jig?.massG ?? 0;
+  const softRigVolume = softHookMass / 7.85 + (soft?.jig ? (4 / 3) * Math.PI * soft.jig.radius ** 3 : 0);
   const totalMass =
     bodyMass +
     bibMass +
@@ -469,7 +486,9 @@ export function computePhysics(
     rattleMass +
     tackleMass +
     propMass +
-    beadMass;
+    beadMass +
+    softHookMass +
+    jigMass;
 
   // Centre de gravite : corps homogene + billes de lest + quincaillerie.
   const points: PointMass[] = [
@@ -501,6 +520,10 @@ export function computePhysics(
     ...(bibMass > 0 && bibCentre ? [{ x: bibCentre.x, y: bibCentre.y, mass: bibMass }] : []),
     ...cavities.points,
     ...tackle,
+    ...(soft && softHookMass > 0
+      ? [{ x: (soft.shankFrom + soft.shankTo) / 2, y: soft.shankY, mass: softHookMass }]
+      : []),
+    ...(soft?.jig ? [{ x: soft.jig.x, y: soft.jig.y, mass: jigMass }] : []),
   ];
   const cg = { x: 0, y: 0, z: 0 };
   const massSum = points.reduce((sum, p) => sum + p.mass, 0);
@@ -513,7 +536,7 @@ export function computePhysics(
 
   // La queue souple deplace son propre volume : l'oublier ferait couler le
   // leurre sur le papier alors qu'il flotte dans le seau.
-  volume += softTailVolume + bibDisplaced + spinVolume;
+  volume += softTailVolume + bibDisplaced + spinVolume + softRigVolume;
   const displacedMass = volume * WATER_DENSITY[water];
   const ratio = displacedMass > 1e-9 ? totalMass / displacedMass : 0;
   const density = volume > 1e-9 ? totalMass / volume : 0;
@@ -656,6 +679,21 @@ export function computePhysics(
                 ? `perle imprimee ${spin.beadMass.volumeCm3.toFixed(2)} cm3`
                 : `perle achetee (verre, estimation) ${beadMass.toFixed(2)} g`) +
               `, inertie axiale ${spin.propellerMass.axialInertia.toFixed(0)} g.mm2`,
+          },
+        ]
+      : []),
+    ...(soft && (softHookMass > 0 || jigMass > 0)
+      ? [
+          {
+            key: 'softRig',
+            label: 'Armement du souple',
+            massG: softHookMass + jigMass,
+            provenance: 'estimation' as const,
+            detail:
+              (soft.hook
+                ? `hamecon ${soft.hook.size} (gabarit indicatif : ouverture ${soft.hook.gapMm} mm, hampe ${soft.hook.shankMm} mm, fil ${soft.hook.wireMm} mm) ${softHookMass.toFixed(2)} g`
+                : 'aucun hamecon du gabarit') +
+              (soft.jig ? `, tete plombee ${jigMass.toFixed(1)} g` : ''),
           },
         ]
       : []),
@@ -984,12 +1022,14 @@ function buildWarnings(
   }
 
   if (r.rollMarginMm <= 0.2) {
+    const softBody = params.soft?.enabled === true;
     list.push({
       id: 'roll',
-      level: r.rollMarginMm <= 0 ? 'error' : 'warn',
+      level: r.rollMarginMm <= 0 && !softBody ? 'error' : 'warn',
       title: 'Centre de gravite trop haut',
-      detail:
-        'Le CG est au niveau (ou au-dessus) du centre de poussee : le leurre se couchera sur le flanc au lieu de nager droit. Descendez les lests vers le ventre.',
+      detail: softBody
+        ? 'Corps souple plein et homogene : son centre de gravite se confond avec son centre de poussee. Au repos il ne se redresse pas seul ; ce sont l hamecon, la tete plombee ou un logement de lest bas qui le tiennent droit.'
+        : 'Le CG est au niveau (ou au-dessus) du centre de poussee : le leurre se couchera sur le flanc au lieu de nager droit. Descendez les lests vers le ventre.',
     });
   }
 

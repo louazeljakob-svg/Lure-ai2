@@ -7,6 +7,7 @@
  */
 
 import { SCREW_LENGTHS } from './screws';
+import { defaultSoftBody } from './soft';
 import type {
   MeshBodyRef,
   ScrewHead,
@@ -69,6 +70,9 @@ import type {
   TailShape,
   Anatomy,
   FinConfig,
+  FinMode,
+  SoftBodyConfig,
+  SoftRigging,
   GlueGrooveConfig,
   HollowConfig,
   PegConfig,
@@ -275,6 +279,28 @@ function sanitizeFin(value: unknown, fallback: FinConfig): FinConfig {
     to: Math.max(num(raw.to, LIMITS.finPosition, fallback.to), from + 0.005),
     size: num(raw.size, LIMITS.finSize, fallback.size),
     rays: Math.round(num(raw.rays, LIMITS.finRays, fallback.rays)),
+    // Absent : comportement d'avant le module AW, conserve tel quel.
+    ...(raw.mode !== undefined ? { mode: pick(raw.mode, FIN_MODES, 'relief') } : {}),
+  };
+}
+
+const FIN_MODES: FinMode[] = ['integrated', 'relief', 'attached'];
+
+/** Nombre optionnel : absent reste absent (projet anterieur rouvert a l'identique). */
+const optNum = (value: unknown, range: Range): number | undefined =>
+  value === undefined || value === null ? undefined : num(value, range, range.min);
+
+function sanitizeSoft(value: unknown): SoftBodyConfig | undefined {
+  if (value === undefined || value === null || typeof value !== 'object') return undefined;
+  const raw = value as Partial<SoftBodyConfig>;
+  const base = defaultSoftBody();
+  return {
+    enabled: bool(raw.enabled, base.enabled),
+    hardness: Math.round(num(raw.hardness, { min: 85, max: 95, step: 1 }, base.hardness)),
+    rigging: pick(raw.rigging, ['slot', 'channel', 'none'] as SoftRigging[], base.rigging),
+    channelDiameter: num(raw.channelDiameter, { min: 0.8, max: 5, step: 0.1 }, base.channelDiameter),
+    ballastSeat: bool(raw.ballastSeat, base.ballastSeat),
+    jigMass: num(raw.jigMass, { min: 0.5, max: 60, step: 0.5 }, base.jigMass),
   };
 }
 
@@ -320,6 +346,21 @@ function sanitizeAnatomy(value: unknown, fallback: Anatomy | null): Anatomy | nu
     pectoralFin: sanitizeFin(raw.pectoralFin, base.pectoralFin),
     pelvicFin: sanitizeFin(raw.pelvicFin, base.pelvicFin),
     caudalRays: Math.round(num(raw.caudalRays, LIMITS.caudalRays, base.caudalRays)),
+    // Module AT / AW / AU : champs optionnels, gardes seulement s'ils existent.
+    ...(raw.dorsalFin2 !== undefined && raw.dorsalFin2 !== null
+      ? { dorsalFin2: sanitizeFin(raw.dorsalFin2, base.dorsalFin2 ?? { ...base.dorsalFin, enabled: false }) }
+      : {}),
+    ...(raw.adiposeFin !== undefined && raw.adiposeFin !== null
+      ? { adiposeFin: sanitizeFin(raw.adiposeFin, base.adiposeFin ?? { ...base.dorsalFin, enabled: false, rays: 0 }) }
+      : {}),
+    ...(raw.caudalMode !== undefined ? { caudalMode: pick(raw.caudalMode, FIN_MODES, 'integrated') } : {}),
+    ...(raw.lips !== undefined ? { lips: optNum(raw.lips, { min: 0, max: 0.08, step: 0.001 }) } : {}),
+    ...(raw.jawProtrusion !== undefined ? { jawProtrusion: optNum(raw.jawProtrusion, { min: -1, max: 1.5, step: 0.05 }) } : {}),
+    ...(raw.nostrils !== undefined ? { nostrils: optNum(raw.nostrils, { min: 0, max: 1, step: 0.05 }) } : {}),
+    ...(raw.ventralLine !== undefined ? { ventralLine: optNum(raw.ventralLine, { min: 0, max: 1, step: 0.01 }) } : {}),
+    ...(raw.eyeTheta !== undefined ? { eyeTheta: optNum(raw.eyeTheta, { min: 0.35, max: 1.5, step: 0.01 }) } : {}),
+    ...(raw.pelvicSucker !== undefined ? { pelvicSucker: bool(raw.pelvicSucker, false) } : {}),
+    ...(raw.pectoralSpan !== undefined ? { pectoralSpan: optNum(raw.pectoralSpan, { min: 5, max: 120, step: 0.5 }) } : {}),
   };
 }
 
@@ -873,6 +914,7 @@ export function sanitizeParams(input: unknown): LureParams {
     // Un projet anterieur n'a pas d'helice : celle de sa famille, desactivee
     // hors Whopper_Plopper, s'applique.
     propeller: sanitizePropeller(raw.propeller, base.propeller),
+    ...(raw.soft !== undefined ? { soft: sanitizeSoft(raw.soft) } : {}),
     catalogue: sanitizeCatalogue(raw.catalogue, base.catalogue),
     mounts: sanitizeMounts(raw.mounts, base.mounts),
     paint: {

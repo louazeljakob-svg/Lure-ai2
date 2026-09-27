@@ -19,6 +19,7 @@ import { createProfile } from './profile';
 import { planThroughWire, propellerActive, throughWireBlocker, WIRE_MATERIAL_LABEL } from './throughWire';
 import { findTackle } from './tackle';
 import { BOUGHT_BEAD_DENSITY } from './propeller';
+import { attachedFinParts } from './fins';
 
 export interface MontageLine {
   /** Designation, telle qu'on la commande ou qu'on la cherche en boite. */
@@ -181,8 +182,45 @@ export function montageSheet(params: LureParams, geo: LureGeometry, assembly: As
     }
   }
 
+  // --- Souple monobloc (module AU) ------------------------------------------
+  const soft = params.soft?.enabled ? geo.softPlan : null;
+  if (soft) {
+    if (soft.hook) {
+      hardware.push({
+        item: `Hamecon simple ${soft.hook.size}`,
+        qty: 1,
+        detail:
+          `${params.soft!.rigging === 'slot' ? 'texan / weightless, hampe dans la fente ventrale' : 'monte sur la tete plombee, hampe dans le canal'} ; ` +
+          `ouverture ${soft.hook.gapMm} mm pour ${soft.neededGapMm.toFixed(1)} mm necessaires (gabarit indicatif)`,
+        massG: soft.hookMassG,
+      });
+    }
+    if (soft.jig) {
+      hardware.push({
+        item: `Tete plombee ${soft.jig.massG.toFixed(1)} g`,
+        qty: 1,
+        detail: `bille de ${(soft.jig.radius * 20).toFixed(1)} mm, canal de ${params.soft!.channelDiameter.toFixed(1)} mm`,
+        massG: soft.jig.massG,
+      });
+    }
+  }
+  // --- Nageoires rapportees (module AW) ----------------------------------------
+  const attached = attachedFinParts(profile, params);
+  for (const part of attached) {
+    printed.push({ item: part.label, qty: 1, detail: `rapportee, a plat, ${part.sizeMm.x.toFixed(1)} x ${part.sizeMm.y.toFixed(1)} mm ; collage, jeu 0,10 mm par face`, massG: null });
+  }
+
   // --- Pieces imprimees --------------------------------------------------------
-  if (split) {
+  if (soft) {
+    printed.unshift({
+      item: 'Piece unique TPU',
+      qty: 1,
+      detail:
+        `TPU ${params.soft!.hardness.toFixed(0)} A, ${params.infill.toFixed(0)} % de remplissage, sans vis ni ecrou` +
+        (soft.pauseMm !== null ? ` ; pause d impression a ${soft.pauseMm.toFixed(1)} mm du ventre pour loger le plomb` : ''),
+      massG: null,
+    });
+  } else if (split) {
     printed.unshift(
       {
         item: 'Coque male',

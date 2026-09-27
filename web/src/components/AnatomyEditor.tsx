@@ -7,10 +7,10 @@
  * sur le vrai corps : la vue 3D, les coques et le STL suivent.
  */
 
-import type { Anatomy, FinConfig, ProfileKnot } from '../types/lure';
+import type { Anatomy, FinConfig, FinMode, ProfileKnot } from '../types/lure';
 import { LIMITS } from '../lib/presets';
-import { pchip } from '../lib/anatomy';
-import { Fieldset, Slider, Switch } from './ui';
+import { caudalModeOf, finModeOf, pchip, type FinKind } from '../lib/anatomy';
+import { Fieldset, Segmented, Slider, Switch } from './ui';
 
 interface Props {
   anatomy: Anatomy;
@@ -31,12 +31,38 @@ const CURVES: { key: CurveKey; label: string; hint: string; min: number; max: nu
   { key: 'lower', label: 'Section du dessous', hint: '2 = ventre rond · moins = carene · plus = ventre plat.', min: 1.15, max: 4, step: 0.01 },
 ];
 
-const FINS: { key: 'dorsalFin' | 'analFin' | 'pectoralFin' | 'pelvicFin'; label: string; hint: string }[] = [
-  { key: 'dorsalFin', label: 'Dorsale', hint: 'Crete dans le plan de symetrie : hauteur relative a l epaisseur du corps.' },
-  { key: 'analFin', label: 'Anale', hint: 'Crete sous le ventre, en avant du pedoncule.' },
-  { key: 'pectoralFin', label: 'Pectorales', hint: 'Couchees sur le flanc derriere l opercule : envergure relative a l epaisseur.' },
-  { key: 'pelvicFin', label: 'Ventrales', hint: 'Couchees sous le ventre, par paire.' },
+type FinKey = 'dorsalFin' | 'dorsalFin2' | 'adiposeFin' | 'analFin' | 'pectoralFin' | 'pelvicFin';
+
+const FINS: { key: FinKey; kind: FinKind; label: string; hint: string }[] = [
+  { key: 'dorsalFin', kind: 'dorsal', label: 'Dorsale', hint: 'Dans le plan de symetrie : hauteur relative a l epaisseur du corps.' },
+  { key: 'dorsalFin2', kind: 'dorsal2', label: 'Seconde dorsale', hint: 'Seconde dorsale, derriere la premiere (gobie : longue et basse).' },
+  { key: 'adiposeFin', kind: 'adipose', label: 'Adipeuse', hint: 'Petite nageoire charnue sans rayons, sur le dos entre la dorsale et la caudale (integree ou en relief).' },
+  { key: 'analFin', kind: 'anal', label: 'Anale', hint: 'Sous le ventre, en avant du pedoncule.' },
+  { key: 'pectoralFin', kind: 'pectoral', label: 'Pectorales', hint: 'Par paire, derriere l opercule : envergure relative a l epaisseur.' },
+  { key: 'pelvicFin', kind: 'pelvic', label: 'Ventrales', hint: 'Par paire, sous le ventre.' },
 ];
+
+/** Realisation d'une nageoire sur un leurre imprime (module AW). */
+const MODE_OPTIONS: { value: FinMode; label: string }[] = [
+  { value: 'integrated', label: 'Integree' },
+  { value: 'relief', label: 'En relief' },
+  { value: 'attached', label: 'Rapportee' },
+];
+
+const MODE_HINT: Record<FinMode, string> = {
+  integrated: 'Sort du corps, epaissie a 1,2 mm minimum a la base et 0,6 mm au bord libre.',
+  relief: 'Dessinee sur le flanc — rayons, bord festonne, epaisseur degressive — sans depasser du corps.',
+  attached: 'Piece separee imprimee a plat, languette ou tenon dans un logement du corps, jeu de collage 0,10 mm par face.',
+};
+
+/** Plages des reglages de detail du module AT (saisie numerique comprise). */
+const AT_RANGES = {
+  lips: { min: 0, max: 0.03, step: 0.001, hardMin: 0, hardMax: 0.08 },
+  jawProtrusion: { min: -1, max: 1.5, step: 0.05, hardMin: -1, hardMax: 1.5 },
+  nostrils: { min: 0, max: 0.6, step: 0.05, hardMin: 0, hardMax: 1 },
+  ventralLine: { min: 0, max: 0.4, step: 0.01, hardMin: 0, hardMax: 1 },
+  eyeTheta: { min: 0.4, max: 1.5, step: 0.01, hardMin: 0.35, hardMax: 1.5 },
+};
 
 /** Apercu des trois profils : dos et ventre en coupe de profil, largeur en pointille. */
 function ProfilePreview({ anatomy }: { anatomy: Anatomy }) {
@@ -77,8 +103,10 @@ export function AnatomyEditor({ anatomy, onChange, revolution = false }: Props) 
     const knots: ProfileKnot[] = anatomy[key].map((knot, i) => (i === index ? { ...knot, v } : knot));
     set({ [key]: knots } as Partial<Anatomy>);
   };
-  const setFin = (key: (typeof FINS)[number]['key'], patch: Partial<FinConfig>) =>
-    set({ [key]: { ...anatomy[key], ...patch } } as Partial<Anatomy>);
+  const setFin = (key: FinKey, patch: Partial<FinConfig>) => {
+    const current: FinConfig = anatomy[key] ?? { enabled: false, from: 0.5, to: 0.75, size: 0.12, rays: 10, mode: 'relief' };
+    set({ [key]: { ...current, ...patch } } as Partial<Anatomy>);
+  };
 
   return (
     <>
@@ -180,6 +208,51 @@ export function AnatomyEditor({ anatomy, onChange, revolution = false }: Props) 
           onChange={(orbitDepth) => set({ orbitDepth })}
         />
         <Slider
+          label="Levres"
+          value={anatomy.lips ?? 0.4 * anatomy.jawDepth}
+          {...AT_RANGES.lips}
+          display={pct(anatomy.lips ?? 0.4 * anatomy.jawDepth)}
+          hint="Levre superieure et levre inferieure, de part et d autre du sillon, jusqu a la commissure."
+          onChange={(lips) => set({ lips })}
+        />
+        <Slider
+          label="Machoire inferieure"
+          value={anatomy.jawProtrusion ?? 0}
+          {...AT_RANGES.jawProtrusion}
+          unit="mm"
+          display={`${(anatomy.jawProtrusion ?? 0).toFixed(2)} mm`}
+          hint="Positive : proeminente ; negative : en retrait. Son rebord suit la levre jusqu a la commissure."
+          onChange={(jawProtrusion) => set({ jawProtrusion })}
+        />
+        <Slider
+          label="Narines"
+          value={anatomy.nostrils ?? 0}
+          {...AT_RANGES.nostrils}
+          unit="mm"
+          display={`${(anatomy.nostrils ?? 0).toFixed(2)} mm`}
+          hint="Deux fossettes ourlees devant l oeil. Zero pour les omettre."
+          onChange={(nostrils) => set({ nostrils })}
+        />
+        <Slider
+          label="Hauteur de l oeil"
+          value={anatomy.eyeTheta ?? 1.15}
+          {...AT_RANGES.eyeTheta}
+          display={`${Math.round(((anatomy.eyeTheta ?? 1.15) * 180) / Math.PI)} deg`}
+          unit="deg"
+          scale={180 / Math.PI}
+          hint="Angle depuis le dos : bas sur le flanc chez un poisson fourrage, haut sur la tete chez un gobie."
+          onChange={(eyeTheta) => set({ eyeTheta })}
+        />
+        <Slider
+          label="Carene ventrale"
+          value={anatomy.ventralLine ?? 0}
+          {...AT_RANGES.ventralLine}
+          unit="mm"
+          display={`${(anatomy.ventralLine ?? 0).toFixed(2)} mm`}
+          hint="Ligne mediane du ventre, en leger bourrelet, de la gorge a l anale. Zero pour l omettre."
+          onChange={(ventralLine) => set({ ventralLine })}
+        />
+        <Slider
           label="Ligne laterale"
           value={anatomy.lateralLine}
           {...LIMITS.anatomyLateral}
@@ -194,16 +267,26 @@ export function AnatomyEditor({ anatomy, onChange, revolution = false }: Props) 
         hint="Rayons et epaisseur decroissante de la base vers le bord, raccord en conge sur le corps."
       >
         {FINS.map((fin) => {
-          const config = anatomy[fin.key];
+          const config: FinConfig = anatomy[fin.key] ?? { enabled: false, from: 0.5, to: 0.75, size: 0.12, rays: 10, mode: 'relief' };
+          const mode = finModeOf(config, fin.kind);
           return (
             <details key={fin.key} className="advanced">
-              <summary>{fin.label}</summary>
+              <summary>
+                {fin.label} — {config.enabled ? MODE_OPTIONS.find((o) => o.value === mode)!.label.toLowerCase() : 'absente'}
+              </summary>
               <Switch
                 label="Presente"
                 checked={config.enabled}
                 hint={fin.hint}
                 onChange={(enabled) => setFin(fin.key, { enabled })}
               />
+              <Segmented
+                label="Realisation"
+                value={mode}
+                options={fin.kind === 'adipose' ? MODE_OPTIONS.filter((o) => o.value !== 'attached') : MODE_OPTIONS}
+                onChange={(value) => setFin(fin.key, { mode: value as FinMode })}
+              />
+              <p className="control__hint">{MODE_HINT[mode]}</p>
               <Slider
                 label="Debut"
                 value={config.from}
@@ -239,6 +322,15 @@ export function AnatomyEditor({ anatomy, onChange, revolution = false }: Props) 
             </details>
           );
         })}
+        <Segmented
+          label="Caudale"
+          value={caudalModeOf(anatomy)}
+          options={MODE_OPTIONS}
+          onChange={(value) => set({ caudalMode: value as FinMode })}
+        />
+        <p className="control__hint">
+          {MODE_HINT[caudalModeOf(anatomy)]} Par defaut, dorsales et pelviennes en relief, caudale integree.
+        </p>
         <Slider
           label="Rayons de la caudale"
           value={anatomy.caudalRays}

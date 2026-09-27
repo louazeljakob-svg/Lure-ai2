@@ -9,6 +9,7 @@
  */
 
 import * as THREE from 'three';
+import { eyeThetaOf } from './anatomy';
 import type { LiveryConfig, LureParams, PaintConfig } from '../types/lure';
 import { clamp, createProfile, MM_TO_CM } from './profile';
 import { scaleField } from './surfaceDetail';
@@ -509,7 +510,10 @@ function paintEyes(ctx: CanvasRenderingContext2D, params: LureParams): void {
   const ry = (radius / circumference) * HEIGHT;
   const cx = params.eyes.position * WIDTH;
 
-  for (const angle of [EYE_ANGLE, Math.PI * 2 - EYE_ANGLE]) {
+  // L'oeil peint tombe dans l'orbite : meme angle que le logement (module AT,
+  // yeux hauts du gobie compris).
+  const eyeAngle = params.anatomy ? eyeThetaOf(params.anatomy) : EYE_ANGLE;
+  for (const angle of [eyeAngle, Math.PI * 2 - eyeAngle]) {
     const cy = (angle / (Math.PI * 2)) * HEIGHT;
     const ring = (factor: number, color: string) => {
       ctx.beginPath();

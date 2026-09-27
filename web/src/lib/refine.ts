@@ -44,6 +44,11 @@ export interface RefineOptions {
    * tres lisse), elle est resserree de moitie en moitie jusqu'a l'atteindre.
    */
   floor?: number;
+  /**
+   * Periode du second parametre (2 PI pour un corps entier) : la couture ou
+   * theta repasse de 2 PI a 0 n'est pas un pole.
+   */
+  periodV?: number;
 }
 
 export interface RefineStats {
@@ -142,6 +147,11 @@ export function refineSoup(
   // Parametres vus pour chaque sommet soude : un pole (pointe de nez ou de
   // queue) en recoit plusieurs, tous justes — a cet endroit, theta n'a pas
   // de sens. On le note pour interpoler depuis l'autre bout de l'arete.
+  const period = options.periodV ?? 0;
+  const periodicGap = (a: number, b: number): number => {
+    const d = Math.abs(a - b);
+    return period > 0 ? Math.min(d, Math.abs(d - period)) : d;
+  };
   const firstU: number[] = [];
   const firstV: number[] = [];
   const singular: number[] = [];
@@ -170,7 +180,7 @@ export function refineSoup(
           firstV[id] = v;
         } else if (
           Math.abs(firstU[id] - u) > 1e-9 ||
-          Math.abs(firstV[id] - v) > 1e-7
+          periodicGap(firstV[id], v) > 1e-7
         ) {
           singular[id] = 1;
         }
@@ -264,7 +274,9 @@ export function refineSoup(
     const ua = tp[t * 6 + c * 2];
     const va = tp[t * 6 + c * 2 + 1];
     const ub = tp[t * 6 + ((c + 1) % 3) * 2];
-    const vb = tp[t * 6 + ((c + 1) % 3) * 2 + 1];
+    let vb = tp[t * 6 + ((c + 1) % 3) * 2 + 1];
+    // Couture periodique : on prend le plus court chemin en theta.
+    if (period > 0 && Math.abs(vb - va) > period / 2) vb += vb > va ? -period : period;
     if (
       !Number.isFinite(ua) ||
       !Number.isFinite(ub) ||
@@ -515,6 +527,8 @@ export function refineSoup(
             vx[tv[t * 3 + c] * 3 + 2],
             tv[t * 3 + c],
           );
+        const pr = probe(t, longest(t));
+        row.push(pr ? pr.dev : -1);
         dbg.push(row);
       }
     }

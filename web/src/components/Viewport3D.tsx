@@ -336,6 +336,26 @@ function LureModel({
         </mesh>
       ) : null}
 
+      {geo.fins ? (
+        // Nageoires en volume (module AW) : paires integrees, lames du
+        // souple, pieces rapportees en place.
+        <mesh geometry={geo.fins}>
+          <meshPhysicalMaterial
+            color={params.paint.flank}
+            roughness={Math.min(finish.roughness + 0.1, 1)}
+            metalness={finish.metalness}
+            transparent={xray}
+            opacity={xray ? 0.3 : 1}
+            side={THREE.DoubleSide}
+          />
+        </mesh>
+      ) : null}
+      {geo.rigging ? (
+        // Hamecon et tete plombee du souple : representes, jamais imprimes.
+        <mesh geometry={geo.rigging}>
+          <meshStandardMaterial color="#8d949b" roughness={0.3} metalness={0.85} />
+        </mesh>
+      ) : null}
       {geo.tail ? (
         <mesh geometry={geo.tail}>
           <meshPhysicalMaterial
