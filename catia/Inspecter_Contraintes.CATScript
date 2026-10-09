@@ -1,0 +1,1945 @@
+'==============================================================================
+'  Inspecter_Contraintes.CATScript
+'------------------------------------------------------------------------------
+'  Macro CATIA V5 (atelier Assembly Design) - LECTURE SEULE
+'
+'  But : relever tout ce qu'il faut savoir sur un assemblage pour régler la
+'        macro principale Placer_Raccords_NEMA.CATScript :
+'    0. document actif, produit racine, version de CATIA ;
+'    1. valeurs des énumérations CATIA vues par l'interpréteur ;
+'    2. arbre des instances : nom, PartNumber, document, position,
+'       publications ;
+'    3. contraintes du produit racine : nom, type, orientation, mode, statut,
+'       éléments (DisplayName des References) ;
+'    4. synthèse « raccord <-> disjoncteur » déduite des contraintes ;
+'    5. géométrie mesurée des publications NEMA (SPAWorkbench) et test des
+'       formats de nom acceptés par CreateReferenceFromName ;
+'    6. analyse : motif des trous de chaque plage, appariements possibles des
+'       trous du raccord sur les trous de la plage, trous réellement occupés
+'       par les raccords déjà posés, côté de sortie du Point CABLE.1 ;
+'    7. résumé à me renvoyer.
+'
+'  Le résultat est écrit dans un fichier .txt horodaté sur le Bureau.
+'
+'  Cette macro ne modifie RIEN : aucune pièce, aucune position, aucune
+'  contrainte, aucune sauvegarde. Seule action « active » (paramétrable) :
+'  passage de l'assemblage en mode Conception pour charger les pièces et
+'  rendre leurs publications lisibles. Aucune donnée n'est modifiée.
+'
+'  Lancement : ouvrir le CATProduct, puis Outils > Macro > Macros... >
+'              choisir ce fichier > Exécuter.
+'
+'  Repère « A CONFIRMER » : appel ou valeur dont je ne suis pas certain à
+'  100 %. Le journal produit sert justement à le vérifier.
+'==============================================================================
+
+
+'------------------------------------------------------------------------------
+'  PARAMÈTRES (modifiables)
+'------------------------------------------------------------------------------
+Const NOM_JOURNAL = "Inspection_Contraintes"   ' préfixe du fichier journal (.txt)
+Const MESURER_GEOMETRIE = True          ' True : sections 5 et 6 (mesures et analyse)
+Const PASSER_EN_MODE_CONCEPTION = True  ' True : charge les pièces (mode Conception)
+Const OUVRIR_JOURNAL_A_LA_FIN = True    ' True : propose d'ouvrir le journal à la fin
+Const PROFONDEUR_MAX = 4                ' profondeur maximale de l'arbre parcouru
+Const INDICE_MAX = 12                   ' indice maxi testé pour n, j, k (20 au plus)
+Const TOLERANCE_MM = 0.5                ' tolérance de distance (mm)
+Const TOLERANCE_ANGLE_DEG = 1           ' tolérance de parallélisme (degrés)
+
+' Conventions de nommage des publications
+Const PUB_FACE_DISJ = "Face NEMA "      ' disjoncteur : "Face NEMA " & n           -> Face NEMA 1
+Const PUB_AXE_DISJ = "Axe NEMA "        ' disjoncteur : "Axe NEMA " & n & "." & j  -> Axe NEMA 1.1
+Const PUB_FACE_RAC = "Face NEMA.1"      ' raccord
+Const PUB_AXE_RAC = "Axe NEMA."         ' raccord : "Axe NEMA." & k                -> Axe NEMA.1
+Const PUB_CABLE_RAC = "Point CABLE.1"   ' raccord
+
+
+'------------------------------------------------------------------------------
+'  Variables globales
+'------------------------------------------------------------------------------
+Dim NL, PI
+Dim gFso, gJournal, gCheminJournal
+Dim gDoc, gRoot, gSPA, gRootPN, gRootNom
+Dim gNbErreurs, gResume
+' Instances
+Dim gNbInst, gInstObj(), gInstChemin(), gInstPubs(), gInstType(), gInstPN()
+' Contraintes
+Dim gNbCst, gCstNom(), gCstType(), gCstOrient(), gCstStatut(), gCstDN1(), gCstDN2(), gCstNbElem()
+' Géométrie mesurée : Dictionary "chemin instance|publication" -> enregistrement
+Dim gGeo, gFormatRef, gFormatsTestes, gNbMesuresOK, gNbMesuresKO
+' Appariement des motifs de trous (indices 1 à 20)
+Dim gPatR(20), gNumR(20), gNbR, gNR
+Dim gPatH(20), gNumH(20), gNbH, gNH
+Dim gAffect(20), gUtilise(20)
+Dim gSolutions, gNbSol
+
+
+'==============================================================================
+'  PROGRAMME PRINCIPAL
+'==============================================================================
+Sub CATMain()
+    Dim msg, rep, sh
+
+    NL = Chr(13) & Chr(10)
+    PI = 4 * Atn(1)
+    gNbErreurs = 0
+    gResume = ""
+    gNbInst = 0
+    gNbCst = 0
+    gFormatRef = 0
+    gFormatsTestes = False
+    gNbMesuresOK = 0
+    gNbMesuresKO = 0
+    ReDim gInstObj(0)
+    ReDim gInstChemin(0)
+    ReDim gInstPubs(0)
+    ReDim gInstType(0)
+    ReDim gInstPN(0)
+    ReDim gCstNom(0)
+    ReDim gCstType(0)
+    ReDim gCstOrient(0)
+    ReDim gCstStatut(0)
+    ReDim gCstDN1(0)
+    ReDim gCstDN2(0)
+    ReDim gCstNbElem(0)
+
+    If Not OuvrirJournal() Then
+        MsgBox "Impossible de créer le fichier journal (Bureau ou dossier temporaire).", 16, "Inspection des contraintes"
+        Exit Sub
+    End If
+
+    Ecrire "INSPECTION DES CONTRAINTES ET PUBLICATIONS - " & DateHeureLisible()
+    Ecrire "Journal : " & gCheminJournal
+
+    ' 0. Document actif
+    If Not InitialiserDocument() Then
+        FermerJournal
+        MsgBox "Le document actif doit être un assemblage (.CATProduct)." & NL & NL & "Journal : " & gCheminJournal, 48, "Inspection des contraintes"
+        Exit Sub
+    End If
+
+    ' Filet de sécurité : une erreur imprévue dans une section est journalisée
+    ' et la macro passe à la section suivante.
+    On Error Resume Next
+
+    ' 1. Énumérations et mode de travail
+    Err.Clear
+    JournalEnumerations
+    ControlerSection "1. Énumérations", Err.Number, Err.Description
+    PasserEnModeConception
+    ControlerSection "1b. Mode de travail", Err.Number, Err.Description
+
+    ' 2. Arbre des instances et publications
+    Titre "2. ARBRE DES INSTANCES ET PUBLICATIONS"
+    Ecrire "   (Name = nom d'instance ; PN = PartNumber ; Position = 12 composantes"
+    Ecrire "    de Position.GetComponents : axe X, axe Y, axe Z, origine, en mm)"
+    Err.Clear
+    ParcourirArbre gRoot, "", 1, False
+    ControlerSection "2. Arbre", Err.Number, Err.Description
+    ResumeInstances
+    ControlerSection "2b. Instances reconnues", Err.Number, Err.Description
+
+    ' 3. et 4. Contraintes
+    JournalContraintes
+    ControlerSection "3. Contraintes", Err.Number, Err.Description
+    SyntheseContraintes
+    ControlerSection "4. Synthèse", Err.Number, Err.Description
+
+    ' 5. et 6. Mesures et analyse géométrique
+    If MESURER_GEOMETRIE Then
+        MesurerPublications
+        ControlerSection "5. Mesures", Err.Number, Err.Description
+        AnalyserMotifs
+        ControlerSection "6a/6b. Motifs", Err.Number, Err.Description
+        AnalyserPositionsActuelles
+        ControlerSection "6c. Positions actuelles", Err.Number, Err.Description
+    Else
+        Titre "5. MESURES"
+        Ecrire "   Mesures désactivées (MESURER_GEOMETRIE = False)."
+    End If
+
+    ' 7. Résumé
+    Titre "7. RÉSUMÉ (à me renvoyer avec le journal complet)"
+    If MESURER_GEOMETRIE Then
+        NoterResume "Format de nom des References retenu : " & DescriptionFormat(gFormatRef)
+    Else
+        NoterResume "Format de nom des References : non testé (MESURER_GEOMETRIE = False)"
+    End If
+    NoterResume "Publications mesurées : " & gNbMesuresOK & " OK, " & gNbMesuresKO & " en échec"
+    NoterResume "Erreurs journalisées : " & gNbErreurs
+    Ecrire gResume
+    Titre "FIN - " & DateHeureLisible()
+    FermerJournal
+
+    msg = "Inspection terminée." & NL & NL & _
+          "Instances : " & gNbInst & NL & _
+          "Contraintes : " & gNbCst & NL & _
+          "Publications mesurées : " & gNbMesuresOK & " OK, " & gNbMesuresKO & " en échec" & NL & _
+          "Erreurs : " & gNbErreurs & NL & NL & _
+          "Journal : " & gCheminJournal
+    If OUVRIR_JOURNAL_A_LA_FIN Then
+        ' 4 = boutons Oui/Non, 64 = icône information ; 6 = réponse Oui
+        rep = MsgBox(msg & NL & NL & "Ouvrir le journal dans le Bloc-notes ?", 4 + 64, "Inspection des contraintes")
+        If rep = 6 Then
+            Set sh = CreateObject("WScript.Shell")
+            sh.Run "notepad.exe """ & gCheminJournal & """", 1, False
+        End If
+    Else
+        MsgBox msg, 64, "Inspection des contraintes"
+    End If
+End Sub
+
+
+'==============================================================================
+'  0. DOCUMENT ACTIF
+'==============================================================================
+Function InitialiserDocument()
+    Dim tn, nomDoc, cfg
+
+    InitialiserDocument = False
+    Titre "0. DOCUMENT ACTIF"
+    On Error Resume Next
+
+    Err.Clear
+    Set gDoc = CATIA.ActiveDocument
+    If Err.Number <> 0 Then
+        JournalErreur "CATIA.ActiveDocument (aucun document ouvert ?)", Err.Number, Err.Description
+        Exit Function
+    End If
+
+    tn = "?"
+    tn = TypeName(gDoc)
+    nomDoc = "?"
+    nomDoc = gDoc.Name
+    Ecrire "   Document : " & nomDoc & "   (TypeName = " & tn & ")"
+    Ecrire "   Chemin   : " & gDoc.FullName
+
+    If tn <> "ProductDocument" And LCase(Right(nomDoc, 11)) <> ".catproduct" Then
+        Ecrire "   !! Le document actif n'est pas un CATProduct : arrêt."
+        Exit Function
+    End If
+
+    Err.Clear
+    Set gRoot = gDoc.Product
+    If Err.Number <> 0 Then
+        JournalErreur "ProductDocument.Product", Err.Number, Err.Description
+        Exit Function
+    End If
+
+    gRootNom = "?"
+    gRootNom = gRoot.Name
+    gRootPN = "?"
+    gRootPN = gRoot.PartNumber
+    Ecrire "   Produit racine : Name = """ & gRootNom & """   PartNumber = """ & gRootPN & """"
+
+    Err.Clear
+    Set cfg = CATIA.SystemConfiguration
+    Ecrire "   Version CATIA  : V" & cfg.Version & " R" & cfg.Release & " SP" & cfg.ServicePack
+    Err.Clear
+
+    InitialiserDocument = True
+End Function
+
+
+'==============================================================================
+'  1. ÉNUMÉRATIONS ET MODE DE TRAVAIL
+'==============================================================================
+Sub JournalEnumerations()
+    Dim v
+
+    Titre "1. VALEURS DES ÉNUMÉRATIONS VUES PAR L'INTERPRÉTEUR"
+    Ecrire "   Format : nom = valeur lue   [valeur attendue d'après V5Automation]"
+    Ecrire "   « non défini » : l'interpréteur ne connaît pas ce nom ; la macro"
+    Ecrire "   principale utilisera alors la valeur numérique attendue."
+    On Error Resume Next
+
+    ' CatConstraintType
+    v = Empty : v = catCstTypeReference : EcrireEnum "catCstTypeReference (Fixe)", v, "0"
+    v = Empty : v = catCstTypeDistance : EcrireEnum "catCstTypeDistance (Distance)", v, "1"
+    v = Empty : v = catCstTypeOn : EcrireEnum "catCstTypeOn (Coïncidence)", v, "2"
+    v = Empty : v = catCstTypeConcentricity : EcrireEnum "catCstTypeConcentricity", v, "3"
+    v = Empty : v = catCstTypeAngle : EcrireEnum "catCstTypeAngle", v, "6"
+    v = Empty : v = catCstTypeParallelism : EcrireEnum "catCstTypeParallelism", v, "8"
+    v = Empty : v = catCstTypeSurfContact : EcrireEnum "catCstTypeSurfContact (Contact)", v, "20"
+    v = Empty : v = catCstTypeLinContact : EcrireEnum "catCstTypeLinContact", v, "21"
+    v = Empty : v = catCstTypeAnnulContact : EcrireEnum "catCstTypeAnnulContact", v, "25"
+    ' CatConstraintOrientation
+    v = Empty : v = catCstOrientSame : EcrireEnum "catCstOrientSame", v, "0"
+    v = Empty : v = catCstOrientOpposite : EcrireEnum "catCstOrientOpposite", v, "1"
+    v = Empty : v = catCstOrientUndefined : EcrireEnum "catCstOrientUndefined", v, "2"
+    ' CatConstraintMode
+    v = Empty : v = catCstModeDrivingDimension : EcrireEnum "catCstModeDrivingDimension", v, "0"
+    v = Empty : v = catCstModeDrivenDimension : EcrireEnum "catCstModeDrivenDimension", v, "1"
+    ' CatConstraintStatus
+    v = Empty : v = catCstStatusOK : EcrireEnum "catCstStatusOK", v, "0"
+    v = Empty : v = catCstStatusKOBroken : EcrireEnum "catCstStatusKOBroken", v, "5"
+    ' CatConstraintRefType (contrainte Fixe)
+    v = Empty : v = catCstRefTypeFixInSpace : EcrireEnum "catCstRefTypeFixInSpace", v, "1"
+    ' CatWorkModeType
+    v = Empty : v = VISUALIZATION_MODE : EcrireEnum "VISUALIZATION_MODE", v, "1"
+    v = Empty : v = DESIGN_MODE : EcrireEnum "DESIGN_MODE", v, "2"
+    ' CatMeasurableName : A CONFIRMER, deux numérotations circulent
+    ' (avec ou sans un membre « CatMeasurable » en 2e position).
+    v = Empty : v = CatMeasurablePlane : EcrireEnum "CatMeasurablePlane", v, "7 ou 6"
+    v = Empty : v = CatMeasurableLine : EcrireEnum "CatMeasurableLine", v, "10 ou 9"
+    v = Empty : v = CatMeasurableCylinder : EcrireEnum "CatMeasurableCylinder", v, "4 ou 3"
+    v = Empty : v = CatMeasurableCircle : EcrireEnum "CatMeasurableCircle", v, "9 ou 8"
+    v = Empty : v = CatMeasurablePoint : EcrireEnum "CatMeasurablePoint", v, "11 ou 10"
+    Err.Clear
+End Sub
+
+Sub EcrireEnum(nom, v, attendu)
+    Dim txt
+    If IsEmpty(v) Then
+        txt = "non défini"
+    Else
+        txt = CStr(v)
+        If InStr(" " & attendu & " ", " " & CStr(v) & " ") > 0 Then
+            txt = txt & "  (conforme)"
+        Else
+            txt = txt & "  (DIFFÉRENT DE L'ATTENDU !)"
+        End If
+    End If
+    Ecrire "   " & Left(nom & Space(36), 36) & " = " & Left(txt & Space(30), 30) & " [attendu : " & attendu & "]"
+End Sub
+
+Sub PasserEnModeConception()
+    Dim m
+
+    Titre "1b. MODE DE TRAVAIL"
+    If Not PASSER_EN_MODE_CONCEPTION Then
+        Ecrire "   Passage en mode Conception désactivé (PASSER_EN_MODE_CONCEPTION = False)."
+        Exit Sub
+    End If
+    On Error Resume Next
+    m = Empty
+    m = DESIGN_MODE
+    If IsEmpty(m) Then m = 2     ' CatWorkModeType : DESIGN_MODE = 2
+    Err.Clear
+    gRoot.ApplyWorkMode m
+    If Err.Number <> 0 Then
+        JournalErreur "ApplyWorkMode DESIGN_MODE sur le produit racine", Err.Number, Err.Description
+        Ecrire "   -> Si des pièces restent en mode Visualisation, leurs publications"
+        Ecrire "      peuvent être illisibles (voir section 2)."
+    Else
+        Ecrire "   ApplyWorkMode DESIGN_MODE (" & m & ") appliqué au produit racine."
+        Ecrire "   (Charge les pièces en session ; ne modifie aucun fichier.)"
+    End If
+    Err.Clear
+End Sub
+
+
+'==============================================================================
+'  2. ARBRE DES INSTANCES ET PUBLICATIONS
+'==============================================================================
+' Parcourt récursivement les enfants de "prod".
+' chemin      : chemin des noms d'instance depuis la racine ("" pour la racine)
+' niveau      : profondeur (1 = enfant direct du produit racine)
+' parentTypee : True si un ancêtre est déjà reconnu (disjoncteur ou raccord)
+Sub ParcourirArbre(prod, chemin, niveau, parentTypee)
+    Dim enfants, n, i, enfant, nomEnfant, cheminEnfant, typ
+
+    On Error Resume Next
+    Err.Clear
+    Set enfants = prod.Products
+    If Err.Number <> 0 Then
+        JournalErreur "Products de """ & chemin & """", Err.Number, Err.Description
+        Exit Sub
+    End If
+    n = 0
+    n = enfants.Count
+    For i = 1 To n
+        Err.Clear
+        Set enfant = enfants.Item(i)
+        If Err.Number <> 0 Then
+            JournalErreur "Products.Item(" & i & ") de """ & chemin & """", Err.Number, Err.Description
+        Else
+            nomEnfant = "?" & i
+            nomEnfant = enfant.Name
+            If chemin = "" Then
+                cheminEnfant = nomEnfant
+            Else
+                cheminEnfant = chemin & "/" & nomEnfant
+            End If
+            typ = EnregistrerInstance(enfant, cheminEnfant, niveau, parentTypee)
+            If niveau < PROFONDEUR_MAX Then
+                ParcourirArbre enfant, cheminEnfant, niveau + 1, (parentTypee Or typ <> "")
+            End If
+        End If
+    Next
+    Err.Clear
+End Sub
+
+' Journalise une instance (nom, PartNumber, document, position, publications),
+' la mémorise et la classe : "DISJONCTEUR", "RACCORD" ou "".
+Function EnregistrerInstance(inst, chemin, niveau, parentTypee)
+    Dim idx, indent, pn, nomDoc, comps(11), pubs, pubs2, nb, nb2, src, k, pub, nomPub, dico, valo, dnValo, typ
+
+    On Error Resume Next
+    gNbInst = gNbInst + 1
+    idx = gNbInst
+    ReDim Preserve gInstObj(idx)
+    ReDim Preserve gInstChemin(idx)
+    ReDim Preserve gInstPubs(idx)
+    ReDim Preserve gInstType(idx)
+    ReDim Preserve gInstPN(idx)
+    Set gInstObj(idx) = inst
+    gInstChemin(idx) = chemin
+    Set dico = CreateObject("Scripting.Dictionary")
+    Set gInstPubs(idx) = dico
+    gInstType(idx) = ""
+
+    indent = Space(3 * niveau)
+    pn = "?"
+    pn = inst.PartNumber
+    gInstPN(idx) = pn
+    Ecrire ""
+    Ecrire indent & "[" & idx & "] Name = """ & inst.Name & """   PN = """ & pn & """"
+    Ecrire indent & "    Chemin    : " & chemin
+    nomDoc = "?"
+    nomDoc = inst.ReferenceProduct.Parent.Name
+    Ecrire indent & "    Document  : " & nomDoc
+
+    Err.Clear
+    inst.Position.GetComponents comps
+    If Err.Number = 0 Then
+        Ecrire indent & "    Position  : X" & FmtT(comps, 0) & " Y" & FmtT(comps, 3) & " Z" & FmtT(comps, 6) & " O" & FmtT(comps, 9)
+    Else
+        JournalErreur "Position.GetComponents", Err.Number, Err.Description
+    End If
+
+    ' Publications : d'abord sur le produit de référence, sinon sur l'instance.
+    src = ""
+    nb = 0
+    Err.Clear
+    Set pubs = Nothing
+    Set pubs = inst.ReferenceProduct.Publications
+    If Err.Number = 0 Then
+        nb = pubs.Count
+        If Err.Number = 0 Then src = "ReferenceProduct.Publications"
+    End If
+    If nb = 0 Then
+        nb2 = 0
+        Err.Clear
+        Set pubs2 = Nothing
+        Set pubs2 = inst.Publications
+        If Err.Number = 0 Then
+            nb2 = pubs2.Count
+            If Err.Number = 0 And nb2 > 0 Then
+                Set pubs = pubs2
+                nb = nb2
+                src = "Product.Publications (instance)"
+            End If
+        End If
+    End If
+    Err.Clear
+    If src = "" Then
+        Ecrire indent & "    Publications : ILLISIBLES (pièce en mode Visualisation ?)"
+    Else
+        Ecrire indent & "    Publications : " & nb & "   (source : " & src & ")"
+    End If
+
+    For k = 1 To nb
+        Err.Clear
+        Set pub = pubs.Item(k)
+        If Err.Number <> 0 Then
+            JournalErreur "Publications.Item(" & k & ")", Err.Number, Err.Description
+        Else
+            nomPub = "?"
+            nomPub = pub.Name
+            dnValo = ""
+            Err.Clear
+            Set valo = pub.Valuation        ' A CONFIRMER : propriété Valuation (Reference publiée)
+            If Err.Number = 0 Then dnValo = valo.DisplayName
+            Err.Clear
+            If dnValo <> "" Then
+                Ecrire indent & "      - """ & nomPub & """   -> " & dnValo
+            Else
+                Ecrire indent & "      - """ & nomPub & """"
+            End If
+            If Not dico.Exists(nomPub) Then dico.Add nomPub, k
+        End If
+    Next
+
+    ' Classement
+    typ = ""
+    If dico.Exists(PUB_FACE_DISJ & "1") Then typ = "DISJONCTEUR"
+    If dico.Exists(PUB_FACE_RAC) Then typ = "RACCORD"
+    If typ <> "" And parentTypee Then
+        Ecrire indent & "    (publications NEMA aussi présentes sur un parent : instance non retenue)"
+        typ = ""
+    End If
+    If typ = "RACCORD" And Not dico.Exists(PUB_CABLE_RAC) Then
+        Ecrire indent & "    (attention : raccord sans publication """ & PUB_CABLE_RAC & """)"
+    End If
+    If typ <> "" Then Ecrire indent & "    => reconnu comme " & typ
+    gInstType(idx) = typ
+    Err.Clear
+    EnregistrerInstance = typ
+End Function
+
+Sub ResumeInstances()
+    Dim i, nbD, nbR
+
+    Titre "2b. INSTANCES RECONNUES"
+    nbD = 0
+    nbR = 0
+    For i = 1 To gNbInst
+        If gInstType(i) <> "" Then
+            Ecrire "   " & Left(gInstType(i) & Space(12), 12) & " : " & gInstChemin(i) & "   (PN " & gInstPN(i) & ", " & gInstPubs(i).Count & " publications)"
+            If gInstType(i) = "DISJONCTEUR" Then nbD = nbD + 1
+            If gInstType(i) = "RACCORD" Then nbR = nbR + 1
+        End If
+    Next
+    Ecrire "   Total : " & nbD & " disjoncteur(s), " & nbR & " raccord(s), " & gNbInst & " instance(s) parcourue(s)."
+    If nbD <> 1 Then Ecrire "   !! " & nbD & " disjoncteur(s) trouvé(s) : la macro principale demandera de sélectionner le bon."
+    NoterResume "Instances : " & gNbInst & " ; disjoncteurs reconnus : " & nbD & " ; raccords reconnus : " & nbR
+End Sub
+
+
+'==============================================================================
+'  3. CONTRAINTES DU PRODUIT RACINE
+'==============================================================================
+Sub JournalContraintes()
+    Dim csts, n, i, c, nom, t, o, m, s, ina, e, r, dn, nm, nbE, v, rt
+
+    Titre "3. CONTRAINTES DU PRODUIT RACINE (Connections(""CATIAConstraints""))"
+    On Error Resume Next
+    Err.Clear
+    Set csts = gRoot.Connections("CATIAConstraints")
+    If Err.Number <> 0 Then
+        JournalErreur "Connections(""CATIAConstraints"")", Err.Number, Err.Description
+        Exit Sub
+    End If
+    n = 0
+    n = csts.Count
+    Ecrire "   Nombre de contraintes : " & n
+    v = "?"
+    v = csts.BrokenConstraintsCount
+    Ecrire "   BrokenConstraintsCount = " & v
+    v = "?"
+    v = csts.UnUpdatedConstraintsCount
+    Ecrire "   UnUpdatedConstraintsCount = " & v
+    Err.Clear
+
+    For i = 1 To n
+        Err.Clear
+        Set c = csts.Item(i)
+        If Err.Number <> 0 Then
+            JournalErreur "Constraints.Item(" & i & ")", Err.Number, Err.Description
+        Else
+            gNbCst = gNbCst + 1
+            ReDim Preserve gCstNom(gNbCst)
+            ReDim Preserve gCstType(gNbCst)
+            ReDim Preserve gCstOrient(gNbCst)
+            ReDim Preserve gCstStatut(gNbCst)
+            ReDim Preserve gCstDN1(gNbCst)
+            ReDim Preserve gCstDN2(gNbCst)
+            ReDim Preserve gCstNbElem(gNbCst)
+
+            nom = "?"
+            nom = c.Name
+            t = -1
+            t = c.Type
+            Err.Clear
+            o = "n/a"
+            o = c.Orientation
+            Err.Clear
+            m = "n/a"
+            m = c.Mode
+            Err.Clear
+            s = "n/a"
+            s = c.Status
+            Err.Clear
+            ina = "?"
+            ina = c.IsInactive
+            Err.Clear
+
+            Ecrire ""
+            Ecrire "   [" & i & "] " & nom
+            Ecrire "      Type        : " & t & " = " & NomTypeContrainte(t)
+            Ecrire "      Orientation : " & o & " = " & NomOrientation(o)
+            Ecrire "      Mode        : " & m & " = " & NomMode(m)
+            Ecrire "      Statut      : " & s & " = " & NomStatut(s)
+            Ecrire "      Désactivée  : " & ina
+            If t = 1 Or t = 6 Or t = 7 Then
+                v = "?"
+                v = c.Dimension.Value
+                Ecrire "      Valeur      : " & v
+                Err.Clear
+            End If
+            If t = 0 Then
+                rt = "?"
+                rt = c.ReferenceType
+                Ecrire "      ReferenceType : " & rt & " (0 = relative, 1 = fixe dans l'espace)"
+                Err.Clear
+            End If
+
+            gCstNom(gNbCst) = nom
+            gCstType(gNbCst) = t
+            gCstOrient(gNbCst) = o
+            gCstStatut(gNbCst) = s
+            gCstDN1(gNbCst) = ""
+            gCstDN2(gNbCst) = ""
+
+            nbE = 0
+            For e = 1 To 3
+                Err.Clear
+                Set r = Nothing
+                Set r = c.GetConstraintElement(e)
+                If Err.Number <> 0 Then Exit For
+                If r Is Nothing Then Exit For
+                nbE = e
+                dn = "?"
+                dn = r.DisplayName
+                nm = "?"
+                nm = r.Name
+                Err.Clear
+                Ecrire "      Élément " & e & "   : DisplayName = """ & dn & """"
+                If nm <> dn Then Ecrire "                  Name        = """ & nm & """"
+                If e = 1 Then gCstDN1(gNbCst) = dn
+                If e = 2 Then gCstDN2(gNbCst) = dn
+            Next
+            Err.Clear
+            gCstNbElem(gNbCst) = nbE
+            If nbE = 0 Then Ecrire "      (aucun élément lisible par GetConstraintElement)"
+        End If
+    Next
+    Err.Clear
+    NoterResume "Contraintes du produit racine : " & gNbCst
+End Sub
+
+
+'==============================================================================
+'  4. SYNTHÈSE RACCORD <-> DISJONCTEUR (d'après les contraintes)
+'==============================================================================
+Sub SyntheseContraintes()
+    Dim r, c, ch1, el1, ch2, el2, i1, i2, elR, elO, iO, nb, faceN, faceOr, axes, k, n, j, ligne, autres, utilise(), refAxes, memes, nbRac
+
+    Titre "4. SYNTHÈSE RACCORD <-> DISJONCTEUR (d'après les contraintes)"
+    If gNbCst = 0 Then
+        Ecrire "   Aucune contrainte."
+        Exit Sub
+    End If
+    ReDim utilise(gNbCst)
+    For c = 1 To gNbCst
+        utilise(c) = False
+    Next
+    refAxes = ""
+    memes = True
+    nbRac = 0
+
+    For r = 1 To gNbInst
+        If gInstType(r) = "RACCORD" Then
+            nbRac = nbRac + 1
+            Ecrire ""
+            Ecrire "   Raccord " & gInstChemin(r) & " :"
+            nb = 0
+            faceN = 0
+            faceOr = ""
+            axes = ""
+            For c = 1 To gNbCst
+                If gCstNbElem(c) = 2 Then
+                    DecouperDisplayName gCstDN1(c), ch1, el1
+                    DecouperDisplayName gCstDN2(c), ch2, el2
+                    i1 = IndexInstanceDepuisChemin(ch1)
+                    i2 = IndexInstanceDepuisChemin(ch2)
+                    If i1 = r Or i2 = r Then
+                        utilise(c) = True
+                        nb = nb + 1
+                        ' On remet toujours le raccord en premier.
+                        If i1 = r Then
+                            elR = el1
+                            elO = el2
+                            iO = i2
+                        Else
+                            elR = el2
+                            elO = el1
+                            iO = i1
+                        End If
+                        ligne = "      " & Left(gCstNom(c) & Space(18), 18) & " " & Left(NomCourtType(gCstType(c)) & Space(12), 12) & " " & Left(elR & Space(14), 14) & " <-> "
+                        If iO > 0 Then
+                            ligne = ligne & elO & "  (" & gInstChemin(iO) & ")"
+                        Else
+                            ligne = ligne & elO & "  (instance non identifiée)"
+                        End If
+                        ligne = ligne & "   orient. " & NomOrientation(gCstOrient(c)) & ", statut " & NomStatut(gCstStatut(c))
+                        Ecrire ligne
+                        ' Interprétation
+                        If elR = PUB_FACE_RAC Then
+                            n = NumeroFaceDisj(elO)
+                            If n > 0 Then
+                                faceN = n
+                                faceOr = NomOrientation(gCstOrient(c))
+                            End If
+                        End If
+                        k = NumeroAxeRac(elR)
+                        If k > 0 Then
+                            NumerosAxeDisj elO, n, j
+                            If n > 0 Then
+                                axes = axes & "Axe NEMA." & k & " -> trou " & n & "." & j & "   "
+                                If faceN = 0 Then faceN = n
+                            End If
+                        End If
+                    End If
+                End If
+            Next
+            If nb = 0 Then
+                Ecrire "      (aucune contrainte à deux éléments ne cite ce raccord)"
+            Else
+                Ecrire "      => " & nb & " contrainte(s) ; face : " & PUB_FACE_DISJ & faceN & " (orientation " & faceOr & ")"
+                Ecrire "      => axes : " & axes
+            End If
+            ' Les axes sont-ils les mêmes pour tous les raccords (au numéro de face près) ?
+            ligne = AxesSansFace(axes)
+            If nbRac = 1 Then
+                refAxes = ligne
+            ElseIf ligne <> refAxes Then
+                memes = False
+            End If
+        End If
+    Next
+
+    Ecrire ""
+    If nbRac > 0 Then
+        If memes Then
+            Ecrire "   Correspondance des axes IDENTIQUE pour tous les raccords : " & refAxes
+            NoterResume "Contraintes : correspondance identique pour les " & nbRac & " raccords : " & refAxes
+        Else
+            Ecrire "   Correspondance des axes DIFFÉRENTE selon les raccords (voir ci-dessus)."
+            NoterResume "Contraintes : correspondance des axes différente selon les raccords"
+        End If
+    End If
+
+    autres = 0
+    For c = 1 To gNbCst
+        If Not utilise(c) Then
+            If autres = 0 Then
+                Ecrire ""
+                Ecrire "   Autres contraintes (ne citant aucun raccord reconnu) :"
+            End If
+            autres = autres + 1
+            Ecrire "      " & Left(gCstNom(c) & Space(18), 18) & " " & NomCourtType(gCstType(c)) & " : " & gCstDN1(c) & "   |   " & gCstDN2(c)
+        End If
+    Next
+End Sub
+
+' "Axe NEMA.1 -> trou 3.2   Axe NEMA.4 -> trou 3.5" -> "1->2 4->5" (sans le n° de face)
+Function AxesSansFace(axes)
+    Dim res, reste, p, q, k, j, morceau
+    res = ""
+    reste = axes
+    p = InStr(reste, "Axe NEMA.")
+    Do While p > 0
+        reste = Mid(reste, p + Len("Axe NEMA."))
+        q = InStr(reste, " ")
+        k = Left(reste, q - 1)
+        p = InStr(reste, "trou ")
+        reste = Mid(reste, p + 5)
+        q = InStr(reste, " ")
+        If q = 0 Then q = Len(reste) + 1
+        morceau = Left(reste, q - 1)
+        q = InStr(morceau, ".")
+        j = Mid(morceau, q + 1)
+        res = res & k & "->" & j & " "
+        p = InStr(reste, "Axe NEMA.")
+    Loop
+    AxesSansFace = Trim(res)
+End Function
+
+
+'==============================================================================
+'  5. MESURE DES PUBLICATIONS (SPAWorkbench)
+'==============================================================================
+Sub MesurerPublications()
+    Dim idx, cles, i
+
+    Titre "5. GÉOMÉTRIE MESURÉE DES PUBLICATIONS (repère du produit racine, mm)"
+    Ecrire "   Formats de nom testés pour rootProduct.CreateReferenceFromName :"
+    Ecrire "     F1 = " & DescriptionFormat(1)
+    Ecrire "     F2 = " & DescriptionFormat(2)
+    Ecrire "     F3 = " & DescriptionFormat(3)
+    Ecrire "   Une Reference est jugée valide si SPAWorkbench.GetMeasurable réussit."
+
+    On Error Resume Next
+    Set gGeo = CreateObject("Scripting.Dictionary")
+    Err.Clear
+    Set gSPA = gDoc.GetWorkbench("SPAWorkbench")
+    If Err.Number <> 0 Then
+        JournalErreur "GetWorkbench(""SPAWorkbench"")", Err.Number, Err.Description
+        Exit Sub
+    End If
+
+    For idx = 1 To gNbInst
+        If gInstType(idx) <> "" Then
+            Ecrire ""
+            Ecrire "   Instance " & gInstChemin(idx) & "  (" & gInstType(idx) & ")"
+            cles = gInstPubs(idx).Keys
+            For i = 0 To gInstPubs(idx).Count - 1
+                MesurerUnePublication idx, cles(i)
+            Next
+        End If
+    Next
+    Err.Clear
+End Sub
+
+' Libellé de Reference pour le format f (renvoie "" si identique à un autre).
+Function LibelleReference(f, chemin, nomPub)
+    LibelleReference = ""
+    Select Case f
+        Case 1
+            LibelleReference = gRootPN & "/" & chemin & "/!" & nomPub
+        Case 2
+            If gRootNom <> gRootPN Then LibelleReference = gRootNom & "/" & chemin & "/!" & nomPub
+        Case 3
+            LibelleReference = chemin & "/!" & nomPub
+    End Select
+End Function
+
+Function DescriptionFormat(f)
+    Select Case f
+        Case 1
+            DescriptionFormat = "F1 : PartNumber du produit racine / chemin de l'instance /!publication"
+        Case 2
+            DescriptionFormat = "F2 : Name du produit racine / chemin de l'instance /!publication"
+        Case 3
+            DescriptionFormat = "F3 : chemin de l'instance /!publication (sans le produit racine)"
+        Case Else
+            DescriptionFormat = "aucun format n'a fonctionné"
+    End Select
+End Function
+
+' Crée la Reference d'une publication et renvoie son Measurable (ou Nothing).
+' Essaie d'abord le format qui a déjà marché, puis les autres.
+' Tous les essais sont journalisés la première fois, puis seulement en cas d'échec.
+Function ObtenirMesurable(idx, nomPub)
+    Dim ordre(3), n, i, f, lib, ref, m, g, dnRef, msg, traces, ok
+
+    Set ObtenirMesurable = Nothing
+    n = 0
+    If gFormatRef > 0 Then
+        n = n + 1
+        ordre(n) = gFormatRef
+    End If
+    For f = 1 To 3
+        If f <> gFormatRef Then
+            n = n + 1
+            ordre(n) = f
+        End If
+    Next
+
+    traces = ""
+    On Error Resume Next
+    For i = 1 To n
+        f = ordre(i)
+        lib = LibelleReference(f, gInstChemin(idx), nomPub)
+        If lib <> "" Then
+            ok = False
+            Err.Clear
+            Set ref = Nothing
+            Set ref = gRoot.CreateReferenceFromName(lib)
+            If Err.Number <> 0 Then
+                msg = "échec CreateReferenceFromName (err " & Err.Number & " : " & Err.Description & ")"
+            ElseIf ref Is Nothing Then
+                msg = "échec CreateReferenceFromName (Nothing)"
+            Else
+                dnRef = "?"
+                dnRef = ref.DisplayName
+                Err.Clear
+                Set m = Nothing
+                ' Measurable non typé (Variant) : nécessaire en VBA pour passer les tableaux
+                Set m = gSPA.GetMeasurable(ref)
+                If Err.Number <> 0 Then
+                    msg = "Reference créée (DisplayName """ & dnRef & """) mais GetMeasurable échoue (err " & Err.Number & " : " & Err.Description & ")"
+                ElseIf m Is Nothing Then
+                    msg = "GetMeasurable renvoie Nothing"
+                Else
+                    g = "?"
+                    g = m.GeometryName
+                    msg = "OK (DisplayName """ & dnRef & """, GeometryName = " & g & ")"
+                    ok = True
+                End If
+            End If
+            Err.Clear
+            traces = traces & "      essai F" & f & " : """ & lib & """" & NL & "               -> " & msg & NL
+            If ok Then
+                If Not gFormatsTestes Then
+                    Ecrire Left(traces, Len(traces) - 2)
+                    Ecrire "      => format retenu : " & DescriptionFormat(f)
+                    gFormatsTestes = True
+                ElseIf f <> gFormatRef Then
+                    Ecrire Left(traces, Len(traces) - 2)
+                    Ecrire "      => changement de format : " & DescriptionFormat(f)
+                End If
+                gFormatRef = f
+                Set ObtenirMesurable = m
+                Exit Function
+            End If
+        End If
+    Next
+    If traces <> "" Then Ecrire Left(traces, Len(traces) - 2)
+End Function
+
+' Mesure une publication et mémorise un enregistrement géométrique :
+'   rec(0) = "PLAN" / "AXE" / "POINT"
+'   rec(1) = point (origine du plan, point de l'axe, ou point)
+'   rec(2) = normale unitaire (plan) ou direction unitaire (axe) ; Empty sinon
+'   rec(3) = 1re direction du plan (unitaire) ; Empty sinon
+Sub MesurerUnePublication(idx, nomPub)
+    Dim m, g, tPlan, tDir, tAxe, tPA, tPC, tPt, tCtr, P, D, U, V, rec, txt, ok
+
+    Set m = ObtenirMesurable(idx, nomPub)
+    If m Is Nothing Then
+        Ecrire "   " & Left(nomPub & Space(16), 16) & " : NON MESURABLE"
+        gNbMesuresKO = gNbMesuresKO + 1
+        Exit Sub
+    End If
+
+    On Error Resume Next
+    g = "?"
+    g = m.GeometryName
+    Err.Clear
+    tPlan = EssayerGetPlane(m)
+    tDir = EssayerGetDirection(m)
+    tAxe = EssayerGetAxis(m)
+    tPA = EssayerGetPointsOnAxis(m)
+    tPC = EssayerGetPointsOnCurve(m)
+    tPt = EssayerGetPoint(m)
+    tCtr = EssayerGetCenter(m)
+
+    ok = ""
+    If IsArray(tPlan) Then ok = ok & " GetPlane"
+    If IsArray(tDir) Then ok = ok & " GetDirection"
+    If IsArray(tAxe) Then ok = ok & " GetAxis"
+    If IsArray(tPA) Then ok = ok & " GetPointsOnAxis"
+    If IsArray(tPC) Then ok = ok & " GetPointsOnCurve"
+    If IsArray(tPt) Then ok = ok & " GetPoint"
+    If IsArray(tCtr) Then ok = ok & " GetCenter"
+
+    rec = Empty
+    If IsArray(tPlan) Then
+        P = V3(tPlan(0), tPlan(1), tPlan(2))
+        U = Unitaire(V3(tPlan(3), tPlan(4), tPlan(5)))
+        V = V3(tPlan(6), tPlan(7), tPlan(8))
+        D = Empty
+        If IsArray(U) Then D = Unitaire(Vectoriel(U, V))
+        If IsArray(D) Then
+            rec = Enreg("PLAN", P, D, U)
+            txt = "PLAN   origine " & FmtV(P) & "  normale " & FmtV(D) & "  dir1 " & FmtV(U)
+        End If
+    End If
+    If Not IsArray(rec) Then
+        ' Direction : axe de cylindre, direction de droite, ou extrémités
+        D = Empty
+        If IsArray(tAxe) Then D = Unitaire(V3(tAxe(0), tAxe(1), tAxe(2)))
+        If Not IsArray(D) And IsArray(tDir) Then D = Unitaire(V3(tDir(0), tDir(1), tDir(2)))
+        If Not IsArray(D) And IsArray(tPA) Then D = Unitaire(V3(tPA(6) - tPA(3), tPA(7) - tPA(4), tPA(8) - tPA(5)))
+        If Not IsArray(D) And IsArray(tPC) Then D = Unitaire(V3(tPC(6) - tPC(0), tPC(7) - tPC(1), tPC(8) - tPC(2)))
+        ' Point : centre de l'axe, milieu de la droite, centre, ou point
+        P = Empty
+        If IsArray(tPA) Then P = V3(tPA(0), tPA(1), tPA(2))
+        If Not IsArray(P) And IsArray(tPC) Then P = V3(tPC(3), tPC(4), tPC(5))
+        If Not IsArray(P) And IsArray(tCtr) Then P = V3(tCtr(0), tCtr(1), tCtr(2))
+        If Not IsArray(P) And IsArray(tPt) Then P = V3(tPt(0), tPt(1), tPt(2))
+        If IsArray(P) And IsArray(D) Then
+            rec = Enreg("AXE", P, D, Empty)
+            txt = "AXE    point " & FmtV(P) & "  direction " & FmtV(D)
+        ElseIf IsArray(P) Then
+            rec = Enreg("POINT", P, Empty, Empty)
+            txt = "POINT  " & FmtV(P)
+        End If
+    End If
+    Err.Clear
+
+    If IsArray(rec) Then
+        gGeo.Item(gInstChemin(idx) & "|" & nomPub) = rec
+        gNbMesuresOK = gNbMesuresOK + 1
+        Ecrire "   " & Left(nomPub & Space(16), 16) & " : " & txt & "   [GeometryName " & g & " ;" & ok & "]"
+    Else
+        gNbMesuresKO = gNbMesuresKO + 1
+        Ecrire "   " & Left(nomPub & Space(16), 16) & " : mesurable (GeometryName " & g & ") mais géométrie non interprétée ; méthodes OK :" & ok
+    End If
+End Sub
+
+' Chaque fonction appelle UNE méthode du Measurable avec un tableau Variant
+' (Dim t(n)) et renvoie le tableau, ou Empty si la méthode échoue.
+' Important : appel SANS parenthèses (m.GetPlane t) pour que le tableau soit
+' passé par référence et rempli.
+Function EssayerGetPlane(m)
+    Dim t(8)
+    EssayerGetPlane = Empty
+    On Error Resume Next
+    Err.Clear
+    m.GetPlane t
+    If Err.Number = 0 Then EssayerGetPlane = t
+    Err.Clear
+End Function
+
+Function EssayerGetDirection(m)
+    Dim t(2)
+    EssayerGetDirection = Empty
+    On Error Resume Next
+    Err.Clear
+    m.GetDirection t
+    If Err.Number = 0 Then EssayerGetDirection = t
+    Err.Clear
+End Function
+
+Function EssayerGetAxis(m)
+    Dim t(2)
+    EssayerGetAxis = Empty
+    On Error Resume Next
+    Err.Clear
+    m.GetAxis t
+    If Err.Number = 0 Then EssayerGetAxis = t
+    Err.Clear
+End Function
+
+Function EssayerGetPointsOnAxis(m)
+    Dim t(8)
+    EssayerGetPointsOnAxis = Empty
+    On Error Resume Next
+    Err.Clear
+    m.GetPointsOnAxis t
+    If Err.Number = 0 Then EssayerGetPointsOnAxis = t
+    Err.Clear
+End Function
+
+Function EssayerGetPointsOnCurve(m)
+    Dim t(8)
+    EssayerGetPointsOnCurve = Empty
+    On Error Resume Next
+    Err.Clear
+    m.GetPointsOnCurve t
+    If Err.Number = 0 Then EssayerGetPointsOnCurve = t
+    Err.Clear
+End Function
+
+Function EssayerGetPoint(m)
+    Dim t(2)
+    EssayerGetPoint = Empty
+    On Error Resume Next
+    Err.Clear
+    m.GetPoint t
+    If Err.Number = 0 Then EssayerGetPoint = t
+    Err.Clear
+End Function
+
+Function EssayerGetCenter(m)
+    Dim t(2)
+    EssayerGetCenter = Empty
+    On Error Resume Next
+    Err.Clear
+    m.GetCenter t
+    If Err.Number = 0 Then EssayerGetCenter = t
+    Err.Clear
+End Function
+
+Function Enreg(typ, P, D, U)
+    Dim r(3)
+    r(0) = typ
+    r(1) = P
+    r(2) = D
+    r(3) = U
+    Enreg = r
+End Function
+
+' Enregistrement géométrique d'une publication (ou Empty).
+Function Geo(idx, nomPub)
+    Dim cle
+    Geo = Empty
+    If Not IsObject(gGeo) Then Exit Function
+    cle = gInstChemin(idx) & "|" & nomPub
+    If gGeo.Exists(cle) Then Geo = gGeo.Item(cle)
+End Function
+
+
+'==============================================================================
+'  6. ANALYSE DES MOTIFS DE TROUS
+'==============================================================================
+Sub AnalyserMotifs()
+    Dim d, r, n, j, pnVus, nbFaces, refSol, premiereFace
+
+    Titre "6a. MOTIF DES TROUS DE CHAQUE PLAGE (coordonnées dans le plan de la face)"
+    Ecrire "   Repère local : origine = centre des trous ; x = 1re direction du plan"
+    Ecrire "   mesuré ; y = normale ^ x. Angle = écart entre l'axe du trou et la normale."
+    If Not IsObject(gGeo) Then
+        Ecrire "   (pas de mesures disponibles)"
+        Exit Sub
+    End If
+
+    For d = 1 To gNbInst
+        If gInstType(d) = "DISJONCTEUR" Then
+            Ecrire ""
+            Ecrire "   Disjoncteur " & gInstChemin(d)
+            nbFaces = 0
+            For n = 1 To INDICE_MAX
+                If gInstPubs(d).Exists(PUB_FACE_DISJ & n) Then
+                    nbFaces = nbFaces + 1
+                    ConstruireMotif d, PUB_FACE_DISJ & n, PUB_AXE_DISJ & n & ".", "H", True
+                End If
+            Next
+            NoterResume "Disjoncteur " & gInstChemin(d) & " : " & nbFaces & " face(s) NEMA"
+        End If
+    Next
+
+    pnVus = "|"
+    For r = 1 To gNbInst
+        If gInstType(r) = "RACCORD" Then
+            If InStr(pnVus, "|" & gInstPN(r) & "|") = 0 Then
+                pnVus = pnVus & gInstPN(r) & "|"
+                Ecrire ""
+                Ecrire "   Raccord " & gInstChemin(r) & "  (PN " & gInstPN(r) & ")"
+                ConstruireMotif r, PUB_FACE_RAC, PUB_AXE_RAC, "R", True
+                PositionPointCable r
+            End If
+        End If
+    Next
+
+    Titre "6b. APPARIEMENTS GÉOMÉTRIQUEMENT POSSIBLES (trous du raccord -> trous de la plage)"
+    Ecrire "   Toutes les façons de poser les trous du raccord sur des trous de la plage"
+    Ecrire "   en respectant les entraxes (tolérance " & FmtN(TOLERANCE_MM) & " mm)."
+    Ecrire "   « TABLE_AXES » : k-ième valeur = trou j de la plage qui reçoit Axe NEMA.k."
+    Ecrire "   « normales opposées » : la normale mesurée de Face NEMA.1 doit être opposée"
+    Ecrire "   à celle de la Face NEMA n (sinon le raccord est retourné)."
+    pnVus = "|"
+    For r = 1 To gNbInst
+        If gInstType(r) = "RACCORD" Then
+            If InStr(pnVus, "|" & gInstPN(r) & "|") = 0 Then
+                pnVus = pnVus & gInstPN(r) & "|"
+                For d = 1 To gNbInst
+                    If gInstType(d) = "DISJONCTEUR" Then
+                        Ecrire ""
+                        Ecrire "   Raccord PN " & gInstPN(r) & "  sur  disjoncteur " & gInstChemin(d) & " :"
+                        refSol = ""
+                        premiereFace = 0
+                        For n = 1 To INDICE_MAX
+                            If gInstPubs(d).Exists(PUB_FACE_DISJ & n) Then
+                                If ConstruireMotif(r, PUB_FACE_RAC, PUB_AXE_RAC, "R", False) And ConstruireMotif(d, PUB_FACE_DISJ & n, PUB_AXE_DISJ & n & ".", "H", False) Then
+                                    gSolutions = ""
+                                    gNbSol = 0
+                                    For j = 1 To 20
+                                        gUtilise(j) = False
+                                        gAffect(j) = 0
+                                    Next
+                                    If gNbR >= 1 And gNbR <= gNbH Then ChercherAppariements 1
+                                    If premiereFace = 0 Then
+                                        premiereFace = n
+                                        refSol = gSolutions
+                                        Ecrire "     " & PUB_FACE_DISJ & n & " : " & gNbSol & " appariement(s)"
+                                        If gSolutions <> "" Then Ecrire Left(gSolutions, Len(gSolutions) - 2)
+                                        NoterResume "Appariements possibles raccord " & gInstPN(r) & " / " & PUB_FACE_DISJ & n & " : " & gNbSol & " (détail section 6b)"
+                                    ElseIf gSolutions = refSol Then
+                                        Ecrire "     " & PUB_FACE_DISJ & n & " : mêmes appariements que " & PUB_FACE_DISJ & premiereFace
+                                    Else
+                                        Ecrire "     " & PUB_FACE_DISJ & n & " : " & gNbSol & " appariement(s) DIFFÉRENTS de la face " & premiereFace
+                                        If gSolutions <> "" Then Ecrire Left(gSolutions, Len(gSolutions) - 2)
+                                    End If
+                                Else
+                                    Ecrire "     " & PUB_FACE_DISJ & n & " : géométrie incomplète, analyse impossible"
+                                End If
+                            End If
+                        Next
+                    End If
+                Next
+            End If
+        End If
+    Next
+End Sub
+
+' Construit le motif (points projetés sur la face) d'une plage ou d'un raccord.
+' cible = "H" (plage du disjoncteur) ou "R" (raccord).
+' Renvoie True si la face est un plan et qu'au moins un trou est mesuré.
+Function ConstruireMotif(idx, nomFace, prefixeAxe, cible, journaliser)
+    Dim recF, O, N, U, E2, j, nomAxe, recA, nb, pts(20), nums(20), angs(20), G, k, dA, w, txt
+
+    ConstruireMotif = False
+    recF = Geo(idx, nomFace)
+    If Not IsArray(recF) Then
+        If journaliser Then Ecrire "     " & nomFace & " : géométrie non disponible"
+        Exit Function
+    End If
+    If recF(0) <> "PLAN" Then
+        If journaliser Then Ecrire "     " & nomFace & " : n'est pas un plan (" & recF(0) & ")"
+        Exit Function
+    End If
+    O = recF(1)
+    N = recF(2)
+    U = recF(3)
+    E2 = Vectoriel(N, U)
+
+    nb = 0
+    For j = 1 To INDICE_MAX
+        nomAxe = prefixeAxe & j
+        If gInstPubs(idx).Exists(nomAxe) Then
+            recA = Geo(idx, nomAxe)
+            If IsArray(recA) Then
+                If nb < 20 Then
+                    nb = nb + 1
+                    pts(nb) = ProjeterSurPlan(recA, O, N)
+                    nums(nb) = j
+                    dA = recA(2)
+                    If IsArray(dA) Then
+                        angs(nb) = AngleDeg(dA, N)
+                        If angs(nb) > 90 Then angs(nb) = 180 - angs(nb)
+                    Else
+                        angs(nb) = -1
+                    End If
+                End If
+            End If
+        End If
+    Next
+    If nb = 0 Then
+        If journaliser Then Ecrire "     " & nomFace & " : aucun trou (" & prefixeAxe & "x) mesuré"
+        Exit Function
+    End If
+
+    G = V3(0, 0, 0)
+    For k = 1 To nb
+        G = Ajouter(G, pts(k))
+    Next
+    G = Echelle(G, 1 / nb)
+
+    If journaliser Then
+        Ecrire "     " & nomFace & " : normale " & FmtV(N) & "  centre des trous " & FmtV(G) & "  (" & nb & " trous)"
+        For k = 1 To nb
+            w = Soustraire(pts(k), G)
+            If angs(k) >= 0 Then
+                Ecrire "        " & Left(prefixeAxe & nums(k) & Space(14), 14) & " x = " & Left(FmtN(Scalaire(w, U)) & Space(9), 9) & " y = " & Left(FmtN(Scalaire(w, E2)) & Space(9), 9) & " angle = " & FmtN(angs(k)) & "°"
+            Else
+                Ecrire "        " & Left(prefixeAxe & nums(k) & Space(14), 14) & " x = " & Left(FmtN(Scalaire(w, U)) & Space(9), 9) & " y = " & Left(FmtN(Scalaire(w, E2)) & Space(9), 9) & " (point, sans direction)"
+            End If
+        Next
+        ' Entraxes entre trous successifs (aide à lire le motif)
+        txt = ""
+        For k = 2 To nb
+            txt = txt & nums(k - 1) & "-" & nums(k) & " = " & FmtN(Distance3(pts(k - 1), pts(k))) & "   "
+        Next
+        If txt <> "" Then Ecrire "        Entraxes successifs : " & txt
+    End If
+
+    If cible = "R" Then
+        For k = 1 To nb
+            gPatR(k) = pts(k)
+            gNumR(k) = nums(k)
+        Next
+        gNbR = nb
+        gNR = N
+    Else
+        For k = 1 To nb
+            gPatH(k) = pts(k)
+            gNumH(k) = nums(k)
+        Next
+        gNbH = nb
+        gNH = N
+    End If
+    ConstruireMotif = True
+End Function
+
+' Position du Point CABLE.1 dans le repère de la Face NEMA.1 du raccord.
+Sub PositionPointCable(r)
+    Dim recF, recC, O, N, U, E2, w, h
+    recF = Geo(r, PUB_FACE_RAC)
+    recC = Geo(r, PUB_CABLE_RAC)
+    If Not IsArray(recF) Or Not IsArray(recC) Then Exit Sub
+    If recF(0) <> "PLAN" Then Exit Sub
+    O = recF(1)
+    N = recF(2)
+    U = recF(3)
+    E2 = Vectoriel(N, U)
+    ConstruireMotif r, PUB_FACE_RAC, PUB_AXE_RAC, "R", False
+    w = Soustraire(recC(1), CentreMotifR())
+    h = Scalaire(w, N)
+    Ecrire "        " & Left(PUB_CABLE_RAC & Space(14), 14) & " x = " & Left(FmtN(Scalaire(w, U)) & Space(9), 9) & " y = " & Left(FmtN(Scalaire(w, E2)) & Space(9), 9) & " hauteur selon la normale = " & FmtN(h) & " mm"
+End Sub
+
+Function CentreMotifR()
+    Dim G, k
+    G = V3(0, 0, 0)
+    For k = 1 To gNbR
+        G = Ajouter(G, gPatR(k))
+    Next
+    If gNbR > 0 Then G = Echelle(G, 1 / gNbR)
+    CentreMotifR = G
+End Function
+
+' Recherche récursive : affecte le trou k du raccord à un trou libre de la plage
+' en respectant toutes les distances déjà affectées.
+Sub ChercherAppariements(k)
+    Dim j, m, ok, dR, dH
+    If k > gNbR Then
+        EnregistrerSolution
+        Exit Sub
+    End If
+    For j = 1 To gNbH
+        If Not gUtilise(j) Then
+            ok = True
+            For m = 1 To k - 1
+                dR = Distance3(gPatR(k), gPatR(m))
+                dH = Distance3(gPatH(j), gPatH(gAffect(m)))
+                If Abs(dR - dH) > TOLERANCE_MM Then
+                    ok = False
+                    Exit For
+                End If
+            Next
+            If ok Then
+                gUtilise(j) = True
+                gAffect(k) = j
+                ChercherAppariements k + 1
+                gUtilise(j) = False
+                gAffect(k) = 0
+            End If
+        End If
+    Next
+End Sub
+
+Sub EnregistrerSolution()
+    Dim k, j, table, detail, occupes, a, b, c, best, aire, ia, ib, ic, sR, sH, sens
+
+    gNbSol = gNbSol + 1
+    table = ""
+    detail = ""
+    For k = 1 To gNbR
+        If k > 1 Then table = table & ","
+        table = table & gNumH(gAffect(k))
+        detail = detail & gNumR(k) & "->" & gNumH(gAffect(k)) & " "
+    Next
+    occupes = ""
+    For j = 1 To gNbH
+        If gUtilise(j) Then occupes = occupes & gNumH(j) & " "
+    Next
+
+    ' Sens : triangle le plus grand parmi les trous du raccord
+    sens = "indéterminé (trous alignés)"
+    best = 0
+    ia = 0
+    For a = 1 To gNbR - 2
+        For b = a + 1 To gNbR - 1
+            For c = b + 1 To gNbR
+                aire = Norme(Vectoriel(Soustraire(gPatR(b), gPatR(a)), Soustraire(gPatR(c), gPatR(a))))
+                If aire > best Then
+                    best = aire
+                    ia = a
+                    ib = b
+                    ic = c
+                End If
+            Next
+        Next
+    Next
+    If ia > 0 And best > 1 Then
+        sR = Scalaire(Vectoriel(Soustraire(gPatR(ib), gPatR(ia)), Soustraire(gPatR(ic), gPatR(ia))), gNR)
+        sH = Scalaire(Vectoriel(Soustraire(gPatH(gAffect(ib)), gPatH(gAffect(ia))), Soustraire(gPatH(gAffect(ic)), gPatH(gAffect(ia)))), gNH)
+        If sR * sH > 0 Then
+            sens = "normales de même sens"
+        Else
+            sens = "normales opposées"
+        End If
+    End If
+    gSolutions = gSolutions & "       " & Left(CStr(gNbSol) & ")" & Space(4), 4) & " TABLE_AXES = """ & table & """   (" & Trim(detail) & ")   trous occupés : " & Trim(occupes) & "   -> " & sens & NL
+End Sub
+
+
+'==============================================================================
+'  6c. POSITIONS ACTUELLES : TROUS RÉELLEMENT OCCUPÉS
+'==============================================================================
+Sub AnalyserPositionsActuelles()
+    Dim r
+
+    Titre "6c. POSITIONS ACTUELLES : TROUS OCCUPÉS PAR LES RACCORDS DÉJÀ POSÉS"
+    Ecrire "   Pour chaque axe de raccord : trou du disjoncteur le plus proche parmi"
+    Ecrire "   les axes parallèles. « COÏNCIDENT » = écart < " & FmtN(TOLERANCE_MM) & " mm."
+    Ecrire "   (Inclut les axes NON contraints : montre les 4 trous réellement couverts.)"
+    If Not IsObject(gGeo) Then
+        Ecrire "   (pas de mesures disponibles)"
+        Exit Sub
+    End If
+    On Error Resume Next
+    For r = 1 To gNbInst
+        If gInstType(r) = "RACCORD" Then
+            Err.Clear
+            AnalyserUnRaccord r
+            If Err.Number <> 0 Then JournalErreur "analyse du raccord " & gInstChemin(r), Err.Number, Err.Description
+        End If
+    Next
+    Err.Clear
+End Sub
+
+Sub AnalyserUnRaccord(r)
+    Dim k, nomA, recA, d, n, j, recH, dist, best, bD, bN, bJ, votes(20), tbl(20), kMax, faceRet, dRet, maxV
+    Dim etat, table, recFR, recFD, ps, h, recC, G, C, w, hc, wPlan, o, cosv, sensTxt
+
+    Ecrire ""
+    Ecrire "   Raccord " & gInstChemin(r)
+    For n = 0 To 20
+        votes(n) = 0
+        tbl(n) = 0
+    Next
+    kMax = 0
+    dRet = 0
+
+    For k = 1 To INDICE_MAX
+        nomA = PUB_AXE_RAC & k
+        If gInstPubs(r).Exists(nomA) Then
+            kMax = k
+            recA = Geo(r, nomA)
+            If IsArray(recA) Then
+                best = 1E+30
+                bD = 0
+                bN = 0
+                bJ = 0
+                For d = 1 To gNbInst
+                    If gInstType(d) = "DISJONCTEUR" Then
+                        For n = 1 To INDICE_MAX
+                            For j = 1 To INDICE_MAX
+                                recH = Geo(d, PUB_AXE_DISJ & n & "." & j)
+                                If IsArray(recH) Then
+                                    dist = DistanceAxes(recA, recH)
+                                    If dist >= 0 And dist < best Then
+                                        best = dist
+                                        bD = d
+                                        bN = n
+                                        bJ = j
+                                    End If
+                                End If
+                            Next
+                        Next
+                    End If
+                Next
+                If bD = 0 Then
+                    Ecrire "      " & Left(nomA & Space(12), 12) & " : aucun trou parallèle"
+                Else
+                    etat = ""
+                    If best <= TOLERANCE_MM Then
+                        etat = "   COÏNCIDENT"
+                        votes(bN) = votes(bN) + 1
+                        tbl(k) = bJ
+                        dRet = bD
+                    End If
+                    Ecrire "      " & Left(nomA & Space(12), 12) & " -> " & Left(PUB_AXE_DISJ & bN & "." & bJ & Space(14), 14) & " écart " & FmtN(best) & " mm" & etat
+                End If
+            Else
+                Ecrire "      " & Left(nomA & Space(12), 12) & " : non mesuré"
+            End If
+        End If
+    Next
+
+    faceRet = 0
+    maxV = 0
+    For n = 1 To 20
+        If votes(n) > maxV Then
+            maxV = votes(n)
+            faceRet = n
+        End If
+    Next
+    If faceRet = 0 Or dRet = 0 Then
+        Ecrire "      => aucun axe coïncident : raccord non posé sur une plage."
+        Exit Sub
+    End If
+
+    table = ""
+    For k = 1 To kMax
+        If k > 1 Then table = table & ","
+        table = table & tbl(k)
+    Next
+    Ecrire "      => posé sur " & PUB_FACE_DISJ & faceRet & " ; " & maxV & " axe(s) coïncident(s) ; TABLE_AXES observée = """ & table & """  (0 = axe sans trou)"
+    NoterResume "Position actuelle " & gInstChemin(r) & " : " & PUB_FACE_DISJ & faceRet & ", TABLE_AXES observée """ & table & """"
+
+    ' Face contre face : sens des normales mesurées et écart entre plans
+    recFR = Geo(r, PUB_FACE_RAC)
+    recFD = Geo(dRet, PUB_FACE_DISJ & faceRet)
+    If IsArray(recFR) And IsArray(recFD) Then
+        If recFR(0) = "PLAN" And recFD(0) = "PLAN" Then
+            ps = Scalaire(recFR(2), recFD(2))
+            h = Scalaire(Soustraire(recFR(1), recFD(1)), recFD(2))
+            If ps < -0.9998 Then
+                sensTxt = "OPPOSÉES"
+            ElseIf ps > 0.9998 Then
+                sensTxt = "DE MÊME SENS"
+            Else
+                sensTxt = "non parallèles (" & FmtN(AngleDeg(recFR(2), recFD(2))) & "°)"
+            End If
+            Ecrire "      Normales mesurées Face NEMA.1 / " & PUB_FACE_DISJ & faceRet & " : produit scalaire " & FmtN(ps) & " -> " & sensTxt & " ; écart entre les plans " & FmtN(h) & " mm"
+            NoterResume "   normales mesurées " & sensTxt & ", écart plans " & FmtN(h) & " mm"
+        End If
+    End If
+
+    ' Point CABLE.1 : hauteur au-dessus de la plage et direction dans le plan
+    recC = Geo(r, PUB_CABLE_RAC)
+    If IsArray(recC) And IsArray(recFD) Then
+        If recFD(0) = "PLAN" Then
+            G = CentreTrousFace(dRet, faceRet)
+            C = CentreTousTrous(dRet)
+            If IsArray(G) And IsArray(C) Then
+                w = Soustraire(recC(1), G)
+                hc = Scalaire(w, recFD(2))
+                wPlan = Soustraire(w, Echelle(recFD(2), hc))
+                o = Soustraire(G, C)
+                o = Soustraire(o, Echelle(recFD(2), Scalaire(o, recFD(2))))
+                Ecrire "      Point CABLE.1 : hauteur " & FmtN(hc) & " mm selon la normale mesurée de " & PUB_FACE_DISJ & faceRet & " ; décalage dans le plan " & FmtN(Norme(wPlan)) & " mm"
+                If Norme(o) > 1 And Norme(wPlan) > 0.1 Then
+                    cosv = Scalaire(wPlan, o) / (Norme(wPlan) * Norme(o))
+                    If cosv > 0.5 Then
+                        sensTxt = "vers l'EXTÉRIEUR (s'éloigne du centre des plages)"
+                    ElseIf cosv < -0.5 Then
+                        sensTxt = "vers l'INTÉRIEUR (vers le centre des plages)"
+                    Else
+                        sensTxt = "de côté"
+                    End If
+                    Ecrire "      Direction du câble / (centre des plages -> cette plage) : cos = " & FmtN(cosv) & " -> " & sensTxt
+                    NoterResume "   Point CABLE.1 : hauteur " & FmtN(hc) & " mm, " & sensTxt
+                Else
+                    Ecrire "      (direction « extérieure » non évaluable pour cette plage)"
+                End If
+            End If
+        End If
+    End If
+End Sub
+
+' Distance entre deux axes parallèles (ou point / axe). -1 si non parallèles.
+Function DistanceAxes(recA, recB)
+    Dim PA, DA, PB, DB, sinTol
+    PA = recA(1)
+    DA = recA(2)
+    PB = recB(1)
+    DB = recB(2)
+    sinTol = Sin(TOLERANCE_ANGLE_DEG * PI / 180)
+    If IsArray(DA) And IsArray(DB) Then
+        If Norme(Vectoriel(DA, DB)) > sinTol Then
+            DistanceAxes = -1
+        Else
+            DistanceAxes = Norme(Vectoriel(Soustraire(PA, PB), DB))
+        End If
+    ElseIf IsArray(DB) Then
+        DistanceAxes = Norme(Vectoriel(Soustraire(PA, PB), DB))
+    ElseIf IsArray(DA) Then
+        DistanceAxes = Norme(Vectoriel(Soustraire(PB, PA), DA))
+    Else
+        DistanceAxes = Distance3(PA, PB)
+    End If
+End Function
+
+' Centre des trous de la face n (projetés sur le plan de la face), ou Empty.
+Function CentreTrousFace(d, n)
+    CentreTrousFace = Empty
+    If ConstruireMotif(d, PUB_FACE_DISJ & n, PUB_AXE_DISJ & n & ".", "H", False) Then
+        CentreTrousFace = CentreMotifH()
+    End If
+End Function
+
+Function CentreMotifH()
+    Dim G, k
+    G = V3(0, 0, 0)
+    For k = 1 To gNbH
+        G = Ajouter(G, gPatH(k))
+    Next
+    If gNbH > 0 Then G = Echelle(G, 1 / gNbH)
+    CentreMotifH = G
+End Function
+
+' Centre de tous les trous de toutes les faces du disjoncteur, ou Empty.
+Function CentreTousTrous(d)
+    Dim n, j, rec, G, nb
+    G = V3(0, 0, 0)
+    nb = 0
+    For n = 1 To INDICE_MAX
+        For j = 1 To INDICE_MAX
+            rec = Geo(d, PUB_AXE_DISJ & n & "." & j)
+            If IsArray(rec) Then
+                G = Ajouter(G, rec(1))
+                nb = nb + 1
+            End If
+        Next
+    Next
+    If nb = 0 Then
+        CentreTousTrous = Empty
+    Else
+        CentreTousTrous = Echelle(G, 1 / nb)
+    End If
+End Function
+
+
+'==============================================================================
+'  OUTILS : NOMS DES ÉNUMÉRATIONS
+'  (ordre des énumérations d'après V5Automation, à confirmer par la section 1)
+'==============================================================================
+Function NomTypeContrainte(t)
+    Dim noms
+    noms = "catCstTypeReference (Fixe)|catCstTypeDistance (Distance)|catCstTypeOn (Coïncidence)|" & _
+           "catCstTypeConcentricity (Concentricité)|catCstTypeTangency (Tangence)|catCstTypeLength (Longueur)|" & _
+           "catCstTypeAngle (Angle)|catCstTypePlanarAngle (Angle plan)|catCstTypeParallelism (Parallélisme)|" & _
+           "catCstTypeAxisParallelism (Parallélisme d'axes)|catCstTypeHorizontality|catCstTypePerpendicularity (Perpendicularité)|" & _
+           "catCstTypeAxisPerpendicularity|catCstTypeVerticality|catCstTypeRadius|catCstTypeSymmetry|catCstTypeMidPoint|" & _
+           "catCstTypeEquidistance|catCstTypeMajorRadius|catCstTypeMinorRadius|catCstTypeSurfContact (Contact surfacique)|" & _
+           "catCstTypeLinContact (Contact linéique)|catCstTypePoncContact (Contact ponctuel)|catCstTypeChamfer|" & _
+           "catCstTypeChamferPerpend|catCstTypeAnnulContact (Contact annulaire)|catCstTypeCylinderRadius|" & _
+           "catCstTypeStContinuity|catCstTypeStDistance|catCstTypeSdContinuity|catCstTypeSdShape"
+    NomTypeContrainte = ElementListe(noms, t)
+End Function
+
+Function NomCourtType(t)
+    Select Case t
+        Case 0
+            NomCourtType = "Fixe"
+        Case 1
+            NomCourtType = "Distance"
+        Case 2
+            NomCourtType = "Coïncidence"
+        Case 6
+            NomCourtType = "Angle"
+        Case 20
+            NomCourtType = "Contact"
+        Case Else
+            NomCourtType = "Type " & t
+    End Select
+End Function
+
+Function NomOrientation(o)
+    NomOrientation = ElementListe("catCstOrientSame (même sens)|catCstOrientOpposite (sens opposé)|catCstOrientUndefined (indéfinie)", o)
+End Function
+
+Function NomMode(m)
+    NomMode = ElementListe("catCstModeDrivingDimension (pilotante)|catCstModeDrivenDimension (pilotée)", m)
+End Function
+
+Function NomStatut(s)
+    NomStatut = ElementListe("catCstStatusOK|catCstStatusKOStronglyNotSatisfied|catCstStatusKOWrongOrientOrSide|catCstStatusKOWrongValue|catCstStatusKOWrongGeomEltType|catCstStatusKOBroken", s)
+End Function
+
+' Renvoie le i-ème élément (base 0) d'une liste "a|b|c", ou "?".
+Function ElementListe(liste, i)
+    Dim reste, p, n, idx
+    ElementListe = "?"
+    If Not IsNumeric(i) Then Exit Function
+    idx = CLng(i)
+    If idx < 0 Then Exit Function
+    reste = liste & "|"
+    n = 0
+    p = InStr(reste, "|")
+    Do While p > 0
+        If n = idx Then
+            ElementListe = Left(reste, p - 1)
+            Exit Function
+        End If
+        reste = Mid(reste, p + 1)
+        n = n + 1
+        p = InStr(reste, "|")
+    Loop
+End Function
+
+
+'==============================================================================
+'  OUTILS : ANALYSE DES NOMS
+'==============================================================================
+' "Racine/Instance.1/!Face NEMA 1" -> chemin = "Racine/Instance.1", elem = "Face NEMA 1"
+Sub DecouperDisplayName(dn, chemin, elem)
+    Dim p
+    p = InStr(dn, "/!")
+    If p > 0 Then
+        chemin = Left(dn, p - 1)
+        elem = Mid(dn, p + 2)
+    Else
+        chemin = ""
+        elem = dn
+    End If
+End Sub
+
+' Indice de l'instance dont le chemin termine "chemin" (le plus long gagne), ou 0.
+Function IndexInstanceDepuisChemin(chemin)
+    Dim i, meilleur, lg, c
+    meilleur = 0
+    lg = 0
+    If chemin <> "" Then
+        For i = 1 To gNbInst
+            c = gInstChemin(i)
+            If chemin = c Or Right(chemin, Len(c) + 1) = "/" & c Then
+                If Len(c) > lg Then
+                    meilleur = i
+                    lg = Len(c)
+                End If
+            End If
+        Next
+    End If
+    IndexInstanceDepuisChemin = meilleur
+End Function
+
+' "Face NEMA 3" -> 3 ; sinon 0
+Function NumeroFaceDisj(elem)
+    Dim reste
+    NumeroFaceDisj = 0
+    If Left(elem, Len(PUB_FACE_DISJ)) = PUB_FACE_DISJ Then
+        reste = Mid(elem, Len(PUB_FACE_DISJ) + 1)
+        If EstEntier(reste) Then NumeroFaceDisj = CLng(reste)
+    End If
+End Function
+
+' "Axe NEMA.4" -> 4 ; sinon 0
+Function NumeroAxeRac(elem)
+    Dim reste
+    NumeroAxeRac = 0
+    If Left(elem, Len(PUB_AXE_RAC)) = PUB_AXE_RAC Then
+        reste = Mid(elem, Len(PUB_AXE_RAC) + 1)
+        If EstEntier(reste) Then NumeroAxeRac = CLng(reste)
+    End If
+End Function
+
+' "Axe NEMA 3.2" -> n = 3, j = 2 ; sinon n = 0, j = 0
+Sub NumerosAxeDisj(elem, n, j)
+    Dim reste, p
+    n = 0
+    j = 0
+    If Left(elem, Len(PUB_AXE_DISJ)) = PUB_AXE_DISJ Then
+        reste = Mid(elem, Len(PUB_AXE_DISJ) + 1)
+        p = InStr(reste, ".")
+        If p > 1 Then
+            If EstEntier(Left(reste, p - 1)) And EstEntier(Mid(reste, p + 1)) Then
+                n = CLng(Left(reste, p - 1))
+                j = CLng(Mid(reste, p + 1))
+            End If
+        End If
+    End If
+End Sub
+
+' Vrai si s ne contient que des chiffres (au moins un).
+Function EstEntier(s)
+    Dim i, ch
+    EstEntier = False
+    If Len(s) = 0 Then Exit Function
+    For i = 1 To Len(s)
+        ch = Mid(s, i, 1)
+        If ch < "0" Or ch > "9" Then Exit Function
+    Next
+    EstEntier = True
+End Function
+
+
+'==============================================================================
+'  OUTILS : VECTEURS (tableaux Variant de 3 réels)
+'==============================================================================
+Function V3(x, y, z)
+    Dim r(2)
+    r(0) = CDbl(x)
+    r(1) = CDbl(y)
+    r(2) = CDbl(z)
+    V3 = r
+End Function
+
+Function Ajouter(a, b)
+    Ajouter = V3(a(0) + b(0), a(1) + b(1), a(2) + b(2))
+End Function
+
+Function Soustraire(a, b)
+    Soustraire = V3(a(0) - b(0), a(1) - b(1), a(2) - b(2))
+End Function
+
+Function Echelle(a, s)
+    Echelle = V3(a(0) * s, a(1) * s, a(2) * s)
+End Function
+
+Function Scalaire(a, b)
+    Scalaire = a(0) * b(0) + a(1) * b(1) + a(2) * b(2)
+End Function
+
+Function Vectoriel(a, b)
+    Vectoriel = V3(a(1) * b(2) - a(2) * b(1), a(2) * b(0) - a(0) * b(2), a(0) * b(1) - a(1) * b(0))
+End Function
+
+Function Norme(a)
+    Norme = Sqr(Scalaire(a, a))
+End Function
+
+' Vecteur unitaire, ou Empty si le vecteur est nul.
+Function Unitaire(a)
+    Dim l
+    l = Norme(a)
+    If l < 0.000000001 Then
+        Unitaire = Empty
+    Else
+        Unitaire = Echelle(a, 1 / l)
+    End If
+End Function
+
+Function Distance3(a, b)
+    Distance3 = Norme(Soustraire(a, b))
+End Function
+
+' Angle en degrés entre deux vecteurs non nuls.
+Function AngleDeg(a, b)
+    AngleDeg = Atan2(Norme(Vectoriel(a, b)), Scalaire(a, b)) * 180 / PI
+End Function
+
+Function Atan2(y, x)
+    If x > 0 Then
+        Atan2 = Atn(y / x)
+    ElseIf x < 0 Then
+        If y >= 0 Then
+            Atan2 = Atn(y / x) + PI
+        Else
+            Atan2 = Atn(y / x) - PI
+        End If
+    Else
+        If y > 0 Then
+            Atan2 = PI / 2
+        ElseIf y < 0 Then
+            Atan2 = -PI / 2
+        Else
+            Atan2 = 0
+        End If
+    End If
+End Function
+
+' Projette un axe (le long de sa direction) ou un point (orthogonalement)
+' sur le plan (O, N) ; N unitaire.
+Function ProjeterSurPlan(recA, O, N)
+    Dim P, D, t, dn
+    P = recA(1)
+    D = recA(2)
+    If IsArray(D) Then
+        dn = Scalaire(D, N)
+        If Abs(dn) > 0.1 Then
+            t = Scalaire(Soustraire(O, P), N) / dn
+            ProjeterSurPlan = Ajouter(P, Echelle(D, t))
+            Exit Function
+        End If
+    End If
+    t = Scalaire(Soustraire(P, O), N)
+    ProjeterSurPlan = Soustraire(P, Echelle(N, t))
+End Function
+
+
+'==============================================================================
+'  OUTILS : FORMATAGE
+'==============================================================================
+' Réel avec 3 décimales et un point décimal (indépendant des réglages Windows).
+Function FmtN(x)
+    Dim v, s, e, f
+    If Not IsNumeric(x) Then
+        FmtN = CStr(x)
+        Exit Function
+    End If
+    v = CDbl(x)
+    s = ""
+    If v < 0 Then
+        s = "-"
+        v = -v
+    End If
+    v = Int(v * 1000 + 0.5)
+    If v = 0 Then s = ""
+    e = Int(v / 1000)
+    f = v - e * 1000
+    FmtN = s & CStr(e) & "." & Right("000" & CStr(f), 3)
+End Function
+
+Function FmtV(a)
+    If IsArray(a) Then
+        FmtV = "(" & FmtN(a(0)) & "; " & FmtN(a(1)) & "; " & FmtN(a(2)) & ")"
+    Else
+        FmtV = "(?)"
+    End If
+End Function
+
+' Trois composantes d'un tableau à partir de l'indice i0.
+Function FmtT(t, i0)
+    FmtT = "(" & FmtN(t(i0)) & "; " & FmtN(t(i0 + 1)) & "; " & FmtN(t(i0 + 2)) & ")"
+End Function
+
+Function Deux(n)
+    Deux = Right("0" & CStr(n), 2)
+End Function
+
+Function Horodatage()
+    Dim t
+    t = Now
+    Horodatage = Year(t) & "-" & Deux(Month(t)) & "-" & Deux(Day(t)) & "_" & Deux(Hour(t)) & "h" & Deux(Minute(t)) & "m" & Deux(Second(t)) & "s"
+End Function
+
+Function DateHeureLisible()
+    Dim t
+    t = Now
+    DateHeureLisible = Deux(Day(t)) & "/" & Deux(Month(t)) & "/" & Year(t) & " " & Deux(Hour(t)) & ":" & Deux(Minute(t)) & ":" & Deux(Second(t))
+End Function
+
+
+'==============================================================================
+'  OUTILS : JOURNAL
+'==============================================================================
+Function OuvrirJournal()
+    Dim dossier, nom
+
+    OuvrirJournal = False
+    On Error Resume Next
+    Err.Clear
+    Set gFso = CreateObject("Scripting.FileSystemObject")
+    If Err.Number <> 0 Then Exit Function
+    dossier = DossierBureau()
+    nom = NOM_JOURNAL & "_" & Horodatage() & ".txt"
+    gCheminJournal = gFso.BuildPath(dossier, nom)
+    Err.Clear
+    ' 3e argument True = fichier Unicode (accents conservés, lisible par le Bloc-notes)
+    Set gJournal = gFso.CreateTextFile(gCheminJournal, True, True)
+    If Err.Number <> 0 Then
+        Err.Clear
+        gCheminJournal = gFso.BuildPath(gFso.GetSpecialFolder(2).Path, nom)
+        Set gJournal = gFso.CreateTextFile(gCheminJournal, True, True)
+        If Err.Number <> 0 Then Exit Function
+    End If
+    OuvrirJournal = True
+End Function
+
+' Bureau de l'utilisateur ; repli : %USERPROFILE%\Desktop, puis dossier temporaire.
+Function DossierBureau()
+    Dim d, sh
+    d = ""
+    On Error Resume Next
+    Err.Clear
+    Set sh = CreateObject("WScript.Shell")
+    If Err.Number = 0 Then d = sh.SpecialFolders("Desktop")
+    Err.Clear
+    If d = "" Or Not gFso.FolderExists(d) Then
+        d = CATIA.SystemService.Environ("USERPROFILE") & "\Desktop"
+    End If
+    If Err.Number <> 0 Or Not gFso.FolderExists(d) Then
+        Err.Clear
+        d = gFso.GetSpecialFolder(2).Path
+    End If
+    Err.Clear
+    DossierBureau = d
+End Function
+
+Sub FermerJournal()
+    On Error Resume Next
+    gJournal.Close
+    Err.Clear
+End Sub
+
+Sub Ecrire(texte)
+    On Error Resume Next
+    gJournal.WriteLine texte
+    Err.Clear
+End Sub
+
+Sub Titre(texte)
+    Ecrire ""
+    Ecrire "=============================================================================="
+    Ecrire texte
+    Ecrire "=============================================================================="
+End Sub
+
+' Journalise une erreur. Passer Err.Number et Err.Description en arguments :
+' ils sont évalués AVANT l'appel (sinon Err peut être remis à zéro).
+Sub JournalErreur(contexte, numero, description)
+    gNbErreurs = gNbErreurs + 1
+    Ecrire "   !! ERREUR (" & contexte & ") : n° " & numero & " - " & description
+End Sub
+
+' Appelée par CATMain après chaque section (filet de sécurité).
+Sub ControlerSection(nomSection, numero, description)
+    If numero <> 0 Then
+        Ecrire ""
+        JournalErreur "section " & nomSection & " interrompue par une erreur imprévue", numero, description
+    End If
+    Err.Clear
+End Sub
+
+Sub NoterResume(texte)
+    gResume = gResume & "   - " & texte & NL
+End Sub
