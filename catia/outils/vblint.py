@@ -15,6 +15,8 @@ KEYWORDS = set(w.lower() for w in """
 Dim ReDim Preserve Const Sub Function End Exit If Then Else ElseIf For To Step Next
 Each In Do Loop While Until Wend Select Case With Set Call On Error Resume GoTo And Or
 Not Xor Is Mod New ByVal ByRef Private Public Option Explicit Eqv Imp Let Get Property
+As Optional WithEvents Me Integer Long String Double Single Boolean Variant Object Byte Currency
+Unload Load MSForms Collection
 """.split())
 
 BUILTINS = set(w.lower() for w in """
@@ -25,10 +27,18 @@ Now Oct Replace Right Rnd Round RTrim Second Sgn Sin Space Split Sqr String Tan 
 Timer Trim TypeName UBound UCase Year Err CATIA Empty Nothing Null True False
 """.split())
 
+VBA_BUILTINS = set(w.lower() for w in """
+IIf Format Environ DoEvents CallByName vbCrLf vbLf vbCr vbNewLine vbTab vbYesNo vbYes vbNo
+vbOKOnly vbOKCancel vbQuestion vbInformation vbExclamation vbCritical vbYesNoCancel vbCancel
+vbModeless vbModal
+""".split())
+
 NOT_IN_VBSCRIPT = {"iif", "format", "format$", "environ", "environ$", "doevents", "callbyname"}
 
 ENUM_PREFIXES = ("catcst", "catmeasurable", "catworkmode")
 ENUM_NAMES = {"design_mode", "visualization_mode", "default_mode"}
+
+SIG = re.compile(r"(?:(?:Public|Private)\s+)?(Sub|Function)\s+(\w+)\s*(?:\((.*?)\))?\s*(?:As\s+[\w\.]+)?\s*$", re.I)
 
 
 def strip_line(line):
@@ -141,36 +151,61 @@ def declared_names(decl):
     return names
 
 
-def main(path):
+def lire(path):
     data = open(path, "rb").read()
     try:
         raw = data.decode("utf-8")
     except UnicodeDecodeError:
         raw = data.decode("cp1252")
+    # .frm / .bas / .cls : on saute l'en-tête (VERSION, Begin ... End, Attribute)
+    if path.lower().endswith((".frm", ".bas", ".cls")):
+        out = []
+        entete = path.lower().endswith(".frm")
+        for l in raw.splitlines():
+            if entete:
+                if l.startswith("Attribute VB_Name"):
+                    entete = False
+                out.append("")
+                continue
+            out.append("" if l.startswith("Attribute VB_") else l)
+        raw = "\n".join(out)
+    return raw
+
+
+def main(path, projet=None):
+    raw = lire(path)
+    vba = path.lower().endswith((".frm", ".bas", ".cls"))
     lines = logical_lines(raw)
     errors = []
 
-    # 1er passage : procédures, globales
-    procs = {}
-    module_vars = set()
+    # 1er passage : procédures, globales (+ procédures publiques des autres fichiers)
+    procs = dict(projet or {})
+    module_vars = set(PROJET_VARS)
     in_proc = None
     for no, code in lines:
         for st in split_statements(code):
-            m = re.match(r"(?:(?:Public|Private)\s+)?(Sub|Function)\s+(\w+)\s*(?:\((.*)\))?\s*$", st, re.I)
+            m = SIG.match(st)
             if m:
                 params = [p for p in split_args(m.group(3) or "")]
-                params = [re.sub(r"^(ByVal|ByRef)\s+", "", p, flags=re.I) for p in params]
-                procs[m.group(2).lower()] = (m.group(1).lower(), [p.lower() for p in params], no)
+                noms = []
+                nreq = 0
+                for prm in params:
+                    opt = re.match(r"\s*Optional\b", prm, re.I) is not None
+                    prm2 = re.sub(r"^\s*(Optional\s+)?(ByVal\s+|ByRef\s+)?", "", prm, flags=re.I)
+                    noms.append(re.match(r"(\w+)", prm2).group(1).lower())
+                    if not opt:
+                        nreq += 1
+                procs[m.group(2).lower()] = (m.group(1).lower(), noms, no, nreq)
                 in_proc = m.group(2).lower()
                 continue
             if re.match(r"End\s+(Sub|Function)\b", st, re.I):
                 in_proc = None
                 continue
             if in_proc is None:
-                m = re.match(r"(Dim|Const|Public|Private)\s+(.*)$", st, re.I)
+                m = re.match(r"(Dim|Const|Public|Private)\s+(?:(Const|WithEvents)\s+)?(.*)$", st, re.I)
                 if m:
-                    body = m.group(2)
-                    if m.group(1).lower() == "const":
+                    body = m.group(3)
+                    if m.group(1).lower() == "const" or (m.group(2) or "").lower() == "const":
                         module_vars.add(re.match(r"(\w+)", body).group(1).lower())
                     else:
                         module_vars.update(declared_names(body))
@@ -183,11 +218,13 @@ def main(path):
         for st in split_statements(code):
             low = st.lower()
             m = re.match(r"(?:(?:public|private)\s+)?(sub|function)\s+(\w+)", low)
-            if m:
+            if m and not low.startswith(("private const", "public const")):
                 if stack:
                     errors.append(f"{no}: procédure ouverte dans un bloc {stack}")
                 stack = [(m.group(1), no)]
                 cur = m.group(2)
+                if len(set(procs[cur][1])) != len(procs[cur][1]):
+                    errors.append(f"{no}: paramètres en double dans {cur}")
                 local = set(procs[cur][1]) | {cur}
                 continue
             m = re.match(r"end\s+(sub|function|if|select|with)\b", low)
@@ -268,7 +305,10 @@ def main(path):
                     local.add(re.match(r"(\w+)", md.group(2)).group(1))
                     body_for_usage = md.group(2).split("=", 1)[1]
                 elif md.group(1) == "dim":
-                    local.update(declared_names(md.group(2)))
+                    for nm in declared_names(md.group(2)):
+                        if nm in local:
+                            errors.append(f"{no}: déclaration en double '{nm}' dans {cur} (VBA ne distingue pas les majuscules)")
+                        local.add(nm)
                     # tailles de tableaux éventuelles
                     body_for_usage = " ".join(re.findall(r"\(([^)]*)\)", md.group(2)))
                 else:
@@ -280,6 +320,7 @@ def main(path):
 
             # Usages d'identifiants
             text = re.sub(r'""', " ", body_for_usage)
+            text = re.sub(r"&h[0-9a-f]+&?", " ", text)
             text = re.sub(r"\b\d+(\.\d+)?(e[+-]?\d+)?\b", " ", text)
             for mm in re.finditer(r"(\.)?\s*\b([a-z_]\w*)\b", text):
                 if mm.group(1):
@@ -287,7 +328,9 @@ def main(path):
                 name = mm.group(2)
                 if name in KEYWORDS or name in BUILTINS:
                     continue
-                if name in NOT_IN_VBSCRIPT:
+                if vba and (name in VBA_BUILTINS or name.startswith(("fm", "vb"))):
+                    continue
+                if name in NOT_IN_VBSCRIPT and not vba:
                     errors.append(f"{no}: fonction absente de VBScript : {name}")
                     continue
                 if name.startswith(ENUM_PREFIXES) or name in ENUM_NAMES:
@@ -310,8 +353,9 @@ def main(path):
                 else:
                     args = split_args(rest) if rest else []
                 exp = len(procs[name][1])
-                if len(args) != exp:
-                    errors.append(f"{no}: {name} appelé avec {len(args)} argument(s), {exp} attendu(s)")
+                nreq = procs[name][3]
+                if not (nreq <= len(args) <= exp):
+                    errors.append(f"{no}: {name} appelé avec {len(args)} argument(s), {nreq} à {exp} attendu(s)")
             # b) appels dans les expressions : Nom(...)
             for mm in re.finditer(r"(?<![\.\w])([a-z_]\w*)\s*\(", low):
                 name = mm.group(1)
@@ -328,8 +372,9 @@ def main(path):
                             continue
                     args = split_args(low[mm.end():j])
                     exp = len(procs[name][1])
-                    if len(args) != exp:
-                        errors.append(f"{no}: {name}() appelé avec {len(args)} argument(s), {exp} attendu(s)")
+                    nreq = procs[name][3]
+                    if not (nreq <= len(args) <= exp):
+                        errors.append(f"{no}: {name}() appelé avec {len(args)} argument(s), {nreq} à {exp} attendu(s)")
                 elif name in procs and procs[name][0] == "sub":
                     if not low.startswith(name):
                         errors.append(f"{no}: Sub {name} utilisée dans une expression")
@@ -348,8 +393,10 @@ def main(path):
         body_counts[name] = cnt
 
     print(f"{path}: {len(procs)} procédures, {len(module_vars)} globales")
-    for name, (kind, params, no) in sorted(procs.items(), key=lambda x: x[1][2]):
-        if name != "catmain" and body_counts[name] <= 1:
+    for name, (kind, params, no, _) in sorted(procs.items(), key=lambda x: x[1][2]):
+        if name in (projet or {}):
+            continue
+        if name != "catmain" and "_" not in name and body_counts[name] <= 1:
             print(f"  info : {kind} {name} (ligne {no}) jamais appelée")
     if errors:
         print(f"{len(errors)} problème(s) :")
@@ -360,8 +407,56 @@ def main(path):
     return 0
 
 
+PROJET_VARS = set()
+
+
+def publics(path):
+    """Procédures et variables publiques d'un module (pour un projet VBA)."""
+    procs, vars_ = {}, set()
+    in_proc = False
+    for no, code in logical_lines(lire(path)):
+        for st in split_statements(code):
+            m = SIG.match(st)
+            if m:
+                in_proc = True
+                if not st.lower().startswith("private"):
+                    params = split_args(m.group(3) or "")
+                    noms, nreq = [], 0
+                    for prm in params:
+                        opt = re.match(r"\s*Optional\b", prm, re.I) is not None
+                        prm2 = re.sub(r"^\s*(Optional\s+)?(ByVal\s+|ByRef\s+)?", "", prm, flags=re.I)
+                        noms.append(re.match(r"(\w+)", prm2).group(1).lower())
+                        nreq += 0 if opt else 1
+                    procs[m.group(2).lower()] = (m.group(1).lower(), noms, no, nreq)
+                continue
+            if re.match(r"End\s+(Sub|Function)\b", st, re.I):
+                in_proc = False
+                continue
+            if not in_proc:
+                mm = re.match(r"Public\s+(?:(Const|WithEvents)\s+)?(.*)$", st, re.I)
+                if mm:
+                    if (mm.group(1) or "").lower() == "const":
+                        vars_.add(re.match(r"(\w+)", mm.group(2)).group(1).lower())
+                    else:
+                        vars_.update(declared_names(mm.group(2)))
+    return procs, vars_
+
+
 if __name__ == "__main__":
+    # Usage : vblint.py fichier...   (les .bas/.frm d'un même appel forment un projet VBA)
     rc = 0
-    for p in sys.argv[1:]:
-        rc |= main(p)
+    fichiers = sys.argv[1:]
+    projet = {}
+    for p in fichiers:
+        if p.lower().endswith(".bas"):
+            pr, va = publics(p)
+            projet.update(pr)
+            PROJET_VARS.update(va)
+        if p.lower().endswith((".frm", ".cls", ".bas")):
+            m = re.search(r'Attribute VB_Name = "(\w+)"', open(p, "rb").read().decode("cp1252", "replace"))
+            if m:
+                PROJET_VARS.add(m.group(1).lower())
+    for p in fichiers:
+        autres = {k: v for k, v in projet.items()} if not p.lower().endswith(".bas") else None
+        rc |= main(p, autres)
     sys.exit(rc)

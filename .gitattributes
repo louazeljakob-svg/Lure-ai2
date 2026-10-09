@@ -1,2 +1,4 @@
 # Macros CATIA : Windows-1252 + CRLF, sans conversion par git
 catia/*.CATScript -text
+catia/vba/*.bas -text
+catia/vba/*.frm -text
